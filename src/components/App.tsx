@@ -39,6 +39,26 @@ export default function App() {
   const refreshConvs = useCallback(() => { fetch("/api/conversations").then((r) => r.json()).then(setConvs).catch(() => {}); }, []);
   useEffect(() => { refreshTree(); refreshConvs(); }, [refreshTree, refreshConvs]);
 
+  const [idle, setIdle] = useState(false);
+  const idleTimer = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    const onActivity = () => {
+      setIdle(false);
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      idleTimer.current = setTimeout(() => setIdle(true), 2500);
+    };
+    onActivity();
+    window.addEventListener("mousemove", onActivity, { passive: true });
+    window.addEventListener("mousedown", onActivity, { passive: true });
+    window.addEventListener("keydown", onActivity, { passive: true });
+    return () => {
+      if (idleTimer.current) clearTimeout(idleTimer.current);
+      window.removeEventListener("mousemove", onActivity);
+      window.removeEventListener("mousedown", onActivity);
+      window.removeEventListener("keydown", onActivity);
+    };
+  }, []);
+
   // ---- tree helpers
   const kids = useMemo(() => {
     const m = new Map<string, Msg[]>();
@@ -233,15 +253,17 @@ export default function App() {
   const anchor = thread ? msgs.find((m) => m.id === thread) : null;
   const rightCount = [!!thread, panels.ws, panels.art, panels.src].filter(Boolean).length;
   const tog = (k: keyof typeof panels) => setPanels((p) => ({ ...p, [k]: !p[k] }));
+  const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
+  const chromeIdle = idle && !hasOpenPanel;
 
   return (
     <AppCtx.Provider value={api}>
       <div className="shell">
-        <div className="chrome l">
+        <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
           <button className="ib" aria-label="New chat" onClick={newChat}><SquarePen /></button>
         </div>
-        <div className="chrome r">
+        <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
           <button className={"ib" + (panels.art ? " on" : "")} aria-label="Artifacts" onClick={() => tog("art")}><AppWindow /></button>
           {sources.length > 0 && <button className={"ib" + (panels.src ? " on" : "")} aria-label="Sources" onClick={() => tog("src")}><Link2 /></button>}
