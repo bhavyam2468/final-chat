@@ -1,0 +1,18 @@
+[Unit]
+Description=Minimalist AI Chat Workspace Service
+After=network.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/thatguy/Projects/the chat application/minimalist-ai-chat-workspace
+EnvironmentFile=-/home/thatguy/Projects/the chat application/minimalist-ai-chat-workspace/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=PATH=/home/thatguy/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/docker compose -f "/home/thatguy/Projects/the chat application/minimalist-ai-chat-workspace/docker-compose.yml" up -d db
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,29 @@
+[Desktop Entry]
+Encoding=UTF-8
+Version=1.0
+Type=Application
+Terminal=false
+Exec=/home/thatguy/.local/bin/minimalist-chat open
+Icon=/home/thatguy/.local/share/icons/minimalist-chat.svg
+Name=Minimalist AI Workspace
+GenericName=AI Chat & Workspace
+Comment=Minimalist AI chat workspace with local tools and FreeLLMAPI
+Categories=Utility;Development;Network;
+StartupNotify=true
+Actions=Open;StartService;StopService;RestartService;
+
+[Desktop Action Open]
+Name=Open in Zen
+Exec=/home/thatguy/.local/bin/minimalist-chat open
+
+[Desktop Action StartService]
+Name=Start Service
+Exec=/home/thatguy/.local/bin/minimalist-chat start
+
+[Desktop Action StopService]
+Name=Stop Service
+Exec=/home/thatguy/.local/bin/minimalist-chat stop
+
+[Desktop Action RestartService]
+Name=Restart Service
+Exec=/home/thatguy/.local/bin/minimalist-chat restart

@@ -1,0 +1,11 @@
+# Runtime / generated
+/workspace
+/.next
+/node_modules
+
+# Secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db

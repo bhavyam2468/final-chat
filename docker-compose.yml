@@ -1,0 +1,9 @@
+# Local install: `docker compose up -d db` then `npm i && npx drizzle-kit push && npm run build && npm start`
+# The app runs natively (not in Docker) so the agent can reach your terminal and files.
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: app_db }
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+volumes: { pgdata: {} }

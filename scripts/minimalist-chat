@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -e
+
+ZEN_BIN="/home/thatguy/Downloads/zen.linux-x86_64/zen/zen"
+URL="http://localhost:3000"
+
+case "$1" in
+  start)
+    echo "Starting Minimalist AI Chat Workspace service..."
+    systemctl --user start minimalist-chat
+    systemctl --user status minimalist-chat --no-pager
+    ;;
+  stop)
+    echo "Stopping Minimalist AI Chat Workspace service..."
+    systemctl --user stop minimalist-chat
+    echo "Stopped."
+    ;;
+  restart)
+    echo "Restarting Minimalist AI Chat Workspace service..."
+    systemctl --user restart minimalist-chat
+    systemctl --user status minimalist-chat --no-pager
+    ;;
+  status)
+    systemctl --user status minimalist-chat --no-pager
+    ;;
+  logs)
+    journalctl --user -u minimalist-chat -f
+    ;;
+  open|"")
+    # Start service if not already active
+    if ! systemctl --user is-active --quiet minimalist-chat; then
+      echo "Starting Minimalist AI Chat service..."
+      systemctl --user start minimalist-chat
+    fi
+
+    # Wait up to 15 seconds for the web server to be ready
+    echo "Waiting for app to be ready..."
+    for i in {1..30}; do
+      if curl -s -o /dev/null -w "%{http_code}" "$URL/api/health" 2>/dev/null | grep -q "200"; then
+        break
+      fi
+      sleep 0.5
+    done
+
+    # Open in Zen browser
+    if [ -x "$ZEN_BIN" ]; then
+      echo "Opening in Zen browser..."
+      exec "$ZEN_BIN" --new-window "$URL"
+    else
+      echo "Opening default browser..."
+      exec xdg-open "$URL"
+    fi
+    ;;
+  *)
+    echo "Usage: minimalist-chat [open|start|stop|restart|status|logs]"
+    exit 1
+    ;;
+esac
