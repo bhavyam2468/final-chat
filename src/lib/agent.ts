@@ -5,8 +5,11 @@ import { conversations, messages, Part } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { WS, treeText, resolvePath, readText, isImage, mimeOf, ensureWorkspace } from "./workspace";
 import { getSettings, Settings } from "./settings";
-import { CORE_TOOLS, execTool, ToolDef, ToolCtx } from "./tools";
-import { mcpTools } from "./mcp";
+import { toolDefs, execTool, ToolDef, ToolCtx, ConvState, Pack, todoReminder } from "./tools";
+import { mcpTools, readServers } from "./mcp";
+import { skillsIndex, findSkill, skillMeta, skillAllowed } from "./skills";
+import { varsFor, varsIn } from "./credentials";
+import { lintFiles } from "./harness/check";
 import { mode as execMode } from "./exec";
 import { est, estMsg, endpoint, headers, normalize, OAMsg } from "./llm";
 import { chain, assistantText, compactTools, compactWeb, compactHistory, turnReport, Msg, Conv, CtxReport, CtxSection } from "./context";
@@ -14,29 +17,25 @@ import { canvasPath } from "./shared";
 
 export type Emit = (e: Record<string, unknown>) => void;
 
-async function skillsIndex() {
-  const dir = path.join(WS, "system/skills");
-  const out: string[] = [];
-  for (const d of (await fs.readdir(dir).catch(() => [] as string[])).sort()) {
-    const txt = await fs.readFile(path.join(dir, d, "SKILL.md"), "utf8").catch(() => "");
-    const desc = txt.match(/description:\s*(.+)/)?.[1] || "";
-    if (txt) out.push(`- ${d}: ${desc}`);
-  }
-  return out.join("\n");
-}
-
 function envText(st: Settings) {
-  const m = execMode(st);
+  const sb = execMode(st, false), host = execMode(st, true);
   const files = { sandbox: "workspace only", home: "workspace + user home (~/path or absolute paths under ~)", full: "entire disk (absolute paths)" }[st.access];
-  const term = m.sandboxed ? `sandboxed${m.isolated ? " (isolated)" : ""}, cwd=workspace` : `user's real host shell, cwd=${m.cwd === WS ? "workspace" : "~"}`;
-  return `# Access\nFiles: ${files}. Terminal: ${term}. sudo: ${!m.sandboxed && st.sudo ? "allowed (use only when required, say why)" : "disabled"}.`;
+  const term = st.terminal === "host"
+    ? `shell = your sandbox${sb.isolated ? " (isolated)" : ""}, cwd=workspace. host_shell = the user's own machine as the user, cwd=${host.cwd === WS ? "workspace" : "~"} (their installed toolchains and logins, e.g. gh, git, docker, SDKs).`
+    : `shell = your sandbox${sb.isolated ? " (isolated)" : ""}, cwd=workspace. The user's own terminal is off.`;
+  return `# Access\nFiles: ${files}. Terminal: ${term} sudo: ${st.terminal === "host" && st.sudo ? "allowed in host_shell (only when required, say why)" : "disabled"}. OS: ${process.platform}.`;
+}
+/** Tool packs active for a conversation (auto: large windows get everything up front, small ones load on demand). */
+export function packsFor(st: Settings, state: ConvState | null | undefined): Pack[] {
+  if (st.toolLoading === "all" || (st.toolLoading === "auto" && st.contextTokens >= 48000)) return ["dev"];
+  return state?.packs || [];
 }
 
 type Sys = { text: string; sections: CtxSection[] };
 async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number): Promise<Sys> {
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
   const memory = (await fs.readFile(path.join(WS, "system/AGENTS.md"), "utf8").catch(() => "")).trim();
-  const skills = `# Skills (skill_open to load)\n${await skillsIndex()}`;
+  const skills = `# Skills (skill_open to load)\n${await skillsIndex(st)}`;
   const tree = `# Workspace tree\n${await treeText()}`;
   const items: { path: string; tokens: number }[] = [];
   let files = "";
@@ -109,9 +108,13 @@ export async function buildHistory(conv: Conv, all: Msg[], leafId: string, threa
   return { msgs: out, tokens: size(out), summaryTokens: size(pre), toolTokens: Math.max(0, toolTok), path: path_, trimmed };
 }
 
-function allTools(mcp: Awaited<ReturnType<typeof mcpTools>>): ToolDef[] {
+async function mcpFor(st: Settings) {
+  const servers = await readServers();
+  return mcpTools(varsFor(st, varsIn(Object.values(servers).filter((c) => c.enabled))));
+}
+function allTools(st: Settings, packs: Pack[], mcp: Awaited<ReturnType<typeof mcpTools>>): ToolDef[] {
   return [
-    ...CORE_TOOLS,
+    ...toolDefs(st, packs),
     ...mcp.tools.map((t) => ({ type: "function" as const, function: { name: `mcp__${t.server}__${t.name}`.slice(0, 64), description: (t.description || "").slice(0, 300), parameters: (t.inputSchema as Record<string, unknown>) || { type: "object", properties: {} } } })),
   ];
 }
@@ -125,8 +128,8 @@ export async function contextReport(convId: string, leafId: string | null, threa
   const [conv] = await db.select().from(conversations).where(eq(conversations.id, convId));
   if (!conv) throw new Error("no conversation");
   const all = await db.select().from(messages).where(eq(messages.conversationId, conv.id));
-  const mcp = await mcpTools({ ...st.secrets }).catch(() => ({ tools: [], errors: [] }));
-  const tools = allTools(mcp);
+  const mcp = await mcpFor(st).catch(() => ({ tools: [], errors: [] }));
+  const tools = allTools(st, packsFor(st, conv.state), mcp);
   const sys = await buildSystem(conv, st, [...new Set(mcp.tools.map((t) => t.server))], budget);
   const toolDefTok = est(JSON.stringify(tools));
   const leaf = leafId || [...all].filter((m) => (m.threadOf || null) === threadOf).sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.id || null;
@@ -164,17 +167,19 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     }
   }
 
-  const mcp = await mcpTools({ ...st.secrets });
+  const mcp = await mcpFor(st);
   if (mcp.errors.length) emit({ t: "notice", text: "MCP: " + mcp.errors.join("; ") });
-  const tools = allTools(mcp);
+  let state: ConvState = conv.state || {};
+  let tools = allTools(st, packsFor(st, state), mcp);
   const mcpNames = [...new Set(mcp.tools.map((t) => t.server))];
-  const toolDefTok = est(JSON.stringify(tools));
+  let toolDefTok = est(JSON.stringify(tools));
 
   const parts: Part[] = [];
   const pushText = (d: string) => { const l = parts[parts.length - 1]; if (l?.type === "text") l.text += d; else parts.push({ type: "text", text: d }); };
   const reload = async () => { all = await db.select().from(messages).where(eq(messages.conversationId, conv.id)); [conv] = await db.select().from(conversations).where(eq(conversations.id, conv.id)); };
   const ctx: ToolCtx = {
-    settings: st, conversationId: conv.id, pinned: conv.context, emit,
+    settings: st, conversationId: conv.id, pinned: conv.context, emit, state,
+    setState: async (next: ConvState) => { state = next; ctx.state = next; conv = { ...conv, state: next }; await db.update(conversations).set({ state: next }).where(eq(conversations.id, conv.id)); },
     setPinned: async (p: string[]) => { ctx.pinned = p; conv = { ...conv, context: p }; await db.update(conversations).set({ context: p }).where(eq(conversations.id, conv.id)); emit({ t: "context", context: p }); },
     compact: async (scope = "history", keepLast = 4) => {
       const pathNow = chain(all, parentId);
@@ -198,8 +203,26 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   if (hist.trimmed) emit({ t: "notice", text: `Oldest ${hist.trimmed} messages are outside the context window. /compact keeps them as a summary.` });
   const loopMsgs: OAMsg[] = [];
 
+  // Slash workflows: "/research topic" preloads that skill for this request (saves a round trip for small models).
+  const slash = parent?.role === "user" ? parent.content.match(/^\/([\w-]+)\b/) : null;
+  if (slash) {
+    const sk = await findSkill(slash[1]);
+    if (sk && skillAllowed(sk, st)) {
+      const last = hist.msgs[hist.msgs.length - 1];
+      const body = sk.text.replace(/^---[\s\S]*?---\n/, "");
+      const add = `\n\n<skill name="${sk.name}">\n${body}\n</skill>`;
+      if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
+      if (/\bdev\b/.test(skillMeta(sk.text).tools) && !(state.packs || []).includes("dev")) await ctx.setState({ ...state, packs: [...(state.packs || []), "dev"] });
+    }
+  }
+
+  const touched = new Set<string>();
+  let qualityRounds = 0;
+  const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   try {
-    for (let step = 0; step < 12; step++) {
+    for (let step = 0; step < maxSteps(); step++) {
+      tools = allTools(st, packsFor(st, state), mcp);
+      toolDefTok = est(JSON.stringify(tools));
       const res = await fetch(endpoint(st), {
         method: "POST", signal, headers: headers(st),
         body: JSON.stringify({ model: st.model, stream: true, messages: [{ role: "system", content: sys.text }, ...hist.msgs, ...loopMsgs], tools }),
@@ -237,25 +260,67 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         }
       }
       const valid = calls.filter(Boolean);
-      if (!valid.length) break;
+      if (!valid.length) {
+        // Post-turn quality guard: design/slop lint on UI files built this turn; "fix" gets one repair round.
+        const ui = [...touched].filter((p) => /\.(html?|css|jsx|tsx|vue|svelte|ui)$/i.test(p));
+        if (st.quality !== "off" && ui.length && qualityRounds < 1 && !signal.aborted) {
+          qualityRounds++;
+          const report = await lintFiles(ui.map((p) => ({ path: p, abs: resolvePath(p, st.access) })));
+          if (report) {
+            const id = `qc_${Date.now()}`;
+            const part: Part = { type: "tool", id, name: "quality_check", args: { files: ui }, result: report, ok: false };
+            parts.push(part);
+            emit({ t: "tool", id, name: part.name, args: part.args });
+            emit({ t: "toolResult", id, result: report, ok: false });
+            if (st.quality === "fix") {
+              loopMsgs.push({ role: "assistant", content: text || "(done)" });
+              loopMsgs.push({ role: "user", content: `[Automatic design check, not from the user] Issues in files you wrote:\n${report}\nFix them now with fs_edit, then reply with one short line saying what changed.` });
+              continue;
+            }
+          }
+        }
+        break;
+      }
       loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
+      const images: string[] = [];
+      let stop = false;
       for (const c of valid) {
         let args: Record<string, unknown> = {};
-        try { args = JSON.parse(c.function.arguments || "{}"); } catch {}
+        let bad = "";
+        try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
         const part: Part = { type: "tool", id: c.id, name: c.function.name, args };
         parts.push(part);
         emit({ t: "tool", id: c.id, name: part.name, args });
-        const out = await execTool(c.function.name, args, ctx);
+        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(c.function.name, args, ctx);
+        if (out.ok && /^fs_(write|edit|insert)$/.test(c.function.name) && typeof args.path === "string") touched.add(args.path);
+        if (out.images?.length) images.push(...out.images);
+        if (out.stop) stop = true;
         Object.assign(part, { result: out.result, ok: out.ok, meta: out.meta });
         emit({ t: "toolResult", id: c.id, result: out.result.slice(0, 20000), ok: out.ok, meta: out.meta });
         loopMsgs.push({ role: "tool", tool_call_id: c.id, content: out.result });
       }
+      if (stop) break;
+      // Recitation: keep the open plan at the end of context (only while a checklist exists).
+      const rem = todoReminder(state.todo);
+      const lastTool = loopMsgs[loopMsgs.length - 1];
+      if (rem && lastTool.role === "tool" && typeof lastTool.content === "string" && !valid.some((c) => c.function.name === "todo")) lastTool.content += rem;
+      // Vision: tool results are text-only in the OpenAI format, so images follow as a user message.
+      if (images.length && st.vision !== false) {
+        const content: { type: string; text?: string; image_url?: { url: string } }[] = [{ type: "text", text: `[images from ${valid.map((c) => c.function.name).join(", ")}]` }];
+        for (const img of images.slice(0, 3)) {
+          try { const abs = resolvePath(img, st.access); content.push({ type: "image_url", image_url: { url: `data:${mimeOf(abs)};base64,${(await fs.readFile(abs)).toString("base64")}` } }); } catch {}
+        }
+        loopMsgs.push({ role: "user", content: content as OAMsg["content"] });
+      }
       const names = valid.map((c) => c.function.name);
       if (names.some((n) => n === "context_add" || n === "context_remove")) sys = await buildSystem(conv, st, mcpNames, budget);
       if (names.includes("compact_context")) hist = await buildHistory(conv, all, parentId, threadOf, st, budget - est(sys.text) - toolDefTok);
-      // keep in-turn tool loop bounded: fold oversized earlier tool results of this turn
+      // keep in-turn tool loop bounded: fold oversized earlier tool results and drop old images of this turn
       const loopTok = loopMsgs.reduce((a, m) => a + estMsg(m), 0);
-      if (loopTok > budget * 0.45) for (const m of loopMsgs.slice(0, -valid.length * 2)) if (m.role === "tool" && typeof m.content === "string" && m.content.length > 600) m.content = m.content.slice(0, 500) + "\n… (folded to save context; re-run the tool if needed)";
+      if (loopTok > budget * 0.45) for (const m of loopMsgs.slice(0, -valid.length * 2 - 1)) {
+        if (m.role === "tool" && typeof m.content === "string" && m.content.length > 600) m.content = m.content.slice(0, 500) + "\n… (folded to save context; re-run the tool if needed)";
+        if (m.role === "user" && Array.isArray(m.content)) m.content = "[earlier screenshot/image removed to save context]";
+      }
     }
   } catch (e) {
     if (!signal.aborted) { const msg = e instanceof Error ? e.message : String(e); pushText(`\n\n> ${msg}`); emit({ t: "error", text: msg }); }

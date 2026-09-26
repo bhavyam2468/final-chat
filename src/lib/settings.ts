@@ -18,6 +18,14 @@ export type Settings = {
   /** Allow sudo/su/doas in host terminal. Uses SUDO_PASSWORD secret via `sudo -S` if set, else `sudo -n`. */
   sudo: boolean;
   secrets: Record<string, string>;
+  /** Model accepts images (view_image, browser screenshots, attachments). */
+  vision: boolean;
+  /** Post-turn design/slop check on files the agent built: off, warn (show findings), fix (one automatic repair round). */
+  quality: "off" | "warn" | "fix";
+  /** auto = dev tools (processes, browser, checks) load on demand below 48k context, always above; all; lean = on demand. */
+  toolLoading: "auto" | "all" | "lean";
+  /** Developer mode: built-in mock model + sample data. Also DEV_MODE=1 or window.__dev.enable() in the console. */
+  dev: boolean;
 };
 export type Access = "sandbox" | "home" | "full";
 
@@ -44,6 +52,10 @@ export function defaults(): Settings {
     terminal: (process.env.TERMINAL_MODE as "host") || "sandbox",
     sudo: process.env.ALLOW_SUDO === "1",
     secrets: {},
+    vision: process.env.LLM_VISION !== "0",
+    quality: (process.env.QUALITY_GUARD as Settings["quality"]) || "fix",
+    toolLoading: "auto",
+    dev: process.env.DEV_MODE === "1",
   };
 }
 
@@ -56,6 +68,10 @@ export function clampAccess(s: Settings): Settings {
   if (s.terminal !== "host") s.terminal = "sandbox";
   s.sudo = s.sudo === true && s.terminal === "host";
   if (hostLocked()) { s.access = "sandbox"; s.terminal = "sandbox"; s.sudo = false; }
+  if (!["off", "warn", "fix"].includes(s.quality)) s.quality = "fix";
+  if (!["auto", "all", "lean"].includes(s.toolLoading)) s.toolLoading = "auto";
+  s.vision = s.vision !== false;
+  s.dev = s.dev === true || process.env.DEV_MODE === "1";
   return s;
 }
 

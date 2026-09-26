@@ -21,6 +21,7 @@ Science: x-math[tex|body inline] · $..$ / $$..$$ in any text renders KaTeX
 Time: x-timer[id seconds mode=down|up autostart] (.start() .stop() .toggle() .reset(s); .left .elapsed .running; events tick, done) · x-stopwatch · x-clock[time|seconds|for=timerId]
 Inputs (all with name= are reactive vars): input(text|number|range|date|color|checkbox|radio) select textarea button[tone=accent|success|danger|ghost]
  x-segmented[name options value] · x-toggle[name checked] · x-rating[name max] · x-sortable[name] (body lines) · x-sketch[name] (value = PNG data URL) · x-upload[name accept multiple dir] (value = workspace path)
+ x-todo[name title add] body lines "- [ ] task" / "- [x] done" (user ticks; add = user can append); .value [{text,done}] .done .total. For plans/checklists the user works through, not for your own progress (that is the todo tool)
  x-choice[name options="A|B|C" answer multi reveal lock layout=grid] or option lines as body; .value .index .correct .answered; reveal shows right/wrong
 Media: x-image[src caption] x-video[src] x-audio[src] x-youtube[id|url start] x-embed[src height] x-map[lat lng zoom markers="lat,lng,label|…"]. Workspace paths work as src.
 State: <x-state score="0" done="false" picks="{}"> (JSON-parsed initial values)
@@ -31,7 +32,7 @@ each="item in list" / "(q, i) in qs" / "n in 5" (repeats element; locals item,i)
 @click="stmts" (@input @change @submit @done @tick …; event, el available; async ok) · on="click:fnName" (JS or Python function)
 Scope: named inputs, x-state, <script type="data" name="qs">[json]</script> vars, element ids (#t → t.start()), assignments create state (`score = score + 1`).
 Helpers: fmt(sec)→mm:ss sum avg count(arr,fn) pct(a,b) round(x,d) clamp range(n) pick shuffle len now date time json + Math.*
- sendToLm(obj|str) → <ui_event> to you (only on explicit user action) · saveIn(path, text|obj) → workspace file · py(code)→stdout (server python)
+ sendToLm(obj|str, "Label"|{label,prompt}) → <ui_event> to you (only on explicit user action; label = what chat shows, prompt = your instruction for the reply). No-JS: <form lm="Submit answers" lm-prompt="Grade and explain mistakes"> sends its inputs; <button lm="Explain" lm-prompt="…"> sends inputs of its card/section · saveIn(path, text|obj) → workspace file · py(code)→stdout (server python)
  form(sel?) → {name:value} · notify(text) · every(ms,fn) after(ms,fn) · open(pathOrUrl) → canvas · state(k,init)
 
 ## Logic

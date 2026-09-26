@@ -147,10 +147,19 @@ Any element with `name=` becomes a reactive variable of the same name.
 |---|---|
 | Formatting and math | `fmt(sec)` (mm:ss), `sum`, `avg`, `count(arr, fn)`, `pct(a, b)`, `round(x, d)`, `clamp` |
 | Collections and time | `range(n)`, `pick`, `shuffle`, `len`, `now`, `date`, `time`, `json` |
-| Chat and workspace | `sendToLm(obj|str)`, `saveIn(path, text|obj)`, `py(code)` |
+| Chat and workspace | `sendToLm(obj|str, label|{label, prompt})`, `saveIn(path, text|obj)`, `py(code)` |
 | Page utilities | `form(sel?)`, `notify(text)`, `every(ms, fn)`, `after(ms, fn)`, `open(pathOrUrl)`, `state(k, init)`, `$`, `$$` |
 
-`sendToLm` posts a `<ui_event>` into the chat as the user's next turn. `py` runs server-side Python in the workspace and returns stdout.
+`sendToLm` posts a `<ui_event>` into the chat as the user's next turn. The chat shows `label` as a compact card (fields collapsible) and passes `prompt` to the model as the instruction for its reply, so a button can invoke the AI with custom context:
+
+```html
+<form lm="Check my essay" lm-prompt="Grade against the rubric; list the 3 biggest fixes">
+  <textarea name="essay"></textarea><button>Submit</button>
+</form>
+<button lm="Explain this setting" lm-prompt="Explain what a={{a}} does to the curve">Why?</button>
+```
+
+`form[lm]` sends its named inputs on submit; `button[lm]` outside a form sends the inputs of its nearest card/section/slide. No script needed. `py` runs server-side Python in the workspace and returns stdout.
 
 ## Logic
 
@@ -184,7 +193,7 @@ Any element with `name=` becomes a reactive variable of the same name.
 
 ## Composition example: a timed mock test
 
-The model builds this from primitives: data, a deck of slides generated with `each`, `x-choice` with answers, a timer that submits on `done`, and a result section with stats, a stacked chart and per-question cards. The same pieces make flashcards, surveys, lab worksheets or onboarding flows. The runnable version is the "jee mock test" scenario in `scripts/mock-llm.mjs`.
+The model builds this from primitives: data, a deck of slides generated with `each`, `x-choice` with answers, a timer that submits on `done`, and a result section with stats, a stacked chart and per-question cards. The same pieces make flashcards, surveys, lab worksheets or onboarding flows. The runnable version is the "jee mock test" scenario in `dev/mock-llm.mjs` (developer mode: `__dev.enable(); __dev.mock()`).
 
 ```html
 <canvas title="JEE Main mock 1" dock>

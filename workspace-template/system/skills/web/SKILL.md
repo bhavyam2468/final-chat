@@ -1,8 +1,10 @@
 ---
 name: web
-description: Web search and page fetching via Firecrawl; research strategy and citation.
+description: Web search and page fetching via Firecrawl; query craft, source quality, citation. Deep research → skill research.
 ---
-- web_search(query,limit=5): returns title,url,snippet. Specific queries; include year for recent topics.
-- web_fetch(url): markdown of a page (truncated ~12k chars). Fetch only the 1-2 most relevant results.
-- Budget: <=3 searches and <=2 fetches per turn unless user asks for deep research.
-- Cite as [1](url). Sources appear in the Sources panel automatically.
+- web_search(query, limit≤5) → title, url, snippet. web_fetch(url) → page markdown (~12k chars).
+- Queries: specific nouns + version/year ("vite 7 config server.host"), official site names ("site:docs.python.org"), exact error strings in quotes.
+- Source order: official docs/specs/repos > papers > reputable press > blogs/forums. Check dates; prefer the newest authoritative source for versions and APIs.
+- Snippets are leads, not evidence: web_fetch before relying on a detail.
+- Budget per normal turn: ≤3 searches, ≤2 fetches. After extracting facts, compact_context(scope="web").
+- Cite inline [n](url) right after the claim. If sources disagree, say so.

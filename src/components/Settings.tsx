@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Plus } from "lucide-react";
+import { Mcp, Skills } from "./Extensions";
 
-type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; secrets: Record<string, string> };
+type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
 type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
@@ -12,22 +13,19 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
   const [s, setS] = useState<S | null>(null);
   const [presets, setPresets] = useState<Record<string, { baseUrl: string; model: string; contextTokens?: number }>>({});
   const [servers, setServers] = useState<Record<string, Srv>>({});
-  const [skills, setSkills] = useState<{ name: string; description: string }[]>([]);
-  const [reg, setReg] = useState<{ name: string; description: string; pkg: { registry: string; id: string } | null; url: string | null }[]>([]);
-  const [q, setQ] = useState(""); const [skillSrc, setSkillSrc] = useState(""); const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState("");
   const [secretK, setSecretK] = useState(""); const [secretV, setSecretV] = useState("");
-  const [newSrv, setNewSrv] = useState("");
   const [models, setModels] = useState<{ id: string; name?: string; contextWindow?: number; status?: string }[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then((j) => { setS(j.settings); setPresets(j.presets); setCaps(j.caps || null); });
     fetch("/api/mcp").then((r) => r.json()).then(setServers);
-    fetch("/api/skills").then((r) => r.json()).then(setSkills);
   }, []);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && onClose(); addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, [onClose]);
 
   const saveS = async (patch: Partial<S>) => { const r = await fetch("/api/settings", { method: "PUT", body: JSON.stringify(patch) }).then((r) => r.json()); setS(r.settings); flash("Saved"); };
+  const reloadSrv = () => fetch("/api/mcp").then((r) => r.json()).then(setServers);
   const saveSrv = async (next: Record<string, Srv>) => { setServers(next); await fetch("/api/mcp", { method: "PUT", body: JSON.stringify(next) }); flash("Saved"); };
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 1400); };
 
@@ -75,14 +73,7 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
               <div className="field">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span>Model</span>
-                  <button
-                    type="button"
-                    style={{ fontSize: 11, padding: "2px 8px", cursor: "pointer", background: "var(--card-border, #333)", border: "none", borderRadius: 4, color: "var(--fg)" }}
-                    onClick={fetchModels}
-                    disabled={loadingModels}
-                  >
-                    {loadingModels ? "Fetching…" : "Fetch models"}
-                  </button>
+                  <button type="button" className="mini" onClick={fetchModels} disabled={loadingModels}>{loadingModels ? "Fetching…" : "Fetch models"}</button>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <input
@@ -133,6 +124,8 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
               </div>
             </div>
             {F("Context window (tokens)", "contextTokens", "number")}
+            <div className="srv"><div className="t">Vision<small>{s.vision ? "The model sees images: uploads, view_image, screenshots from browser and checks." : "Off: images are described by path only. Use for text-only models."}</small></div>
+              <button className={"sw" + (s.vision ? " on" : "")} aria-label="Vision" onClick={() => saveS({ vision: !s.vision })} /></div>
             <label className="field">Theme<select value={theme} onChange={(e) => setTheme(e.target.value)}><option value="dark">Dark</option><option value="light">Light</option></select></label>
           </>}
           {tab === "tools" && <>
@@ -143,7 +136,14 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
             <small style={{ color: "var(--muted)", fontSize: 11, marginTop: -6, marginBottom: 8, display: "block" }}>
               Hybrid routing: standard scrape uses local Firecrawl. Cloud API key is used for Cloudflare/anti-bot bypass, AI extraction, and search fallback.
             </small>
-            <div className="field">Secrets for MCP (${"{NAME}"} in servers.json)
+            <div className="grid2">
+              <label className="field">Quality guard<select value={s.quality} onChange={(e) => saveS({ quality: e.target.value as S["quality"] })}>
+                <option value="fix">Check and repair</option><option value="warn">Check only</option><option value="off">Off</option></select></label>
+              <label className="field">Developer tools<select value={s.toolLoading} onChange={(e) => saveS({ toolLoading: e.target.value as S["toolLoading"] })}>
+                <option value="auto">Auto (on demand below 48k context)</option><option value="lean">On demand</option><option value="all">Always loaded</option></select></label>
+            </div>
+            <small className="note">Quality guard lints UI files the agent writes (generic AI styling, broken syntax) and lets it repair once. Developer tools (processes, browser, checks) load when a build, debug or design skill opens.</small>
+            <div className="field">Secrets: name and value, used as ${"{NAME}"} in MCP configs
               {Object.keys(s.secrets).map((k) => <div key={k} className="srv"><span className="t">{k}</span><small>••••</small></div>)}
               <div className="grid2"><input value={secretK} onChange={(e) => setSecretK(e.target.value.toUpperCase())} aria-label="Secret name" /><div style={{ display: "flex", gap: 6 }}><input type="password" value={secretV} onChange={(e) => setSecretV(e.target.value)} aria-label="Secret value" style={{ flex: 1 }} /><button className="ib" aria-label="Add secret" onClick={() => { if (secretK && secretV) { saveS({ secrets: { [secretK]: secretV } }); setSecretK(""); setSecretV(""); } }}><Plus /></button></div></div>
             </div>
@@ -160,33 +160,8 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
               <button className={"sw" + (s.sudo ? " on" : "")} disabled={s.terminal !== "host"} aria-label="Allow sudo" onClick={() => { if (!s.sudo && !confirm("Let the agent run commands as root?")) return; saveS({ sudo: !s.sudo }); }} /></div>
             {caps && <small className="note">{caps.soffice ? "LibreOffice found: office files preview as pages." : "Install LibreOffice for page-accurate .doc/.ppt/.odp previews."}</small>}
           </>}
-          {tab === "mcp" && <>
-            {Object.entries(servers).map(([name, c]) => (
-              <div key={name} className="srv"><div className="t">{name}<small>{c.url || [c.command, ...(c.args || [])].join(" ")}</small></div>
-                <button className="ib sm" aria-label="Remove" onClick={() => { const n = { ...servers }; delete n[name]; saveSrv(n); }}><X /></button>
-                <button className={"sw" + (c.enabled ? " on" : "")} aria-label={`Toggle ${name}`} onClick={() => saveSrv({ ...servers, [name]: { ...c, enabled: !c.enabled } })} /></div>
-            ))}
-            <div style={{ display: "flex", gap: 6 }}>
-              <input className="search" style={{ margin: 0, flex: 1 }} value={newSrv} onChange={(e) => setNewSrv(e.target.value)} aria-label="Add server: name = command args… or URL" />
-              <button className="ib" aria-label="Add server" onClick={() => { const m = newSrv.match(/^\s*([\w-]+)\s*=\s*(.+)$/); if (!m) return; const v = m[2].trim(); saveSrv({ ...servers, [m[1]]: /^https?:/.test(v) ? { url: v, enabled: true } : { command: v.split(/\s+/)[0], args: v.split(/\s+/).slice(1), enabled: true } }); setNewSrv(""); }}><Plus /></button>
-            </div>
-            <input className="search" style={{ margin: 0, width: "100%" }} value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search MCP registry" onKeyDown={(e) => { if (e.key === "Enter") fetch("/api/mcp/registry?q=" + encodeURIComponent(q)).then((r) => r.json()).then((j) => setReg(Array.isArray(j) ? j : [])); }} />
-            {reg.map((r) => (
-              <div key={r.name} className="srv"><div className="t">{r.name}<small>{r.description}</small></div>
-                <button className="ib sm" aria-label="Install" onClick={() => {
-                  const key = r.name.split("/").pop()!.replace(/[^\w-]/g, "-");
-                  const cfg: Srv = r.url ? { url: r.url, enabled: false } : r.pkg?.registry === "pypi" ? { command: "uvx", args: [r.pkg.id], enabled: false } : r.pkg?.registry === "oci" ? { command: "docker", args: ["run", "-i", "--rm", r.pkg.id], enabled: false } : { command: "npx", args: ["-y", r.pkg?.id || r.name], enabled: false };
-                  saveSrv({ ...servers, [key]: cfg });
-                }}><Plus /></button></div>
-            ))}
-          </>}
-          {tab === "skills" && <>
-            {skills.map((k) => <div key={k.name} className="srv"><div className="t">{k.name}<small>{k.description}</small></div></div>)}
-            <div style={{ display: "flex", gap: 6 }}>
-              <input className="search" style={{ margin: 0, flex: 1 }} value={skillSrc} onChange={(e) => setSkillSrc(e.target.value)} aria-label="GitHub skill URL or owner/repo/path" />
-              <button className="ib" aria-label="Install skill" onClick={async () => { const r = await fetch("/api/skills", { method: "POST", body: JSON.stringify({ source: skillSrc }) }).then((r) => r.json()); flash(r.error || "Installed " + r.name); setSkillSrc(""); fetch("/api/skills").then((r) => r.json()).then(setSkills); }}><Plus /></button>
-            </div>
-          </>}
+          {tab === "mcp" && <Mcp servers={servers} saveSrv={saveSrv} reload={reloadSrv} saveSecret={(k, v) => saveS({ secrets: { [k]: v } })} flash={flash} />}
+          {tab === "skills" && <Skills flash={flash} />}
         </div>
       </div>
     </div>

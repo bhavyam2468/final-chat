@@ -41,6 +41,13 @@ export async function ensureWorkspace() {
   seeded = true;
 }
 
+/** Python interpreter: PYTHON_BIN → the app's .venv (created by setup.sh; avoids PEP 668 "externally managed" errors) → python3. */
+// Runtime-only path built with Array.join: the bundler's file tracer follows path.join(process.cwd(), …) and
+// fails on .venv/bin/python (a symlink outside the project).
+const VENV_DIR = () => [process.cwd(), process.env.VENV_DIR || ".venv"].join("/");
+export const VENV = () => { const d = VENV_DIR(); return fss.existsSync([d, "bin", "python"].join("/")) ? d : ""; };
+export const PY = () => process.env.PYTHON_BIN || (VENV() ? [VENV(), "bin", "python"].join("/") : "python3");
+
 export type AccessMode = "sandbox" | "home" | "full";
 export const HOME = process.env.HOME || os.homedir();
 
@@ -118,7 +125,7 @@ export const mimeOf = (p: string) => MIME[path.extname(p).slice(1).toLowerCase()
 export const isImage = (p: string) => mimeOf(p).startsWith("image/") && !p.endsWith(".svg");
 
 function py(code: string, arg: string): Promise<string> {
-  return new Promise((res) => execFile("python3", ["-c", code, arg], { timeout: 60000, maxBuffer: 20e6 }, (e, out) => res(e ? "" : out)));
+  return new Promise((res) => execFile(PY(), ["-c", code, arg], { timeout: 60000, maxBuffer: 20e6 }, (e, out) => res(e ? "" : out)));
 }
 
 /** Extract readable text from any file for context. */

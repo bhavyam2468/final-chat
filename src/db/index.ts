@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS messages (
   content text NOT NULL DEFAULT '', parts jsonb NOT NULL DEFAULT '[]'::jsonb, attachments jsonb NOT NULL DEFAULT '[]'::jsonb,
   quote text, created_at timestamp NOT NULL DEFAULT now());
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS compact text;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS state jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS messages_conv_idx ON messages (conversation_id);
 CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value jsonb NOT NULL);
 `;

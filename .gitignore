@@ -12,3 +12,6 @@ Thumbs.db
 
 # Embedded database (PGlite) when DATABASE_URL is unset
 /data
+
+# Python venv for run_python / previews (setup.sh)
+/.venv

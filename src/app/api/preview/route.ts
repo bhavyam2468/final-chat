@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
-import { resolvePath, rel, WS, mimeOf, ensureWorkspace } from "@/lib/workspace";
+import { resolvePath, rel, WS, mimeOf, ensureWorkspace, isImage, readText, PY } from "@/lib/workspace";
 import { getSettings } from "@/lib/settings";
 import { runRaw, soffice } from "@/lib/exec";
 
@@ -19,7 +19,7 @@ async function cacheDir(abs: string, tag: string) {
   return dir;
 }
 async function py(code: string, timeout = 60000) {
-  const r = await runRaw("python3", ["-c", code], WS, timeout);
+  const r = await runRaw(PY(), ["-c", code], WS, timeout);
   if (r.code !== 0) throw new Error(r.out.trim().split("\n").slice(-3).join(" ").slice(0, 400));
   return JSON.parse(r.out.trim().split("\n").pop() || "{}");
 }
@@ -150,6 +150,20 @@ export async function GET(req: NextRequest) {
   try { abs = resolvePath(p, (await getSettings()).access); await fs.access(abs); } catch { return J({ error: "Not found: " + p }, 404); }
   const e = ext(abs);
   try {
+    if (as === "card") {
+      // compact summary for inline file cards in chat
+      const st = await fs.stat(abs);
+      const base = { name: path.basename(abs), size: st.size, dir: st.isDirectory(), mime: mimeOf(abs) };
+      if (st.isDirectory()) return J({ ...base, kind: "dir", excerpt: (await fs.readdir(abs)).slice(0, 12).join("\n") });
+      if (isImage(abs) || e === "svg") return J({ ...base, kind: "image" });
+      if (["zip", "tar", "tgz", "gz", "jar", "bz2", "xz"].includes(e)) { const j = await py(ARCH_PY(abs, "list", ""), 30000).catch(() => ({ entries: [] })); const names = (j.entries || []).map((x: { name: string }) => x.name); return J({ ...base, kind: "archive", count: names.length, excerpt: names.slice(0, 8).join("\n") }); }
+      if (["csv", "tsv"].includes(e)) { const rows = parseCsv((await fs.readFile(abs, "utf8")).slice(0, 200000), e === "tsv" ? "\t" : ","); return J({ ...base, kind: "sheet", rows: rows.slice(0, 6), total: rows.length }); }
+      if (["html", "htm", "ui"].includes(e)) return J({ ...base, kind: "page" });
+      if (["mp4", "webm", "mov", "mp3", "wav", "ogg", "m4a"].includes(e)) return J({ ...base, kind: "media" });
+      const text = await readText(abs, 1200);
+      const pages = e === "pdf" ? (text.match(/\[page \d+\]/g) || []).length : undefined;
+      return J({ ...base, kind: ["pdf", "docx", "doc", "odt", "rtf"].includes(e) ? "doc" : ["pptx", "ppt", "odp"].includes(e) ? "slides" : ["xlsx", "xls", "ods"].includes(e) ? "sheet" : "text", pages, excerpt: text.replace(/\[page \d+\]\n?/g, "").slice(0, 600) });
+    }
     if (as === "sheet") {
       if (["csv", "tsv"].includes(e)) {
         const text = (await fs.readFile(abs, "utf8")).slice(0, 8_000_000);

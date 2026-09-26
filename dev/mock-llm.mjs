@@ -2,12 +2,12 @@
 /**
  * Offline OpenAI-compatible mock for UI development and demos (no key, no network).
  * Streams deliberately irregular chunks (1–60 chars, 5–160 ms gaps, bursts) to exercise the streaming renderer.
- *   node scripts/mock-llm.mjs [port=3099]   then LLM_BASE_URL=http://127.0.0.1:3099/v1
- * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, fold/compact, else markdown.
+ *   node dev/mock-llm.mjs [port=3099]   then LLM_BASE_URL=http://127.0.0.1:3099/v1
+ * In the app: developer mode (DEV_MODE=1 or window.__dev.enable()) adds the "mock" provider, served at /api/dev/mock/v1.
+ * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, plan|todo, ask, samples, else markdown.
  */
 import http from "node:http";
 
-const PORT = Number(process.argv[2] || process.env.MOCK_PORT || 3099);
 
 const JEE = String.raw`Built from the pattern of recent JEE Main papers: 6 questions, +4 / −1, one hour. It opens beside the chat so you can ask about any question while you work.
 
@@ -145,6 +145,9 @@ function scenario(messages) {
   if (/jee|mock test/.test(q)) return afterTool ? { text: JEE } : { text: "Checking recent paper patterns.", call: { name: "web_search", args: { query: "JEE Main 2026 question paper pattern physics chemistry maths", limit: 3 } } };
   const open = q.match(/open\s+(\S+)/);
   if (open) return afterTool ? { text: "Opened beside the chat." } : { call: { name: "canvas_open", args: { target: open[1], dock: true } } };
+  if (/samples|files/.test(q)) return { text: "The example files:\n\n[deck.pptx](uploads/samples/deck.pptx)\n\n[budget.xlsx](uploads/samples/budget.xlsx)\n\n[project.zip](uploads/samples/project.zip)\n\n[chart.png](uploads/samples/chart.png)\n\nAsk to open any of them." };
+  if (/plan|todo/.test(q)) return afterTool ? { text: "Plan set. Starting with the data model." } : { text: "Breaking this into steps.", call: { name: "todo", args: { items: [{ text: "Data model", status: "doing" }, { text: "List view", status: "todo" }, { text: "Persistence", status: "todo" }, { text: "Verify in browser", status: "todo" }] } } };
+  if (/\bask\b/.test(q)) return { call: { name: "ask_user", args: { question: "Which stack should the app use?", options: ["Plain HTML/JS", "React + TypeScript", "Electron"] } } };
   if (/graph|plot/.test(q)) return { text: GRAPH };
   if (/chem|molecule|aspirin/.test(q)) return { text: CHEM };
   return { text: MD };
@@ -161,28 +164,42 @@ function chunks(text) {
   return out;
 }
 
-const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url.endsWith("/models")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify({ data: [{ id: "mock" }] })); }
-  if (req.method !== "POST") { res.statusCode = 404; return res.end(); }
-  let body = ""; for await (const c of req) body += c;
-  let j = {}; try { j = JSON.parse(body); } catch {}
+/** Non-streaming completion (compaction/summaries). */
+export function complete(j) {
   const msgs = j.messages || [];
-  if (!j.stream) {
-    const sys = msgs.find((m) => m.role === "system")?.content || "";
-    const text = /summar|compact/i.test(sys + JSON.stringify(msgs.slice(-1))) ? "Goal: practice JEE. Done: mock 1 built (6 q). Facts: +4/−1 marking. Open: analysis of attempt." : "Mock chat";
-    res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: text } }], usage: { prompt_tokens: 10, completion_tokens: 10 } }));
-  }
-  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-  const send = (delta, finish = null) => res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
-  const sc = scenario(msgs);
-  for (const c of chunks(sc.text || "")) { send({ content: c }); await sleep(5 + Math.random() * (Math.random() < 0.1 ? 400 : 160)); }
+  const sys = msgs.find((m) => m.role === "system")?.content || "";
+  const text = /summar|compact/i.test(sys + JSON.stringify(msgs.slice(-1))) ? "Goal: practice JEE. Done: mock 1 built (6 q). Facts: +4/−1 marking. Open: analysis of attempt." : "Mock chat";
+  return { choices: [{ message: { role: "assistant", content: text } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
+}
+
+/** Streaming completion as SSE lines. */
+export async function* stream(j) {
+  const send = (delta, finish = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+  const sc = scenario(j.messages || []);
+  for (const c of chunks(sc.text || "")) { yield send({ content: c }); await sleep(5 + Math.random() * (Math.random() < 0.1 ? 400 : 160)); }
   if (sc.call) {
     const id = "call_" + Date.now();
-    send({ tool_calls: [{ index: 0, id, type: "function", function: { name: sc.call.name, arguments: "" } }] });
-    for (const c of chunks(JSON.stringify(sc.call.args))) { send({ tool_calls: [{ index: 0, function: { arguments: c } }] }); await sleep(20); }
+    yield send({ tool_calls: [{ index: 0, id, type: "function", function: { name: sc.call.name, arguments: "" } }] });
+    for (const c of chunks(JSON.stringify(sc.call.args))) { yield send({ tool_calls: [{ index: 0, function: { arguments: c } }] }); await sleep(20); }
   }
-  send({}, sc.call ? "tool_calls" : "stop");
-  res.end("data: [DONE]\n\n");
-});
-server.listen(PORT, "127.0.0.1", () => console.log(`mock LLM on http://127.0.0.1:${PORT}/v1`));
+  yield send({}, sc.call ? "tool_calls" : "stop");
+  yield "data: [DONE]\n\n";
+}
+
+export const models = () => ({ data: [{ id: "mock" }] });
+
+const direct = process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href;
+if (direct) {
+  const PORT = Number(process.argv[2] || process.env.MOCK_PORT || 3099);
+  const server = http.createServer(async (req, res) => {
+    if (req.method === "GET" && req.url.endsWith("/models")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify(models())); }
+    if (req.method !== "POST") { res.statusCode = 404; return res.end(); }
+    let body = ""; for await (const c of req) body += c;
+    let j = {}; try { j = JSON.parse(body); } catch {}
+    if (!j.stream) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify(complete(j))); }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    for await (const line of stream(j)) res.write(line);
+    res.end();
+  });
+  server.listen(PORT, "127.0.0.1", () => console.log(`mock LLM on http://127.0.0.1:${PORT}/v1`));
+}

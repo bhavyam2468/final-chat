@@ -2,17 +2,19 @@ import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { WS, HOME } from "./workspace";
+import { WS, HOME, PY, VENV } from "./workspace";
+export { PY, VENV };
 import type { Settings } from "./settings";
 
 /**
- * Process execution for the agent (shell, python, pip).
+ * Process execution for the agent (shell, host_shell, python, pip, background processes).
  *
- * terminal = "sandbox": cwd = workspace, HOME = workspace, app secrets stripped from env.
+ * Sandbox (tool `shell`, `run_python`, procs without host): cwd = workspace, HOME = workspace, app secrets stripped.
  *   If bubblewrap (`bwrap`) is installed the process is really isolated: whole system read-only,
  *   /home, /root and the app directory hidden, only the workspace writable, network kept.
  *   Without bwrap it is a soft sandbox (still cwd/HOME/env confined, but not enforced).
- * terminal = "host": your real shell. cwd = $HOME when file access is home/full, else workspace.
+ * Host (tool `host_shell`, procs with host=true; only when Settings → Access → Host terminal is on):
+ *   the user's real shell. cwd = $HOME when file access is home/full, else workspace.
  * sudo: blocked unless settings.sudo is on (host only). With a SUDO_PASSWORD secret, sudo is
  *   wrapped with an askpass helper (`sudo -A`); otherwise `sudo -n` (works with NOPASSWD rules).
  */
@@ -42,7 +44,7 @@ export function usesSudo(cmd: string) {
   return cmd.split(/[;&|\n()`]+|\$\(/).some((seg) => SUDO_WORDS.has(seg.trim().replace(/^(?:\w+=\S*\s+)*/, "").split(/\s+/)[0]));
 }
 
-function baseEnv(sandboxed: boolean): NodeJS.ProcessEnv {
+export function baseEnv(sandboxed: boolean): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, MPLBACKEND: "Agg", PYTHONUNBUFFERED: "1", WORKSPACE: WS };
   if (sandboxed) { for (const k of APP_SECRETS) delete env[k]; env.HOME = WS; }
   return env;
@@ -62,43 +64,64 @@ function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.Pro
 }
 
 /** Wrap argv in bubblewrap when sandboxing is requested and available. */
-function wrap(argv: string[], sandboxed: boolean): string[] {
+
+function wrap(argv: string[], sandboxed: boolean, cwd: string = WS): string[] {
   if (!sandboxed || !hasBwrap()) return argv;
   const app = process.cwd();
   const hide = ["/home", "/root", "/Users"].filter((d) => fs.existsSync(d));
   if (!hide.some((h) => app.startsWith(h + path.sep))) hide.push(app);
   return ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
-    ...hide.flatMap((d) => ["--tmpfs", d]), "--bind", WS, WS, "--chdir", WS, "--setenv", "HOME", WS,
+    ...hide.flatMap((d) => ["--tmpfs", d]), ...(VENV() ? ["--ro-bind", VENV(), VENV()] : []), "--bind", WS, WS, "--chdir", cwd.startsWith(WS) ? cwd : WS, "--setenv", "HOME", WS,
     "--unshare-pid", "--die-with-parent", "--new-session", "--", ...argv];
 }
 
-export function mode(st: Settings) {
-  const sandboxed = st.terminal !== "host";
+/**
+ * Two terminals, two tools: `shell` always runs in the agent's own sandbox; `host_shell` (only offered when the
+ * user switches Host terminal on) runs as the user. `host=true` without the switch is refused, never downgraded.
+ */
+export function mode(st: Settings, host = false) {
+  const sandboxed = !host;
   return { sandboxed, isolated: sandboxed && hasBwrap(), cwd: sandboxed || st.access === "sandbox" ? WS : HOME };
 }
+export const hostDenied = (st: Settings) => (st.terminal !== "host" ? "Host terminal is off. The user can enable it in Settings → Access; until then use shell (sandbox)." : null);
 
-export async function runShell(st: Settings, command: string, timeoutMs = 120000): Promise<RunOut> {
-  const m = mode(st);
-  const env = baseEnv(m.sandboxed);
-  let prelude = "";
-  if (usesSudo(command)) {
-    if (m.sandboxed) return { out: "sudo is unavailable in the sandboxed terminal. The user can switch Terminal to host and enable sudo in Settings → Access.", code: 126 };
-    if (!st.sudo) return { out: "sudo is disabled. Ask the user to enable it in Settings → Access if this is really needed.", code: 126 };
-    const pw = st.secrets?.SUDO_PASSWORD;
-    if (pw) {
-      const helper = path.join(os.tmpdir(), `ws-askpass-${process.pid}.sh`);
-      if (!fs.existsSync(helper)) fs.writeFileSync(helper, '#!/bin/sh\nprintf "%s\\n" "$WS_SUDO_PW"\n', { mode: 0o700 });
-      env.SUDO_ASKPASS = helper; env.WS_SUDO_PW = pw;
-      prelude = 'sudo() { command sudo -A "$@"; }; export -f sudo; ';
-    } else prelude = 'sudo() { command sudo -n "$@"; }; export -f sudo; ';
+/** Shell prelude + env for sudo handling. Returns an error string when sudo is not allowed. */
+export function sudoSetup(st: Settings, command: string, sandboxed: boolean, env: NodeJS.ProcessEnv): { prelude: string } | { error: string } {
+  if (!usesSudo(command)) return { prelude: "" };
+  if (sandboxed) return { error: "sudo is unavailable in the sandbox shell. It needs host_shell with Settings → Access → Allow sudo." };
+  if (!st.sudo) return { error: "sudo is disabled. Ask the user to enable it in Settings → Access if this is really needed." };
+  const pw = st.secrets?.SUDO_PASSWORD;
+  if (pw) {
+    const helper = path.join(os.tmpdir(), `ws-askpass-${process.pid}.sh`);
+    if (!fs.existsSync(helper)) fs.writeFileSync(helper, '#!/bin/sh\nprintf "%s\\n" "$WS_SUDO_PW"\n', { mode: 0o700 });
+    env.SUDO_ASKPASS = helper; env.WS_SUDO_PW = pw;
+    return { prelude: 'sudo() { command sudo -A "$@"; }; export -f sudo; ' };
   }
-  const [cmd, ...args] = wrap(["bash", "-lc", prelude + command], m.sandboxed);
-  return spawnRun(cmd, args, { cwd: m.cwd, env, timeout: timeoutMs });
+  return { prelude: 'sudo() { command sudo -n "$@"; }; export -f sudo; ' };
 }
 
-export async function runPython(st: Settings | null, code: string, timeoutMs = 120000): Promise<RunOut> {
-  const sandboxed = st ? st.terminal !== "host" : true;
-  const [cmd, ...args] = wrap(["python3", "-"], sandboxed);
+/** argv + spawn options for a bash command in the chosen terminal (shared by one-shot runs and background processes). */
+export function shellSpawn(st: Settings, command: string, host: boolean, cwd?: string) {
+  const m = mode(st, host);
+  const env = baseEnv(m.sandboxed);
+  const s = sudoSetup(st, command, m.sandboxed, env);
+  if ("error" in s) return { error: s.error };
+  const dir = cwd ? cwd : m.cwd;
+  const [cmd, ...args] = wrap(["bash", "-lc", s.prelude + command], m.sandboxed, dir);
+  return { cmd, args, env, cwd: dir };
+}
+
+export async function runShell(st: Settings, command: string, timeoutMs = 120000, host = false, cwd?: string): Promise<RunOut> {
+  if (host && hostDenied(st)) return { out: hostDenied(st)!, code: 126 };
+  const sp = shellSpawn(st, command, host, cwd);
+  if ("error" in sp) return { out: sp.error!, code: 126 };
+  return spawnRun(sp.cmd, sp.args, { cwd: sp.cwd, env: sp.env, timeout: timeoutMs });
+}
+
+/** run_python and Blocks py() always use the sandbox; host Python goes through host_shell. */
+export async function runPython(_st: Settings | null, code: string, timeoutMs = 120000): Promise<RunOut> {
+  const sandboxed = true;
+  const [cmd, ...args] = wrap([PY(), "-"], sandboxed);
   return spawnRun(cmd, args, { cwd: WS, env: baseEnv(sandboxed), timeout: timeoutMs, input: code });
 }
 
@@ -106,7 +129,7 @@ export async function runPython(st: Settings | null, code: string, timeoutMs = 1
 export async function pipInstall(pkgs: string[]): Promise<RunOut> {
   const safe = pkgs.filter((p) => /^[\w.\-\[\],<>=!~]+$/.test(p));
   if (!safe.length) return { out: "no valid package names", code: 1 };
-  return spawnRun("python3", ["-m", "pip", "install", "--break-system-packages", "-q", ...safe], { cwd: WS, env: baseEnv(false), timeout: 300000 });
+  return spawnRun(PY(), ["-m", "pip", "install", ...(VENV() || process.env.PYTHON_BIN ? [] : ["--break-system-packages"]), "-q", ...safe], { cwd: WS, env: baseEnv(false), timeout: 300000 });
 }
 
 /** Plain helper for trusted internal commands (converters etc.). */

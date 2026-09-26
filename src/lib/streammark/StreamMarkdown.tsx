@@ -33,6 +33,8 @@ md.use({ extensions: EXTS });
 export type SMComponents = {
   ui?: (p: { source: string; done: boolean; attrs: Record<string, string> }) => React.ReactNode;
   canvas?: (p: { title: string; body: string; done: boolean; attrs: Record<string, string> }) => React.ReactNode;
+  /** A link to a local (non-URL) file alone on its own line renders as an inline preview card. */
+  file?: (p: { href: string; label: string }) => React.ReactNode;
 };
 type Ctx = { onLink?: (href: string, e: React.MouseEvent) => boolean | void; streaming: boolean; fn: Map<string, number>; components: SMComponents; resolveSrc?: (s: string) => string };
 const C = createContext<Ctx>({ streaming: false, fn: new Map(), components: {} });
@@ -122,6 +124,7 @@ function markTail(t: Token | undefined): void {
 const decode = (s: string) => s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 
 function BlockView({ t, done }: { t: Token; done: boolean }) {
+  const ctx = useContext(C);
   switch (t.type) {
     case "space": return null;
     case "heading": { const H = `h${(t as Tokens.Heading).depth}` as "h2"; return <H className="sm-h"><Inline tokens={(t as Tokens.Heading).tokens} /></H>; }
@@ -133,6 +136,8 @@ function BlockView({ t, done }: { t: Token; done: boolean }) {
         const id = /^https?:\/\/\S+$/.test(url) ? yt(url) : undefined;
         if (id) return <div className="sm-embed"><iframe src={`https://www.youtube-nocookie.com/embed/${id}`} allow="encrypted-media; picture-in-picture" allowFullScreen title="YouTube" /></div>;
         if (/^https?:\/\/\S+$/.test(url) && IMG.test(url)) return <p><Img src={url} /></p>;
+        if (only.type === "link" && ctx.components.file && done && !/^(https?:|mailto:|#|data:)/.test(url) && /\.[\w]{1,5}$|\/$/.test(url))
+          return <>{ctx.components.file({ href: url, label: only.text })}</>;
       }
       return <p><Inline tokens={p.tokens} /></p>;
     }

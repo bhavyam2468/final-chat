@@ -480,7 +480,19 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
     return o;
   }
   const notify = (t) => { const d = document.createElement("div"); d.className = "toast"; d.textContent = String(t); document.body.appendChild(d); setTimeout(() => d.classList.add("out"), 1900); setTimeout(() => d.remove(), 2300); };
-  const sendToLm = (data) => { post("lm", { data: typeof data === "string" ? data : JSON.parse(JSON.stringify(data ?? {})) }); if (!standalone) notify("Sent"); else console.log("[sendToLm]", data); };
+  // sendToLm(data, "Label" | { label, prompt }): posts a <ui_event> as the user's next turn. label = what the chat shows,
+  // prompt = instruction for the model (e.g. "Grade these answers and explain each mistake").
+  const sendToLm = (data, opts) => {
+    const o = typeof opts === "string" ? { label: opts } : opts || {};
+    const payload = { data: typeof data === "string" ? data : JSON.parse(JSON.stringify(data ?? {})), opts: { label: o.label ? String(o.label).slice(0, 80) : "", prompt: o.prompt ? String(o.prompt).slice(0, 2000) : "" } };
+    post("lm", payload); if (!standalone) notify("Sent"); else console.log("[sendToLm]", payload);
+  };
+  // Declarative: <form lm="Submit answers" lm-prompt="Grade them"> sends form() on submit;
+  // <button lm="Explain" lm-prompt="…"> outside a form sends the inputs of its nearest card/section.
+  let lmBusy = 0;
+  const lmSend = (el, scopeEl) => { if (Date.now() - lmBusy < 1200) return; lmBusy = Date.now(); sendToLm(form(scopeEl), { label: el.getAttribute("lm") || el.textContent.trim().slice(0, 60) || "Submitted", prompt: el.getAttribute("lm-prompt") || "" }); schedule(); };
+  document.addEventListener("submit", (e) => { const f = e.target.closest && e.target.closest("form[lm]"); if (!f) return; e.preventDefault(); lmSend(f, f); }, true);
+  document.addEventListener("click", (e) => { const b = e.target.closest && e.target.closest("button[lm]"); if (!b || b.closest("form[lm]")) return; e.preventDefault(); const sc = b.closest("x-card,x-section,x-slide,x-tab,form,section") || root; const bad = [...sc.querySelectorAll("input,select,textarea")].find((i) => !i.checkValidity()); if (bad) { bad.reportValidity(); return; } lmSend(b, sc); }, true);
   const saveIn = (path, text) => (standalone ? Promise.resolve(false) : call("save", { path, text: typeof text === "string" ? text : JSON.stringify(text, null, 2) }));
   const py = (code) => (standalone ? Promise.resolve("(server python unavailable standalone)") : call("py", { code }));
   const open = (target) => post("open", { target });

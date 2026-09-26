@@ -19,6 +19,12 @@
       "skillPath": "skills/taste-skill-v1/SKILL.md",
       "computedHash": "d704ab912c4d0ca954ffa858983da755ae4cd5cad9ba22554db5557382f5bd34"
     },
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "913b9d37d0d54047dd65222bb8c67b2bf04e3cb87dcad1729068d7a8b2c8c396"
+    },
     "full-output-enforcement": {
       "source": "Leonxlnx/taste-skill",
       "sourceType": "github",

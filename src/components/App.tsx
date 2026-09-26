@@ -44,6 +44,16 @@ export default function App() {
   const refreshTree = useCallback(() => { fetch("/api/workspace").then((r) => r.json()).then(setTree).catch(() => {}); }, []);
   const refreshConvs = useCallback(() => { fetch("/api/conversations").then((r) => r.json()).then(setConvs).catch(() => {}); }, []);
   useEffect(() => { refreshTree(); refreshConvs(); }, [refreshTree, refreshConvs]);
+  // Developer mode lives in the console only: window.__dev.enable() | disable() | mock() | samples()
+  useEffect(() => {
+    const post = (b: object) => fetch("/api/dev", { method: "POST", body: JSON.stringify(b) }).then((r) => r.json());
+    (window as unknown as { __dev: object }).__dev = {
+      enable: () => post({ enable: true }).then((r) => (console.info("developer mode on: __dev.mock() switches to the offline model, __dev.samples() writes example files"), r)),
+      disable: () => post({ enable: false }),
+      mock: () => post({ mock: true }),
+      samples: () => post({ samples: true }).then((r) => { refreshTree(); return r; }),
+    };
+  }, [refreshTree]);
 
   const [idle, setIdle] = useState(false);
   const idleTimer = useRef<NodeJS.Timeout | null>(null);
@@ -188,7 +198,11 @@ export default function App() {
 
   const api: AppApi = useMemo(() => ({
     openFile, openCanvas, refreshTree, tree, context: conv?.context || [], toggleContext,
-    sendUiEvent: (d: unknown) => sendMain({ content: `<ui_event>\n${toXml(d)}\n</ui_event>`, attachments: [], quote: null }),
+    sendUiEvent: (d: unknown, o?: { label?: string; prompt?: string }) => {
+      const attr = o?.label ? ` label="${o.label.replace(/"/g, "&quot;")}"` : "";
+      sendMain({ content: `<ui_event${attr}>\n${o?.prompt ? `<instruction>${o.prompt}</instruction>\n` : ""}${toXml(d)}\n</ui_event>`, attachments: [], quote: null });
+    },
+    sendText: (t: string) => sendMain({ content: t, attachments: [], quote: null }),
     mention: (p: string) => mainRef.current?.insert("@" + p + " "),
     quote: (t: string) => setQuotes((q) => ({ ...q, [active.current]: t })),
   }), [openFile, openCanvas, refreshTree, tree, conv?.context, toggleContext, sendMain]);
@@ -248,7 +262,7 @@ export default function App() {
     { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
   ], [newChat, mainPath, loadConv, setTheme, theme]);
 
-  const renderTurn = (m: Msg, isThread: boolean) => {
+  const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
     if (editing === m.id) return (
       <div key={m.id} className="turn user"><div style={{ width: "100%" }}>
@@ -260,7 +274,7 @@ export default function App() {
       onEdit={streamId ? undefined : () => setEditing(m.id)}
       onRegenerate={streamId ? undefined : () => send(null, m.parentId, m.threadOf)}
       onThread={isThread ? undefined : () => setThread(m.id)}
-      threadCount={isThread ? 0 : msgs.filter((x) => x.threadOf === m.id).length} />;
+      threadCount={isThread ? 0 : msgs.filter((x) => x.threadOf === m.id).length} last={last} />;
   };
 
   const anchor = thread ? msgs.find((m) => m.id === thread) : null;
@@ -287,7 +301,7 @@ export default function App() {
         </div>
 
         <div className="scroll" ref={scroller}>
-          <main className="column">{mainPath.map((m) => renderTurn(m, false))}</main>
+          <main className="column">{mainPath.map((m, i) => renderTurn(m, false, i === mainPath.length - 1))}</main>
         </div>
 
         <div className="dock">
@@ -303,7 +317,7 @@ export default function App() {
           {thread && anchor && <div className="panel thread">
             <div className="panel-head"><span>Thread</span><span className="sp" /><button className="ib sm" aria-label="Close thread" onClick={() => setThread(null)}><X /></button></div>
             <div className="anchor">{anchor.content.replace(/<[^>]+>/g, "").slice(0, 300)}</div>
-            <div className="panel-body">{threadPath.map((m) => renderTurn(m, true))}</div>
+            <div className="panel-body">{threadPath.map((m, i) => renderTurn(m, true, i === threadPath.length - 1))}</div>
             <Composer inline onSend={sendThread} streaming={!!streamId && threadPath.some((m) => m.id === streamId)} onStop={stop}
               quote={quotes.thread} onClearQuote={() => setQuotes((q) => ({ ...q, thread: null }))} onFocus={() => (active.current = "thread")} autoFocus />
           </div>}

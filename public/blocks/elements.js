@@ -555,6 +555,26 @@
     get value() { return this.hasAttribute("checked"); } set value(v) { this.toggleAttribute("checked", !!v); }
     get checked() { return this.value; }
   }, { void: true });
+  // checklist: lines "- [x] done item" / "- [ ] open item" / plain; `add` lets the user append items; value = [{text, done}]
+  define("x-todo", class extends Base {
+    static owns = true;
+    init() { this._items = lines(this._src).map((l) => ({ text: l.replace(/^[-*]\s*/, "").replace(/^\[[ xX]\]\s*/, ""), done: /^[-*]?\s*\[[xX]\]/.test(l) })); }
+    get value() { return this._items.map((i) => ({ ...i })); }
+    set value(v) { if (Array.isArray(v)) { this._items = v.map((i) => (typeof i === "string" ? { text: i, done: false } : { text: String(i.text || ""), done: !!i.done })); this.render(); } }
+    get done() { return this._items.filter((i) => i.done).length; }
+    get total() { return this._items.length; }
+    render() {
+      const add = this.hasAttribute("add");
+      this.innerHTML = `<div class="td-h"><span>${esc(this.a("title", ""))}</span><small>${this.done}/${this.total}</small></div>` +
+        this._items.map((it, i) => `<label class="td${it.done ? " on" : ""}" style="--i:${i}"><input type="checkbox" data-i="${i}"${it.done ? " checked" : ""}><span>${esc(it.text)}</span>${add ? `<button type="button" class="td-x" data-x="${i}" aria-label="Remove">×</button>` : ""}</label>`).join("") +
+        (add ? `<form class="td-add"><input aria-label="Add item"><button type="submit">Add</button></form>` : "");
+      this.querySelectorAll("input[type=checkbox]").forEach((c) => (c.onchange = () => { this._items[+c.dataset.i].done = c.checked; this.render(); change(this); }));
+      this.querySelectorAll("[data-x]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); this._items.splice(+b.dataset.x, 1); this.render(); change(this); }));
+      const f = this.querySelector(".td-add");
+      if (f) f.onsubmit = (e) => { e.preventDefault(); e.stopPropagation(); const v = f.querySelector("input").value.trim(); if (!v) return; this._items.push({ text: v, done: false }); this.render(); change(this); this.querySelector(".td-add input").focus(); };
+      B.typeset(this);
+    }
+  });
   // multiple choice: options="A|B|C" answer="B" (text, letter or 1-based index) multi reveal
   define("x-choice", class extends Base {
     static owns = true;

@@ -97,8 +97,14 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 | Module | Purpose |
 |---|---|
-| `agent.ts` | Core agent loop: system prompt, history building, streaming tool-call execution |
-| `tools.ts` | All tool definitions (`CORE_TOOLS`) and `execTool()` dispatcher. Contains hybrid Firecrawl logic |
+| `agent.ts` | Agent loop: system prompt, history, tool packs per step, image hand-off, todo recitation, quality guard |
+| `tools/index.ts` | Tool schemas (core + dev pack) and the `execTool()` dispatcher |
+| `tools/edit.ts` / `tools/syntax.ts` | Robust edits (exact → whitespace-tolerant → indentation-shifted matching, placeholder rejection) and the syntax guard |
+| `web.ts` | Hybrid Firecrawl search/scrape/extract (local first, cloud fallback, plain fetch last) |
+| `procs.ts` | Background processes for the agent (dev servers): start, logs, wait for port/pattern, restart, stop |
+| `browser.ts` | Headless Chrome via puppeteer-core: screenshots, console errors, scripted steps |
+| `harness/check.ts` / `harness/slop.ts` | `check` tool (types, lint, tests, build, design lint + screenshot) and the AI-styling linter |
+| `skills.ts` / `market.ts` / `credentials.ts` | Skill discovery and GitHub install, curated MCP/skill catalog, credential resolution (secret → env → CLI login) |
 | `settings.ts` | Settings type, defaults, `getSettings()`, `saveSettings()`, `mask()`, `PRESETS` |
 | `mcp.ts` | MCP client: load servers.json, start stdio/HTTP servers, call tools |
 | `workspace.ts` | Workspace path resolution, `tree()`, `resolvePath()`, `ensureWorkspace()` |
@@ -134,6 +140,12 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `ALLOW_SUDO` | `0` | Initial sudo switch (host terminal only) |
 | `SUDO_PASSWORD` | unset | Only if sudo needs a password (or add it as a secret in Settings → Tools) |
 | `HOST_ACCESS` | on | Set `off` on hosted/web deployments: pins everything to the sandbox, whatever the UI or API says |
+| `LLM_VISION` | `1` | `0` for text-only models: images are referenced by path instead of attached |
+| `QUALITY_GUARD` | `fix` | `fix` = lint UI files the agent writes and allow one repair round, `warn` = report only, `off` |
+| `CHROME_PATH` | auto-detect | Chrome/Chromium used by the `browser` and `check` tools |
+| `PYTHON_BIN` | `.venv` → `python3` | Interpreter for `run_python`, `pip_install` and office previews |
+| `PORT` | `3000` | Used by `setup.sh`, the service and the launcher |
+| `DEV_MODE` | `0` | `1` = developer mode (mock model, sample files); same as `window.__dev.enable()` |
 
 ---
 
@@ -172,9 +184,50 @@ The server clamps these values on every read and write (sudo can never be on wit
 
 ---
 
-## Development Without a Key
+## Agent Harness
 
-`node scripts/mock-llm.mjs` starts an offline OpenAI-compatible mock on port 3099. It streams deliberately irregular chunks to exercise the renderer, and has scenarios for "jee mock test", "graph", "aspirin", "open <file>" and plain markdown. Point the app at it with `LLM_BASE_URL=http://127.0.0.1:3099/v1`.
+Plain chat stays cheap: a short system prompt, core tools only, no plans or checks unless the task needs them. Machinery loads on demand.
+
+- **Two terminals, two tools.** `shell` is the agent's sandbox. `host_shell` exists only while Settings → Access → Host terminal is on, and runs as you with your toolchains and logins.
+- **Editing.**
+  - `fs_read` shows 250 numbered lines. `fs_search` uses ripgrep.
+  - `fs_edit` does exact find/replace, with a whitespace- and indentation-tolerant fallback, uniqueness checks and atomic multi-edits.
+  - `fs_insert` adds lines at a line number without matching text.
+  - Edits echo the changed region. They are rejected when they would break a file that parsed before, or when they contain "rest unchanged" placeholders.
+  - `fs_write` refuses to overwrite a file the agent hasn't read.
+- **Seeing.** `view_image` puts workspace images or URLs in front of the model. `browser` and `check` attach screenshots when vision is on.
+- **Dev pack** (`proc_*`, `browser`, `check`):
+  - Loads when a skill declaring `tools: dev` opens (build, debug, design, host), or always on large context windows (Settings → Tools).
+  - Servers run as managed processes, so the agent waits for a port instead of sleeping, and restarts instead of re-spawning.
+- **Planning.** `todo` shows a checklist in the chat, and the current step is recited after each tool result. `ask_user` shows option buttons and ends the turn.
+- **Quality guard.** HTML/CSS/JSX the agent writes is linted for generic AI styling (novelty fonts, neon, purple gradients, glass, emoji headings, marketing copy, helper text). With `fix`, the agent gets one repair round.
+- **Workflows as skills:**
+  - research: sub-questions, primary sources, cross-checks, and a mandatory "coverage & gaps" section;
+  - learn: diagnosis, small steps, quizzes, a known/shaky/not-covered tracker, and a gap audit;
+  - build, with exact references for web, React+TS, Electron, Go, Rust, Java, Python, Android, iOS and Flutter;
+  - debug and design.
+  Type `/name` in the composer to force one.
+
+## Extensions
+
+Settings → **MCP** lists installed servers with credential badges, a curated catalog (GitHub, Context7, Hugging Face, Postgres, Supabase, paper search, Chroma) and a registry search.
+- Credentials resolve in order: Settings secret → environment → your existing CLI login (`gh auth token`, Hugging Face token file). The CLI login is only used when you have granted home or host-terminal access, so a GitHub login you already have needs no setup.
+- Servers that duplicate built-in tools (filesystem, fetch, puppeteer, memory, git) are flagged.
+
+Settings → **Skills** installs from GitHub (`owner/repo`, a path, or a URL) with a picker for multi-skill repos, and shows skills added with `npx skills add` (`.agents/skills`). Built-in skills are never overwritten.
+
+## Developer Mode
+
+Example content is kept out of the normal app. From the browser console:
+
+```js
+__dev.enable()   // adds the offline "mock" provider (Settings → Model), enables the calls below
+__dev.mock()     // switch to the scripted mock model: try "jee mock test", "graph", "aspirin", "make a plan", "ask", "open <file>"
+__dev.samples()  // writes one example file per viewer type to uploads/samples (docx, xlsx, pptx, pdf, csv, zip, png, md, json)
+__dev.disable()
+```
+
+`DEV_MODE=1` does the same from `.env`. The mock also runs standalone: `node dev/mock-llm.mjs 3099` and `LLM_BASE_URL=http://127.0.0.1:3099/v1`. It streams deliberately irregular chunks to exercise the renderer. Unit tests: `node --experimental-strip-types dev/tests/edit.test.ts`.
 
 ---
 
@@ -185,7 +238,7 @@ The server clamps these values on every read and write (sudo can never be on wit
 - Added `/api/models` endpoint that queries the provider's `/v1/models` and returns sorted, normalised model list
 - Settings UI has a **"Fetch models"** button that populates a searchable dropdown; selecting a model auto-fills its context window size
 
-### 2. Hybrid Firecrawl Routing (`src/lib/tools.ts`)
+### 2. Hybrid Firecrawl Routing (`src/lib/web.ts`)
 - **`web_fetch`** (scraping): tries local Firecrawl first; detects Cloudflare/bot-protection challenges in the response body; automatically falls back to Cloud Firecrawl with API key
 - **`web_search`**: tries local Firecrawl with a 3-second timeout; falls back to Cloud Firecrawl if local SearXNG is down or slow
 - **`web_extract`** (NEW tool): always routes to Cloud Firecrawl (local has no LLM); uses the `/v1/scrape` endpoint with `formats: ["extract"]` and a prompt for structured AI extraction
@@ -200,6 +253,22 @@ The server clamps these values on every read and write (sudo can never be on wit
 ## Quick Start (Fresh Machine)
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/bhavyam2468/final-chat/main/setup.sh | bash
+# or, in a checkout:  ./setup.sh [--local|--online] [--yes] [--no-service] [--with-firecrawl] [--port N]
+```
+
+`setup.sh`:
+- detects a desktop vs. a server and the OS package manager;
+- checks Node (offers nvm), Python (creates `.venv`), Docker, Chrome, bubblewrap, uv, LibreOffice and a `gh` login;
+- probes FreeLLMAPI (:3001), Ollama (:11434), Firecrawl (:3002) and a Postgres container, and adds only the missing `.env` keys (it asks for API keys when run interactively);
+- installs, builds, and on a desktop installs the systemd user service / launchd agent, a `minimalist-chat` launcher and an app-menu entry;
+- binds to 127.0.0.1 locally, because the host terminal must not be reachable from the network. On a server it binds to 0.0.0.0 with `HOST_ACCESS=off`.
+
+`--with-firecrawl` clones and starts self-hosted Firecrawl in Docker. Re-running is safe.
+
+Manual install:
+
+```bash
 # 1. Clone
 git clone https://github.com/bhavyam2468/final-chat.git && cd final-chat
 
@@ -209,7 +278,7 @@ cp .env.example .env
 
 # 3. Install (Postgres optional: without DATABASE_URL an embedded PGlite DB is used)
 npm install
-pip install -r requirements.txt          # Python tools + office previews
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python tools + office previews
 # optional: bubblewrap (sandbox isolation), libreoffice (page-accurate .doc/.ppt previews)
 
 # 4. Build and run
@@ -219,7 +288,7 @@ npm start
 # App is at http://localhost:3000
 ```
 
-> For the systemd service and desktop launcher, see `SETUP.md`.
+> `setup.sh` installs the service and launcher; `SETUP.md` has the owner's machine notes.
 
 ---
 

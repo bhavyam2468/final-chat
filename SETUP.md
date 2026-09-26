@@ -135,7 +135,7 @@ ACCESS_MODE=sandbox
 - Default `firecrawlKey` → cloud API key (for bypass/extract only)
 - FreeLLMAPI preset model updated to `gemini-2.5-flash`
 
-### 2. `src/lib/tools.ts` — Hybrid Firecrawl
+### 2. `src/lib/web.ts` — Hybrid Firecrawl (moved from `src/lib/tools.ts`)
 
 Three new internal functions replaced the old single `firecrawl()` helper:
 
@@ -152,7 +152,7 @@ Three new internal functions replaced the old single `firecrawl()` helper:
 - Always routes to Cloud (local has no LLM for AI extraction)
 - Uses `/v1/scrape` with `formats: ["extract"]` and `extract: { prompt }` body
 
-**New tool added to `CORE_TOOLS`:**
+**Tool (now in `src/lib/tools/index.ts`, offered only when a cloud key is set):**
 ```typescript
 T("web_extract", "Extract structured data from a web page using Firecrawl Cloud AI",
   { url: ..., prompt: ... }, ["url", "prompt"])
@@ -190,7 +190,7 @@ Endpoint: `GET /api/models?baseUrl=<url>` or `POST /api/models` with `{ baseUrl,
 
 1. **`firecrawlScrape` local-first logic** — do not switch to always-cloud. Cloud uses paid credits. The whole point is local-first with targeted cloud fallback.
 2. **`firecrawlSearch` 3-second timeout** — SearXNG is often down; the short timeout is intentional to fail fast to cloud.
-3. **The agent runs on the host, not in Docker** — if you need to run commands, do so with `shell` tool directly on the host. Do not suggest moving the Next.js app into Docker.
+3. **The app runs on the host, not in Docker** — do not suggest moving the Next.js app into Docker. Inside the app, `shell` is the agent's sandbox and `host_shell` (only when Settings → Access → Host terminal is on) is the real host terminal.
 4. **`workspace/` is gitignored** — it is the agent's live working directory with conversations, uploads, notes, etc. Never commit it.
 5. **`.env` is not committed** — credentials are only in the local `.env` file.
 
@@ -199,14 +199,15 @@ Endpoint: `GET /api/models?baseUrl=<url>` or `POST /api/models` with `{ baseUrl,
 - **Settings are stored in Postgres** (not just `.env`). The `.env` sets defaults; DB overrides them. `getSettings()` merges both. After changing settings via the UI, they persist in DB across restarts.
 - **Tool results include `meta.source`** — `"local"` or `"cloud"` — useful for debugging which Firecrawl path was taken.
 - **All API routes are `force-dynamic`** — no static caching. All data is always fresh from DB.
-- **The agent loop** in `agent.ts` runs up to 10 tool-call iterations per user message before stopping.
+- **The agent loop** in `agent.ts` runs up to 16 tool-call steps per user message (40 when the dev tool pack is loaded) and recomputes the tool list every step.
 - **Context window trimming** — `buildHistory()` drops oldest message pairs when the conversation exceeds `contextTokens`. Use `/compact` to summarise manually.
 
 ### Adding a New Tool
 
-1. Add a `T(...)` entry to `CORE_TOOLS` in `src/lib/tools.ts`
+1. Add a `T(...)` entry to `toolDefs()` in `src/lib/tools/index.ts` (the `core` list, or `dev` for tools only needed while building/debugging)
 2. Add a `case "tool_name":` handler in `execTool()` in the same file
-3. Rebuild: `npm run build` and `systemctl --user restart minimalist-chat`
+3. Add a live/done verb for the chat UI in `TOOL_META` (`src/components/Message.tsx`)
+4. Rebuild: `npm run build` and `systemctl --user restart minimalist-chat`
 
 ### Adding a New API Route
 
@@ -214,11 +215,11 @@ Create `src/app/api/<name>/route.ts` with `export const dynamic = "force-dynamic
 
 ### Modifying the System Prompt
 
-Edit `workspace/system/SYSTEM.md` directly — no rebuild needed. Changes take effect on the next message.
+Edit `workspace-template/system/SYSTEM.md` (shipped default; unedited workspace copies are upgraded automatically) or `workspace/system/SYSTEM.md` (your copy; no rebuild needed, takes effect on the next message).
 
 ### Adding Skills to the Agent
 
-Create `workspace/system/skills/<skill-name>/SKILL.md` with a YAML frontmatter `description:` field. The agent sees the name + description in its system prompt and can call `skill_open` to load the full instructions.
+Create `workspace/system/skills/<skill-name>/SKILL.md` with YAML frontmatter `name:` and `description:` (optional `tools: dev` to load the dev tool pack, `requires: host-terminal | host-files` to list it only when that access is on; extra files under `reference/` open with `skill_open(name, file)`). Or install from GitHub in Settings → Skills; `npx skills add` into `workspace/.agents/skills` also works.
 
 ### After Any Source Code Change
 
@@ -268,21 +269,9 @@ ACCESS_MODE=sandbox
 
 ## Re-installing the Desktop App & systemd Service
 
-Run these commands from the project root:
-
 ```bash
-# 1. systemd service
-mkdir -p ~/.config/systemd/user
-# Create the .service file (see above for contents)
-systemctl --user daemon-reload
-systemctl --user enable --now minimalist-chat
-
-# 2. Launcher script
-cp scripts/minimalist-chat ~/.local/bin/minimalist-chat
-chmod +x ~/.local/bin/minimalist-chat
-
-# 3. Desktop entry
-cp scripts/minimalist-chat.desktop ~/.local/share/applications/
-cp scripts/minimalist-chat.svg ~/.local/share/icons/
-update-desktop-database ~/.local/share/applications
+./setup.sh --local        # re-detects services, keeps existing .env keys, rebuilds, (re)installs service + launcher + desktop entry
+minimalist-chat update    # later: git pull + setup
 ```
+
+The files in `scripts/` are templates (`@APP@`, `@PORT@`…) that `setup.sh` fills in. The service now binds to `127.0.0.1` because the agent can have host-terminal access; the old unit bound to all interfaces. Your Zen browser is kept via `CHAT_BROWSER` in `.env`.

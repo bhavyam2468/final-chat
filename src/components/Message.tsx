@@ -1,7 +1,7 @@
 "use client";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { youtubeId } from "@/lib/shared";
-import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X } from "lucide-react";
+import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send } from "lucide-react";
 import { StreamMarkdown, SMComponents } from "@/lib/streammark/StreamMarkdown";
 import { Block } from "./Block";
 import { useSmoothText } from "@/lib/streammark/useSmoothText";
@@ -31,15 +31,23 @@ function lineDiff(a: string, b: string) {
   return out.filter((l, idx) => l.k || out.slice(Math.max(0, idx - 2), idx + 3).some((x) => x.k));
 }
 
-const TOOL_META: Record<string, { icon: typeof FileText; verb: string; arg?: string }> = {
-  skill_open: { icon: BookOpen, verb: "Opened skill", arg: "name" }, context_add: { icon: Layers, verb: "Added to context", arg: "path" },
-  context_remove: { icon: Layers, verb: "Removed from context", arg: "path" }, compact_context: { icon: Layers, verb: "Compacted context" },
-  fs_list: { icon: FolderTree, verb: "Listed", arg: "path" }, fs_read: { icon: FileText, verb: "Read", arg: "path" },
-  fs_write: { icon: FilePen, verb: "Wrote", arg: "path" }, fs_edit: { icon: FilePen, verb: "Edited", arg: "path" },
-  fs_delete: { icon: Trash2, verb: "Deleted", arg: "path" }, fs_move: { icon: FilePen, verb: "Moved", arg: "to" },
-  run_python: { icon: Code2, verb: "Ran Python" }, pip_install: { icon: Package, verb: "Installed", arg: "packages" },
-  shell: { icon: Terminal, verb: "Ran", arg: "command" }, web_search: { icon: Search, verb: "Searched", arg: "query" },
-  web_fetch: { icon: Globe, verb: "Read", arg: "url" }, web_extract: { icon: Globe, verb: "Extracted", arg: "url" }, canvas_open: { icon: AppWindow, verb: "Opened", arg: "target" }, ui_search: { icon: AppWindow, verb: "Looked up components", arg: "query" },
+type Meta = { icon: typeof FileText; live: string; done: string; arg?: string };
+const M = (icon: Meta["icon"], live: string, done: string, arg?: string): Meta => ({ icon, live, done, arg });
+/** Running tools read in the present ("Reading"), finished ones in the past ("Read"). */
+const TOOL_META: Record<string, Meta> = {
+  skill_open: M(BookOpen, "Opening skill", "Opened skill", "name"), context_add: M(Layers, "Adding to context", "Added to context", "path"),
+  context_remove: M(Layers, "Removing from context", "Removed from context", "path"), compact_context: M(Layers, "Compacting context", "Compacted context", "scope"),
+  fs_list: M(FolderTree, "Listing", "Listed", "path"), fs_read: M(FileText, "Reading", "Read", "path"), fs_search: M(Search, "Searching files for", "Searched files for", "pattern"),
+  fs_write: M(FilePen, "Writing", "Wrote", "path"), fs_edit: M(FilePen, "Editing", "Edited", "path"), fs_insert: M(FilePen, "Inserting into", "Inserted into", "path"),
+  fs_delete: M(Trash2, "Deleting", "Deleted", "path"), fs_move: M(FilePen, "Moving to", "Moved to", "to"),
+  run_python: M(Code2, "Running Python", "Ran Python"), pip_install: M(Package, "Installing", "Installed", "packages"),
+  shell: M(Terminal, "Running", "Ran", "command"), host_shell: M(Monitor, "Running on your machine", "Ran on your machine", "command"),
+  web_search: M(Search, "Searching", "Searched", "query"), web_fetch: M(Globe, "Reading", "Read", "url"), web_extract: M(Globe, "Extracting from", "Extracted from", "url"),
+  view_image: M(ImageIcon, "Looking at", "Looked at", "path"), todo: M(ListChecks, "Updating plan", "Plan"), ask_user: M(MessageSquare, "Asking", "Asked", "question"),
+  canvas_open: M(AppWindow, "Opening", "Opened", "target"), ui_search: M(AppWindow, "Looking up components", "Looked up components", "query"),
+  proc_start: M(Play, "Starting", "Started", "name"), proc_logs: M(ScrollText, "Reading logs of", "Read logs of", "name"), proc_restart: M(RotateCw, "Restarting", "Restarted", "name"),
+  proc_stop: M(Square, "Stopping", "Stopped", "name"), browser: M(Globe, "Opening in browser", "Viewed in browser", "target"), check: M(ShieldCheck, "Checking", "Checked", "path"),
+  quality_check: M(ShieldCheck, "Checking design", "Design check"),
 };
 
 type Src = { url: string; title: string; snippet?: string };
@@ -51,31 +59,55 @@ export function SourceList({ items }: { items: Src[] }) {
       <div><b>{s.title}</b><small>{host}{s.snippet ? " · " + s.snippet : ""}</small></div></a>; })}</div>;
 }
 
-const ToolCall = memo(function ToolCall({ p }: { p: Extract<Part, { type: "tool" }> }) {
+type Todo = { text: string; status: "todo" | "doing" | "done" };
+function TodoList({ items }: { items: Todo[] }) {
+  return <ul className="todo">{items.map((t, i) => <li key={i} className={"s-" + t.status}><span className="box">{t.status === "done" ? <Check /> : null}</span>{t.text}</li>)}</ul>;
+}
+
+function AskCard({ q, options, multi, live }: { q: string; options: string[]; multi: boolean; live: boolean }) {
+  const app = useApp();
+  const [picked, setPicked] = useState<string[]>([]);
+  const [sent, setSent] = useState(false);
+  const send = (v: string[]) => { if (!live || sent || !v.length) return; setSent(true); app.sendText(v.join(", ")); };
+  return <div className="ask">
+    <div className="ask-q">{q}</div>
+    <div className="ask-o">{options.map((o) => <button key={o} disabled={!live || sent} className={picked.includes(o) ? "on" : ""}
+      onClick={() => (multi ? setPicked((p) => (p.includes(o) ? p.filter((x) => x !== o) : [...p, o])) : send([o]))}>{o}</button>)}
+      {multi && live && !sent && <button className="ib" aria-label="Send" disabled={!picked.length} onClick={() => send(picked)}><Send /></button>}</div>
+  </div>;
+}
+
+const ToolCall = memo(function ToolCall({ p, lastTodo, live }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean }) {
   const [open, setOpen] = useState(false);
   const app = useApp();
   const mcp = p.name.match(/^mcp__(.+?)__(.+)$/);
-  const m = TOOL_META[p.name] || { icon: Plug, verb: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name };
+  const pending = p.result === undefined;
+  const m = TOOL_META[p.name] || { icon: Plug, live: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name, done: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name };
   const Icon = m.icon;
   const argv = m.arg ? p.args[m.arg] : undefined;
-  const target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
-  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string } | undefined;
-  const pending = p.result === undefined;
-  const openable = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_read", "context_add"].includes(p.name);
+  let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
+  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean } | undefined;
+  if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
+  if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
+  const openable = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name);
+  if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
   let body: React.ReactNode = null;
   if (open) {
     if (meta?.sources && p.name === "web_search") body = <SourceList items={meta.sources} />;
     else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
     else if (p.name === "run_python") body = <><pre>{String(p.args.code || "")}</pre><pre>{p.result}</pre></>;
-    else body = <>{Object.keys(p.args).length > 0 && p.name !== "shell" && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
+    else body = <>{Object.keys(p.args).length > 0 && !["shell", "host_shell", "todo", "quality_check"].includes(p.name) && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
   }
   return (
-    <div className="tool">
+    <div className={"tool" + (pending ? " live" : "")}>
       <button className="tool-row" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <Icon /><span>{m.verb}</span>{target && <span className="tgt">{target}</span>}
+        <Icon /><span>{pending ? m.live : m.done}</span>{target && <span className="tgt">{target}</span>}
         {pending ? <span className="spin" /> : p.ok === false ? <X className="err" /> : null}
       </button>
       {openable && !pending && <button className="ib sm" aria-label="Open file" onClick={() => app.openFile(String(p.args.path))}><AppWindow /></button>}
+      {p.name === "todo" && lastTodo && meta?.todo && <TodoList items={meta.todo} />}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {meta?.image && !pending && <img className="tool-shot" src={fileUrl(meta.image)} alt="" onClick={() => app.openFile(meta.image!)} />}
       {open && !pending && <div className="tool-body">{body}</div>}
     </div>
   );
@@ -99,12 +131,31 @@ function CanvasCard({ title, body, done, attrs }: { title: string; body: string;
   return <div className="canvas-card" onClick={done ? open : undefined} role="button"><AppWindow /><span className="t">{title}</span><small>{done ? "Open" : "Building…"}</small></div>;
 }
 
+type Card = { name: string; size: number; kind: string; mime: string; excerpt?: string; rows?: string[][]; total?: number; pages?: number; count?: number; error?: string };
+const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+/** Inline preview of a workspace file linked alone on a line; the same file opens in a canvas. */
+function FileCard({ href, label }: { href: string; label: string }) {
+  const app = useApp();
+  const p = decodeURIComponent(href.replace(/^\.?\//, "").replace(/^files\//, ""));
+  const [c, setC] = useState<Card | null>(null);
+  useEffect(() => { let live = true; fetch(`/api/preview?as=card&path=${encodeURIComponent(p)}`).then((r) => r.json()).then((j) => live && setC(j)).catch(() => {}); return () => { live = false; }; }, [p]);
+  if (c?.error) return <p><a className="sm-link" href={href} onClick={(e) => { e.preventDefault(); app.openFile(p); }}>{label || p}</a></p>;
+  const meta = c ? [c.kind === "doc" && c.pages ? `${c.pages} pages` : "", c.kind === "sheet" && c.total ? `${c.total} rows` : "", c.kind === "archive" ? `${c.count} entries` : "", fmtSize(c.size)].filter(Boolean).join(" · ") : "";
+  return <div className="filecard" role="button" onClick={() => app.openFile(p)}>
+    <div className="fc-h"><FileText /><span className="t">{label && label !== p ? label : c?.name || p}</span><small>{meta}</small><AppWindow className="fc-open" /></div>
+    {c?.kind === "image" && /* eslint-disable-next-line @next/next/no-img-element */ <img src={fileUrl(p)} alt="" />}
+    {c?.rows && <div className="fc-rows"><table><tbody>{c.rows.map((r, i) => <tr key={i}>{r.slice(0, 6).map((x, j) => i ? <td key={j}>{x}</td> : <th key={j}>{x}</th>)}</tr>)}</tbody></table></div>}
+    {c?.excerpt && !c.rows && <pre className="fc-x">{c.excerpt}</pre>}
+  </div>;
+}
+
 export function useMdHandlers() {
   const app = useApp();
   const onLink = useCallback((href: string) => { if (isExternal(href)) return false; app.openFile(decodeURIComponent(href.replace(/^\.?\//, ""))); return true; }, [app]);
   const components = useMemo<SMComponents>(() => ({
     ui: ({ source, done }) => <Block source={source} done={done} />,
     canvas: (p) => <CanvasCard {...p} />,
+    file: (p) => <FileCard {...p} />,
   }), []);
   const resolveSrc = useCallback((s: string) => (isExternal(s) || s.startsWith("data:") || s.startsWith("/") ? s : fileUrl(s)), []);
   return { onLink, components, resolveSrc };
@@ -116,14 +167,26 @@ function LiveText({ text, streaming, h }: { text: string; streaming: boolean; h:
   return <StreamMarkdown text={s.text} streaming={s.live} {...h} />;
 }
 
-export const AssistantBody = memo(function AssistantBody({ parts, streaming }: { parts: Part[]; streaming: boolean }) {
+export const AssistantBody = memo(function AssistantBody({ parts, streaming, last }: { parts: Part[]; streaming: boolean; last?: boolean }) {
   const h = useMdHandlers();
   const [animate] = useState(streaming); // messages loaded from history render instantly
   if (!parts.length && streaming) return <div className="thinking" />;
+  let lastTodo = -1;
+  parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
   return <>{parts.map((p, i) => p.type === "text"
     ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} /> : <StreamMarkdown key={i} text={p.text} streaming={false} {...h} />
-    : <ToolCall key={p.id + i} p={p} />)}</>;
+    : <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} />)}</>;
 });
+
+/** <ui_event label="…"> from a BlocksUI form/button: shown as a compact card instead of raw XML. */
+function UiEvent({ content }: { content: string }) {
+  const label = content.match(/^<ui_event[^>]*\blabel="([^"]*)"/)?.[1] || "Submitted";
+  const body = content.replace(/^<ui_event[^>]*>\n?/, "").replace(/<\/ui_event>\s*$/, "").replace(/<instruction>[\s\S]*?<\/instruction>\n?/, "");
+  const fields = [...body.matchAll(/^<([\w-]+)>([\s\S]*?)<\/\1>$/gm)].map((m) => [m[1], m[2].replace(/<[^>]+>/g, " ").trim()] as const);
+  return <details className="uievt"><summary><Send /><span>{label.replace(/&quot;/g, '"')}</span>{fields.length > 0 && <small>{fields.length} field{fields.length > 1 ? "s" : ""}</small>}</summary>
+    {fields.length ? <dl>{fields.slice(0, 40).map(([k, v], i) => <div key={i}><dt>{k}</dt><dd>{v.slice(0, 400) || "—"}</dd></div>)}</dl> : <pre>{body.trim().slice(0, 2000)}</pre>}
+  </details>;
+}
 
 export function Attachments({ items }: { items: Msg["attachments"] }) {
   const app = useApp();
@@ -136,15 +199,15 @@ export function Attachments({ items }: { items: Msg["attachments"] }) {
 
 type Props = {
   m: Msg; streaming: boolean; sib: { i: number; n: number }; onNav: (d: number) => void;
-  onEdit?: () => void; onRegenerate?: () => void; onThread?: () => void; threadCount?: number;
+  onEdit?: () => void; onRegenerate?: () => void; onThread?: () => void; threadCount?: number; last?: boolean;
 };
 
-export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount }: Props) {
+export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount, last }: Props) {
   if (m.role === "user") return (
     <div className="turn user">
       {m.quote && <div className="quoteline">{m.quote}</div>}
       <Attachments items={m.attachments} />
-      {m.content && <div className="bubble">{m.content}</div>}
+      {m.content && (m.content.startsWith("<ui_event") ? <UiEvent content={m.content} /> : <div className="bubble">{m.content}</div>)}
       <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={m.content} />
@@ -155,7 +218,7 @@ export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit,
   const text = m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   return (
     <div className="turn ai" data-mid={m.id}>
-      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} /></div>
+      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} /></div>
       {!streaming && <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={text} />

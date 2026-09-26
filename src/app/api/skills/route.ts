@@ -1,39 +1,49 @@
 import { NextRequest } from "next/server";
 import fs from "fs/promises";
+import fss from "fs";
 import path from "path";
 import { WS, ensureWorkspace } from "@/lib/workspace";
+import { listSkills, installFromGitHub } from "@/lib/skills";
 
 export const dynamic = "force-dynamic";
-const DIR = () => path.join(WS, "system/skills");
+const TEMPLATE = path.resolve("./workspace-template/system/skills");
 
+/** All skills from system/skills plus .agents/skills and .claude/skills (where `npx skills add` installs). */
 export async function GET() {
   await ensureWorkspace();
-  const out = [];
-  for (const d of await fs.readdir(DIR()).catch(() => [] as string[])) {
-    const t = await fs.readFile(path.join(DIR(), d, "SKILL.md"), "utf8").catch(() => "");
-    if (t) out.push({ name: d, description: t.match(/description:\s*(.+)/)?.[1] || "" });
-  }
-  return Response.json(out);
+  const list = await listSkills();
+  return Response.json(list.map((s) => ({
+    name: s.name, description: s.description, tools: s.tools, requires: s.requires, root: s.root,
+    builtin: s.root === "system/skills" && fss.existsSync(path.join(TEMPLATE, s.name)),
+    source: fss.existsSync(path.join(s.dir, ".source")) ? fss.readFileSync(path.join(s.dir, ".source"), "utf8").trim() : "",
+  })));
 }
-/** Install from GitHub: https://github.com/owner/repo/tree/branch/path/to/skill  or owner/repo/path */
+
+/**
+ * Install. {source: "owner/repo" | "owner/repo/path" | github URL, pick?: string[]} or {name, content}.
+ * A repo with several skills and no pick returns {installed: [], available} so the UI can ask which ones.
+ */
 export async function POST(req: NextRequest) {
-  const { source, name: nm, content } = await req.json();
-  let text = content as string | undefined, name = nm as string | undefined;
-  if (!text && source) {
-    const m = String(source).replace(/^https?:\/\/github.com\//, "").replace(/\/(tree|blob)\/([^/]+)/, "/$2").replace(/\/SKILL\.md$/, "");
-    const parts = m.split("/");
-    const [owner, repo] = parts; let branch = "main"; let rest = parts.slice(2);
-    if (/github.com/.test(source) && /\/(tree|blob)\//.test(source)) { branch = parts[2]; rest = parts.slice(3); }
-    for (const b of [branch, "master"]) {
-      const r = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${b}/${[...rest, "SKILL.md"].join("/")}`);
-      if (r.ok) { text = await r.text(); break; }
-    }
-    if (!text) return Response.json({ error: "SKILL.md not found" }, { status: 404 });
-    name = name || text.match(/name:\s*([\w-]+)/)?.[1] || rest[rest.length - 1] || repo;
+  await ensureWorkspace();
+  const { source, pick, name, content } = await req.json();
+  try {
+    if (source) return Response.json({ ok: true, ...(await installFromGitHub(String(source), Array.isArray(pick) ? pick : undefined)) });
+    if (!name || !content) return Response.json({ error: "source, or name and content, required" }, { status: 400 });
+    const safe = String(name).replace(/[^\w.-]/g, "-");
+    await fs.mkdir(path.join(WS, "system/skills", safe), { recursive: true });
+    await fs.writeFile(path.join(WS, "system/skills", safe, "SKILL.md"), String(content));
+    return Response.json({ ok: true, installed: [safe], available: [safe] });
+  } catch (e) {
+    return Response.json({ error: String((e as Error).message || e) }, { status: 400 });
   }
-  if (!text || !name) return Response.json({ error: "name and content or source required" }, { status: 400 });
-  const safe = name.replace(/[^\w-]/g, "-");
-  await fs.mkdir(path.join(DIR(), safe), { recursive: true });
-  await fs.writeFile(path.join(DIR(), safe, "SKILL.md"), text);
-  return Response.json({ ok: true, name: safe });
+}
+
+/** Remove an installed skill. Built-in skills can't be removed (they would be re-seeded). */
+export async function DELETE(req: NextRequest) {
+  const name = req.nextUrl.searchParams.get("name") || "";
+  const s = (await listSkills()).find((x) => x.name === name);
+  if (!s) return Response.json({ error: "not found" }, { status: 404 });
+  if (s.root === "system/skills" && fss.existsSync(path.join(TEMPLATE, s.name))) return Response.json({ error: "built-in skill" }, { status: 400 });
+  await fs.rm(s.dir, { recursive: true, force: true });
+  return Response.json({ ok: true });
 }

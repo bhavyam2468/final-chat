@@ -228,3 +228,10 @@ x-row>x-timer,.grp>x-timer{font-size:calc(1.15em*var(--s,1))}
 .toast.out{opacity:0;transform:translate(-50%,6px)}
 .err{font:12px ui-monospace,monospace;color:var(--danger);white-space:pre-wrap;padding:8px 10px;border-radius:var(--r);background:color-mix(in srgb,var(--danger) 8%,transparent)}
 .katex-display{margin:.3em 0!important}
+
+x-todo{display:flex;flex-direction:column;gap:2px}
+x-todo .td-h{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;margin-bottom:4px}x-todo .td-h small{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}x-todo .td-h:has(span:empty){justify-content:flex-end}
+x-todo .td{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:calc(var(--r) * .6);cursor:pointer;animation:b-in .3s var(--ease) both;animation-delay:calc(var(--i,0) * 30ms)}x-todo .td:hover{background:var(--surface)}
+x-todo .td.on span{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
+x-todo .td span{flex:1}x-todo .td-x{border:0;background:none;color:var(--faint);padding:0 4px;font-size:16px;opacity:0}x-todo .td:hover .td-x{opacity:1}
+x-todo .td-add{display:flex;gap:6px;margin-top:6px}x-todo .td-add input{flex:1}

@@ -5,6 +5,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { useApp } from "./ctx";
 import { youtubeId } from "@/lib/shared";
+import { AppWindow } from "lucide-react";
 
 const VARS = ["--bg", "--fg", "--muted", "--faint", "--line", "--surface", "--bubble", "--float", "--accent", "--success", "--danger", "--r"];
 export function themeVars() {
@@ -64,7 +65,7 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
           post({ type: "theme", vars: themeVars(), theme: document.documentElement.dataset.theme });
           flush(); break;
         case "height": if (!fill) setH(Math.min(2400, Math.max(24, m.h))); break;
-        case "lm": app.sendUiEvent(m.data); break;
+        case "lm": app.sendUiEvent(m.data, m.opts); break;
         case "save": { const ok = await toWorkspace(String(m.path), String(m.text)); app.refreshTree(); reply(ok); break; }
         case "py": {
           const r = await fetch("/api/python", { method: "POST", body: JSON.stringify({ code: m.code }) }).then((r) => r.json()).catch((err) => ({ out: String(err) }));
@@ -98,5 +99,9 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
     return () => obs.disconnect();
   }, []);
 
-  return <iframe ref={ref} className={fill ? "blk-frame fill" : "blk-frame"} style={fill ? undefined : { height: h }} sandbox="allow-scripts allow-forms allow-popups allow-modals" srcDoc={doc} title="block" />;
+  const frame = <iframe ref={ref} className={fill ? "blk-frame fill" : "blk-frame"} style={fill ? undefined : { height: h }} sandbox="allow-scripts allow-forms allow-popups allow-modals" srcDoc={doc} title="block" />;
+  if (fill) return frame;
+  // inline blocks can move to a canvas window (everything renderable inline renders in canvas and vice versa)
+  const title = source.match(/<x-(?:section|card)[^>]*\btitle="([^"]+)"/)?.[1] || source.match(/<h[1-3][^>]*>([^<]{1,60})</)?.[1] || "Block";
+  return <div className="blk-wrap">{frame}{done && <button className="ib sm blk-pop" aria-label="Open in canvas" onClick={() => app.openCanvas({ kind: "ui", title, source })}><AppWindow /></button>}</div>;
 });
