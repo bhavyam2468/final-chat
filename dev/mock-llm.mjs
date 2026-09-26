@@ -5,7 +5,7 @@
  *   node dev/mock-llm.mjs [port=3099]   then LLM_BASE_URL=http://127.0.0.1:3099/v1
  * In the app: developer mode (DEV_MODE=1 or window.__dev.enable()) adds the "mock" provider, served at /api/dev/mock/v1.
  * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, plan|todo, ask, samples, else markdown.
- * Guardrail scenarios: "guard:think|orphan|reasoning|filler|loop|textcall|toolcode|cjk|cite|danger|pkg|stuck|slop|integrity".
+ * Guardrail scenarios: "guard:think|orphan|reasoning|filler|link|loop|textcall|toolcode|cjk|cite|danger|pkg|stuck|slop|integrity".
  */
 import http from "node:http";
 
@@ -155,6 +155,7 @@ function guard(name, messages, q) {
     case "loop": return auto ? { text: "The config file is valid; nothing else to change." } : { text: "Here is what I found in the config. " + "I will now check the config file again to be sure. ".repeat(40) };
     case "textcall": return afterTool ? { text: "The workspace has the folders listed above." } : { text: "Let me look at the workspace.\n```json\n{\"name\": \"fs_list\", \"arguments\": {\"path\": \".\"}}\n```" };
     case "toolcode": return afterTool ? { text: "Listed." } : { text: "```tool_code\nprint(default_api.fs_list(path=\".\", depth=1))\n```" };
+    case "link": return { text: "The official guide is at [docs.python.org/3/library/pathlib](https://docs.python.org/3/library/pathlib.html), and the PEP is [PEP 428](https://peps.python.org/pep-0428/)." };
     case "cjk": return { text: "The function 返回 a list of users，then the caller filters them by role：admins first." };
     case "cite": return auto ? { text: "I could not open a page confirming that, so I removed the link. The release notes I found do not mention a version 9." } : afterTool ? { text: "Bun 9 ships a new bundler, according to [the release notes](https://bun.sh/blog/bun-v9-imaginary) and [this benchmark](https://example-benchmarks.dev/bun9)." } : { call: { name: "web_search", args: { query: "bun 9 release notes", limit: 3 } } };
     case "danger": return afterTool ? { text: /approved/.test(q) ? "Done." : "That needs your approval first." } : { text: /approved/.test(q) ? "" : "Dropping the demo table.", call: { name: "shell", args: { command: DANGER } } };
@@ -165,7 +166,7 @@ function guard(name, messages, q) {
   }
   return { text: "Unknown guard scenario. Try: " + GUARDS.join(", ") };
 }
-const GUARDS = ["think", "orphan", "reasoning", "filler", "loop", "textcall", "toolcode", "cjk", "cite", "danger", "pkg", "stuck", "slop", "integrity"];
+const GUARDS = ["think", "orphan", "reasoning", "filler", "link", "loop", "textcall", "toolcode", "cjk", "cite", "danger", "pkg", "stuck", "slop", "integrity"];
 
 function scenario(messages) {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");

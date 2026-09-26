@@ -9,6 +9,9 @@ Hard bans (the automatic check flags these):
 - Fonts: novelty/sci-fi faces (Orbitron, Audiowide, Exo, Rajdhani, Oxanium, Press Start, Bebas-style display for body). Web fonts from CDNs in offline apps.
 - Colour/effects: neon (#0ff, #f0f, #39ff14…), coloured glows, purple/indigo/pink gradients, gradient text, glassmorphism, animated backgrounds, endless pulsing.
 - Copy: "Welcome to…", "Get started", "Unleash/Elevate/Seamless/Supercharge/Next-gen/Stunning/Effortless/Powerful", taglines, hero sections, testimonials, feature grids, "Powered by", "Made with ❤️", exclamation marks, emoji in headings/buttons, lorem ipsum, helper sentences explaining obvious UI ("Enter your name below").
+- Also default tells: coloured stripe on one edge of cards, fake macOS window dots, sparkle ✨ "AI" badges, count-up stat rows ("10k+ users"), 01/02/03 numbered steps, centred hero + three identical icon cards, bouncy easing, placeholder avatars (pravatar, unsplash), cream + terracotta "tasteful" palette, near-black + acid-green "technical" palette, Space Grotesk/Inter as a personality.
+
+The brief wins. The bans are defaults for when the user gave no direction. Asked for cyberpunk, neon, glass, retro, playful or a landing page → do that style well: a consistent system, real references, readable contrast, focus states. The check stands down for what the brief names. Do not over-read either: "modern" is not purple gradients, "dark" is not neon.
 
 Do instead:
 - Type: `font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`; mono `ui-monospace, SFMono-Regular, Menlo, monospace`. Sizes 13/15/18/24, weights 400/500/600, line-height 1.5 body. Sentence case everywhere.

@@ -114,7 +114,9 @@ export function slopLint(text: string, kind = "html", opts: LintOpts = {}): Issu
     if (CREAM.test(styles) && TERRACOTTA.test(styles)) add("cream-terracotta", "Cream ground + terracotta accent (the default \"tasteful AI\" look). Derive ground and accent from the subject; move off both coordinates.", text.search(TERRACOTTA));
     if (NEAR_BLACK.test(styles) && ACID.test(styles)) add("near-black-acid", "Near-black ground + one acid-green/vermilion accent (the default \"technical\" look). Theme dark as a palette; pick an accent for meaning.", text.search(ACID));
     const stripes = (styles.match(/border-(left|top):\s*[3-8]px\s+solid\s+(?!rgba?\(\s*0|#0{3,6}\b|transparent)[^;]+|\bborder-l-[4-8]\s+border-(?!gray|zinc|neutral|stone|slate|black|white|transparent)[a-z]+-\d{3}/gi) || []).length;
-    if (stripes >= 2) add("stripe", `Coloured stripe on the edge of ${stripes} cards (a strong AI tell). Drop it; separate by spacing, weight or position.`);
+    // one CSS rule styles every card: a thick coloured edge + rounded corners in the same rule is the tell itself
+    const stripeRule = /\{[^}]*(border-(left|top):\s*[3-8]px\s+solid\s+(?!rgba?\(\s*0|#0{3,6}\b|transparent)[^;}]+[^}]*border-radius|border-radius[^}]*border-(left|top):\s*[3-8]px\s+solid\s+(?!rgba?\(\s*0|#0{3,6}\b|transparent))[^}]*\}/i.test(styles);
+    if (stripes >= 2 || stripeRule) add("stripe", `Coloured stripe on the edge of cards (a strong AI tell). Drop it; separate by spacing, weight or position.`);
     if (/#ff5f5[67]\b[\s\S]{0,400}#(febc2e|ffbd2e)\b|traffic-?lights?|window-?dots/i.test(text)) add("window-dots", "Fake macOS window dots as decoration. Show the real interface or nothing.", text.search(/#ff5f5[67]\b|traffic-?lights?|window-?dots/i));
     const eff = text.match(EFFECTS);
     if (eff && /(jsx|tsx|js|ts|vue|svelte)$/.test(kind)) add("effects", `Stock effect component <${eff[1]}> (Aceternity/Magic UI). Cut it or build an effect tied to the product's own data.`, text.indexOf(eff[0]));

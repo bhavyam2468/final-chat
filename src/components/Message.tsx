@@ -110,6 +110,7 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
   const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean } | undefined;
   const ap = (p.meta as { approval?: Approval } | undefined)?.approval;
+  if (ap) target = ""; // the approval bar shows the full command
   if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
   if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
   const openable = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name);

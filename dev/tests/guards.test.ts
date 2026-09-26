@@ -68,6 +68,7 @@ t("slop: brief-wins disables matching rules", () => {
   assert.ok(slopLint(html, "html").some((i) => i.rule === "neon"));
   assert.ok(!slopLint(html, "html", { brief: "make a cyberpunk neon hacker terminal page" }).some((i) => i.rule === "neon" || i.rule === "font"));
 });
+t("slop: stripe card rule", () => { assert.ok(slopLint("<style>.card{border-left:4px solid #a855f7;border-radius:16px}</style><div class=card>x</div>", "html").some((i) => i.rule === "stripe")); assert.ok(!slopLint("<style>blockquote{border-left:3px solid #ddd}</style>", "html").some((i) => i.rule === "stripe")); assert.ok(!slopLint("<style>.card{border-left:4px solid #a855f7;border-radius:16px}</style>", "html", { brief: "cards with a left border accent" }).some((i) => i.rule === "stripe")); });
 t("slop: prose tells in markdown", () => { const md = "## Overview\n\nIn today's fast-paced world, it's important to note that this tool is a testament to innovation — it doesn't just help, it transforms. Let's delve into the rich tapestry of features."; assert.ok(slopLint(md, "md").some((i) => i.rule === "prose")); assert.equal(slopLint("# Notes\n\nRun `make` then open the app.", "md").length, 0); });
 
 console.log(`\n${n} passed`);
