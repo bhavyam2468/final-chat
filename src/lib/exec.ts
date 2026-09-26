@@ -46,7 +46,12 @@ export function usesSudo(cmd: string) {
 
 export function baseEnv(sandboxed: boolean): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, MPLBACKEND: "Agg", PYTHONUNBUFFERED: "1", WORKSPACE: WS };
-  if (sandboxed) { for (const k of APP_SECRETS) delete env[k]; env.HOME = WS; }
+  if (sandboxed) {
+    for (const k of APP_SECRETS) delete env[k]; env.HOME = WS;
+    // git must never walk up out of the workspace into an enclosing repo (e.g. this app's own checkout):
+    // without bwrap, a sandboxed `git reset --hard` would otherwise hit the parent repository.
+    env.GIT_CEILING_DIRECTORIES = WS.replace(/[\\/][^\\/]+[\\/]?$/, "");
+  }
   return env;
 }
 

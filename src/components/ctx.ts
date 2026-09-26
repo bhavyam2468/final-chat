@@ -2,7 +2,8 @@
 import { createContext, useContext } from "react";
 
 export type Part =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; unverified?: string[] }
+  | { type: "reasoning"; text: string; ms?: number }
   | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
 export type Msg = {
@@ -24,6 +25,8 @@ export type AppApi = {
   openCanvas: (c: CanvasSpec, o?: OpenOpts) => void;
   sendUiEvent: (data: unknown, opts?: { label?: string; prompt?: string }) => void;
   sendText: (text: string) => void;
+  /** Approve / deny a command the harness held back (tool meta.approval). */
+  decide: (messageId: string, partId: string, decision: "approve" | "deny", cmd: string) => Promise<void>;
   refreshTree: () => void;
   mention: (path: string) => void;
   quote: (text: string) => void;

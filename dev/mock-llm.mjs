@@ -5,6 +5,7 @@
  *   node dev/mock-llm.mjs [port=3099]   then LLM_BASE_URL=http://127.0.0.1:3099/v1
  * In the app: developer mode (DEV_MODE=1 or window.__dev.enable()) adds the "mock" provider, served at /api/dev/mock/v1.
  * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, plan|todo, ask, samples, else markdown.
+ * Guardrail scenarios: "guard:think|orphan|reasoning|filler|loop|textcall|toolcode|cjk|cite|danger|pkg|stuck|slop|integrity".
  */
 import http from "node:http";
 
@@ -137,10 +138,41 @@ $$\int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}$$
 - [x] math
 - [ ] your next question`;
 
+/**
+ * Guardrail scenarios ("guard:<name>" in the message). Each reproduces a documented failure of weak models so the
+ * harness response can be seen end to end. See docs/GUARDRAILS.md. Every command here is harmless even if approved.
+ */
+const DANGER = "sqlite3 guard-demo.db \"DROP TABLE IF EXISTS demo\"";
+function guard(name, messages, q) {
+  const afterTool = messages[messages.length - 1]?.role === "tool";
+  const tools = messages.filter((m) => m.role === "tool").length;
+  const auto = /\[automatic/.test(q);
+  switch (name) {
+    case "think": return { text: "<think>The user asks what 17 × 23 is. 17 × 20 = 340, 17 × 3 = 51, total 391.</think>\n\nGreat question! 17 × 23 = **391**." };
+    case "orphan": return { text: "Okay, the user wants a haiku about rain. Five, seven, five syllables. Let me draft one.</think>\n\nSoft rain on tin roofs\nthe kettle hums its answer\nno one needs to speak" };
+    case "reasoning": return { reasoning: "Reasoning arrives in a separate reasoning_content field here (DeepSeek, OpenRouter, vLLM). It should show collapsed and never be re-sent.", text: "Paris is the capital of France." };
+    case "filler": return { text: "Absolutely! Here's the short version: `git switch -c name` creates a branch and switches to it.\n\nI hope this helps! Let me know if you have any other questions." };
+    case "loop": return auto ? { text: "The config file is valid; nothing else to change." } : { text: "Here is what I found in the config. " + "I will now check the config file again to be sure. ".repeat(40) };
+    case "textcall": return afterTool ? { text: "The workspace has the folders listed above." } : { text: "Let me look at the workspace.\n```json\n{\"name\": \"fs_list\", \"arguments\": {\"path\": \".\"}}\n```" };
+    case "toolcode": return afterTool ? { text: "Listed." } : { text: "```tool_code\nprint(default_api.fs_list(path=\".\", depth=1))\n```" };
+    case "cjk": return { text: "The function 返回 a list of users，then the caller filters them by role：admins first." };
+    case "cite": return auto ? { text: "I could not open a page confirming that, so I removed the link. The release notes I found do not mention a version 9." } : afterTool ? { text: "Bun 9 ships a new bundler, according to [the release notes](https://bun.sh/blog/bun-v9-imaginary) and [this benchmark](https://example-benchmarks.dev/bun9)." } : { call: { name: "web_search", args: { query: "bun 9 release notes", limit: 3 } } };
+    case "danger": return afterTool ? { text: /approved/.test(q) ? "Done." : "That needs your approval first." } : { text: /approved/.test(q) ? "" : "Dropping the demo table.", call: { name: "shell", args: { command: DANGER } } };
+    case "pkg": return afterTool ? { text: "Noted." } : { call: { name: "pip_install", args: { packages: ["requests", "fastapi-turbo-utils-pro"] } } };
+    case "stuck": return tools < 6 ? { text: tools ? "" : "Reading the file.", call: { name: "fs_read", args: { path: "does/not/exist.txt" } } } : { text: "Gave up." };
+    case "slop": return afterTool || auto ? { text: auto ? "Left as is (mock)." : "Built the landing page." } : { call: { name: "fs_write", args: { path: "artifacts/guard-slop.html", content: "<!doctype html><html><head><style>body{margin:0;background:#0a0a0f;color:#39ff14;font-family:Orbitron,sans-serif}.hero{background:linear-gradient(135deg,#6366f1,#a855f7);text-align:center;padding:120px}.card{border-left:4px solid #a855f7;border-radius:16px;box-shadow:0 0 40px #a855f7;backdrop-filter:blur(12px)}</style></head><body><section class=\"hero\"><h1>🚀 UNLEASH THE FUTURE</h1><p>Supercharge your workflow with next-gen AI-powered synergy.</p><button>Get Started</button></section><div class=\"card\">✨ Blazing fast</div></body></html>" } } };
+    case "integrity": return afterTool || auto ? { text: auto ? "Left as is (mock)." : "Implemented and all done." } : { call: { name: "fs_write", args: { path: "artifacts/guard_calc.py", content: "API_KEY = \"sk-proj-abcdefghijklmnopqrstuvwxyz123456\"\n\ndef parse(expr):\n    try:\n        return eval(expr)\n    except Exception:\n        pass\n\ndef simplify(expr):\n    raise NotImplementedError\n" } } };
+  }
+  return { text: "Unknown guard scenario. Try: " + GUARDS.join(", ") };
+}
+const GUARDS = ["think", "orphan", "reasoning", "filler", "loop", "textcall", "toolcode", "cjk", "cite", "danger", "pkg", "stuck", "slop", "integrity"];
+
 function scenario(messages) {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const q = (typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content || "")).toLowerCase();
   const afterTool = messages[messages.length - 1]?.role === "tool";
+  const g = [...messages].reverse().filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join(" ").match(/guard:(\w+)/);
+  if (g && (q.includes("guard:") || /\[automatic|approved|denied/.test(q) || afterTool)) return guard(g[1], messages, q);
   if (q.includes("ui_event")) return { text: "You scored well on mechanics; kinetics and function graphs need work. Next: 10 targeted questions on first-order kinetics and cubic root counting via turning points." };
   if (/jee|mock test/.test(q)) return afterTool ? { text: JEE } : { text: "Checking recent paper patterns.", call: { name: "web_search", args: { query: "JEE Main 2026 question paper pattern physics chemistry maths", limit: 3 } } };
   const open = q.match(/open\s+(\S+)/);
@@ -168,7 +200,9 @@ function chunks(text) {
 export function complete(j) {
   const msgs = j.messages || [];
   const sys = msgs.find((m) => m.role === "system")?.content || "";
-  const text = /summar|compact/i.test(sys + JSON.stringify(msgs.slice(-1))) ? "Goal: practice JEE. Done: mock 1 built (6 q). Facts: +4/−1 marking. Open: analysis of attempt." : "Mock chat";
+  const last = JSON.stringify(msgs.slice(-1));
+  if (/Fragments in another script/.test(last)) { const n = (last.match(/\\n\d+\. /g) || []).length || 1; return { choices: [{ message: { role: "assistant", content: JSON.stringify(Array(n).fill("returns")) } }] }; }
+  const text = /summar|compact/i.test(sys + last) ? "Goal: practice JEE. Done: mock 1 built (6 q). Facts: +4/−1 marking. Open: analysis of attempt." : "Mock chat";
   return { choices: [{ message: { role: "assistant", content: text } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
 }
 
@@ -176,6 +210,7 @@ export function complete(j) {
 export async function* stream(j) {
   const send = (delta, finish = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
   const sc = scenario(j.messages || []);
+  for (const c of chunks(sc.reasoning || "")) { yield send({ reasoning_content: c }); await sleep(10 + Math.random() * 60); }
   for (const c of chunks(sc.text || "")) { yield send({ content: c }); await sleep(5 + Math.random() * (Math.random() < 0.1 ? 400 : 160)); }
   if (sc.call) {
     const id = "call_" + Date.now();

@@ -36,7 +36,8 @@ export function toolText(p: ToolPart) {
   return `[${p.name}(${JSON.stringify(p.args).slice(0, 160)}) -> ${oneLine(p.result || "", 600)}]`;
 }
 export function assistantText(m: Msg) {
-  return m.parts.map((p) => (p.type === "text" ? p.text : toolText(p))).join("\n");
+  // reasoning is never re-sent: it is large, and replaying it degrades later answers
+  return m.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool" ? toolText(p) : "")).filter(Boolean).join("\n");
 }
 export function toolTokens(m: Msg) {
   return m.parts.reduce((a, p) => a + (p.type === "tool" ? est(toolText(p)) : 0), 0);

@@ -106,7 +106,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .edit { width: 100%; background: var(--bubble); border-radius: var(--r); padding: 10px 14px; }
 .edit textarea { width: 100%; background: none; border: 0; outline: none; resize: none; }
 .edit .row { display: flex; justify-content: flex-end; gap: 6px; }
-.txt-btn { font-size: 13px; padding: 4px 10px; border-radius: var(--r); color: var(--muted); }
+.txt-btn { white-space: nowrap; font-size: 13px; padding: 4px 10px; border-radius: var(--r); color: var(--muted); }
 .txt-btn:hover { background: var(--surface); color: var(--fg); }
 .txt-btn.solid { background: var(--fg); color: var(--bg); }
 .caret::after { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--fg); opacity: .5; margin-left: 4px; animation: pulse 1s infinite; vertical-align: middle; }
@@ -222,7 +222,8 @@ input, textarea, select { font: inherit; color: inherit; }
 .win.min .win-body, .win.min .win-bar.bot { display: none; }
 .win-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 4; }
 .seg { display: inline-flex; padding: 2px; border-radius: var(--r); background: var(--surface); }
-.seg button { padding: 3px 10px; border-radius: calc(var(--r) - 3px); color: var(--muted); font-size: 12px; }
+/* inline-flex + nowrap: Tailwind preflight makes svg display:block, which broke "Preview" onto two lines */
+.seg button { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; padding: 3px 10px; border-radius: calc(var(--r) - 3px); color: var(--muted); font-size: 12px; }
 .seg button.on { background: var(--float); color: var(--fg); }
 .win iframe.full { width: 100%; height: 100%; border: 0; display: block; background: white; }
 .win .editor { width: 100%; height: 100%; min-height: 100%; background: none; border: 0; outline: none; resize: none; padding: 16px 18px; font: 13px/1.65 var(--font-mono); tab-size: 2; }
@@ -264,7 +265,7 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 /* ============ Canvas viewers ============ */
 .win-bar .sp { flex: 1; }
 .win-bar .seg { flex: none; }
-.win-bar .seg svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; }
+.win-bar .seg svg { width: 12px; height: 12px; flex: none; }
 .win-bar .seg.sheets { max-width: 50%; overflow-x: auto; scrollbar-width: none; }
 .win-bar .seg.sheets button { white-space: nowrap; }
 .v-meta { color: var(--muted); font-size: 12px; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -565,3 +566,23 @@ button.mini:hover:not(:disabled) { border-color: var(--muted); } button.mini:dis
 .picks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .picks .chip { font-size: 12px; padding: 3px 9px; border: 1px solid var(--line); border-radius: var(--r); background: none; color: var(--fg); cursor: pointer; }
 .picks .chip.on { background: var(--fg); color: var(--bg); border-color: transparent; } .picks .chip:disabled { opacity: .4; cursor: default; }
+
+/* reasoning (collapsed <think> / reasoning_content) */
+.reason { margin: 8px 0; font-size: 13.5px; }
+.reason > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); padding: 3px 8px 3px 4px; margin-left: -4px; border-radius: var(--r); user-select: none; }
+.reason > summary::-webkit-details-marker { display: none; }
+.reason > summary::after { content: ""; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s var(--ease); }
+.reason[open] > summary::after { transform: rotate(45deg); }
+.reason > summary:hover { background: var(--surface); color: var(--fg); }
+.reason .shimmer { background: linear-gradient(90deg, var(--muted) 40%, var(--fg) 50%, var(--muted) 60%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2s linear infinite; }
+.reason-body { margin: 6px 0 4px; padding-left: 12px; border-left: 1px solid var(--line); color: var(--muted); white-space: pre-wrap; line-height: 1.6; max-height: 320px; overflow: auto; animation: fadeUp .2s var(--ease); }
+
+/* held commands: one click to approve */
+.approve { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; animation: fadeUp .2s var(--ease); }
+.approve .ap-why { font-size: 13px; color: var(--muted); }
+.approve pre { margin: 0; font: 12.5px/1.55 var(--font-mono); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+.approve .ap-act { display: flex; gap: 6px; justify-content: flex-end; }
+.approve small { color: var(--muted); font-size: 12px; }
+
+/* links the model never opened in this chat */
+.sm-link.sm-unv { text-decoration-style: dotted; text-decoration-color: var(--muted); }

@@ -7,13 +7,14 @@ export const conversations = pgTable("conversations", {
   summary: text("summary"),
   summaryUpTo: text("summary_up_to"),
   /** Harness state: loaded tool packs (kept so the tool list stays stable across turns) and the task checklist. */
-  state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[] }>().notNull().default({}),
+  state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[]; approved?: string[] }>().notNull().default({}),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 export type Part =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; unverified?: string[] }
+  | { type: "reasoning"; text: string; ms?: number }
   | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
 
 export type Attachment = { path: string; name: string; mime: string; size: number };

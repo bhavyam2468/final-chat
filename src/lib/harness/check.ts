@@ -17,24 +17,25 @@ export function blocksTags() {
   return known;
 }
 
-const UI_EXT = /\.(html?|css|jsx|tsx|vue|svelte|ui)$/i;
+const UI_EXT = /\.(html?|css|jsx|tsx|vue|svelte|ui|md)$/i;
 const kindOf = (f: string) => { const e = path.extname(f).slice(1).toLowerCase(); return e === "htm" ? "html" : e; };
 
 /** Lint files/snippets for slop. Returns formatted findings ("" when clean). */
-export async function lintFiles(files: { path: string; abs: string }[]) {
+export async function lintFiles(files: { path: string; abs: string }[], brief = "") {
   const lines: string[] = [];
   for (const f of files) {
     if (!UI_EXT.test(f.path)) continue;
     const text = await fsp.readFile(f.abs, "utf8").catch(() => "");
     if (!text) continue;
-    const issues: Issue[] = kindOf(f.path) === "ui" ? blocksLint(text, blocksTags()) : slopLint(text, kindOf(f.path));
+    const k = kindOf(f.path);
+    const issues: Issue[] = k === "ui" ? blocksLint(text, blocksTags(), { brief }) : slopLint(text, k, { brief });
     if (issues.length) lines.push(fmtIssues(issues, f.path));
   }
   return lines.join("\n");
 }
-export function lintChat(text: string) {
+export function lintChat(text: string, brief = "") {
   const out: string[] = [];
-  for (const m of text.matchAll(/<ui[^>]*>([\s\S]*?)<\/ui>/g)) { const i = blocksLint(m[1], blocksTags()); if (i.length) out.push(fmtIssues(i, "<ui>")); }
+  for (const m of text.matchAll(/<ui[^>]*>([\s\S]*?)<\/ui>/g)) { const i = blocksLint(m[1], blocksTags(), { brief }); if (i.length) out.push(fmtIssues(i, "<ui>")); }
   return out.join("\n");
 }
 

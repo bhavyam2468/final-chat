@@ -15,7 +15,10 @@ export async function complete(st: Settings, msgs: OAMsg[], max = 1200): Promise
   const r = await fetch(endpoint(st), { method: "POST", headers: headers(st), body: JSON.stringify({ model: st.model, messages: msgs, max_tokens: max }) });
   if (!r.ok) throw new Error(`LLM ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const j = await r.json();
-  return (j.choices?.[0]?.message?.content as string) || "";
+  // reasoning models put <think> blocks (or an orphan </think>) in content; never let them into summaries
+  const out = ((j.choices?.[0]?.message?.content as string) || "").replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, "");
+  const orphan = out.search(/<\/(think|thinking|reasoning)>/i);
+  return (orphan >= 0 ? out.slice(out.indexOf(">", orphan) + 1) : out).trim();
 }
 
 /** Merge consecutive same-role messages so strict providers (Gemini, some local servers) accept the history. */

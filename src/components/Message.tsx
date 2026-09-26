@@ -77,7 +77,29 @@ function AskCard({ q, options, multi, live }: { q: string; options: string[]; mu
   </div>;
 }
 
-const ToolCall = memo(function ToolCall({ p, lastTodo, live }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean }) {
+type Approval = { cmd: string; reason: string; host: boolean; decision?: "approve" | "deny" };
+function ApproveBar({ ap, live, mid, pid }: { ap: Approval; live: boolean; mid?: string; pid: string }) {
+  const app = useApp();
+  const [busy, setBusy] = useState(false);
+  const go = (d: "approve" | "deny") => { if (!mid || busy) return; setBusy(true); app.decide(mid, pid, d, ap.cmd).finally(() => setBusy(false)); };
+  return <div className="approve">
+    <div className="ap-why">{ap.reason}{ap.host ? " · on your machine" : ""}</div>
+    <pre>{ap.cmd}</pre>
+    {ap.decision ? <small>{ap.decision === "approve" ? "Approved" : "Denied"}</small>
+      : live && mid ? <div className="ap-act"><button className="txt-btn" disabled={busy} onClick={() => go("deny")}>Deny</button><button className="txt-btn solid" disabled={busy} onClick={() => go("approve")}>Run it</button></div> : null}
+  </div>;
+}
+
+const fmtMs = (ms: number) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
+/** Model reasoning (<think> blocks or reasoning_content): collapsed, never copied, never re-sent. */
+function Reasoning({ text, ms, live }: { text: string; ms?: number; live: boolean }) {
+  return <details className="reason">
+    <summary>{live ? <span className="shimmer">Thinking</span> : ms ? `Thought for ${fmtMs(ms)}` : "Thought"}</summary>
+    <div className="reason-body">{text.trim()}</div>
+  </details>;
+}
+
+const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean; mid?: string }) {
   const [open, setOpen] = useState(false);
   const app = useApp();
   const mcp = p.name.match(/^mcp__(.+?)__(.+)$/);
@@ -87,6 +109,7 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live }: { p: Extract<Part
   const argv = m.arg ? p.args[m.arg] : undefined;
   let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
   const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean } | undefined;
+  const ap = (p.meta as { approval?: Approval } | undefined)?.approval;
   if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
   if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
   const openable = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name);
@@ -101,14 +124,15 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live }: { p: Extract<Part
   return (
     <div className={"tool" + (pending ? " live" : "")}>
       <button className="tool-row" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <Icon /><span>{pending ? m.live : m.done}</span>{target && <span className="tgt">{target}</span>}
-        {pending ? <span className="spin" /> : p.ok === false ? <X className="err" /> : null}
+        <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>{target && <span className="tgt">{target}</span>}
+        {pending ? <span className="spin" /> : p.ok === false && !ap ? <X className="err" /> : null}
       </button>
       {openable && !pending && <button className="ib sm" aria-label="Open file" onClick={() => app.openFile(String(p.args.path))}><AppWindow /></button>}
       {p.name === "todo" && lastTodo && meta?.todo && <TodoList items={meta.todo} />}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {meta?.image && !pending && <img className="tool-shot" src={fileUrl(meta.image)} alt="" onClick={() => app.openFile(meta.image!)} />}
       {open && !pending && <div className="tool-body">{body}</div>}
+      {ap && <ApproveBar ap={ap} live={!!live} mid={mid} pid={p.id} />}
     </div>
   );
 });
@@ -162,20 +186,21 @@ export function useMdHandlers() {
 }
 
 /** Live text part: bursty chunks are paced into a steady reveal before rendering. */
-function LiveText({ text, streaming, h }: { text: string; streaming: boolean; h: ReturnType<typeof useMdHandlers> }) {
+function LiveText({ text, streaming, h, unverified }: { text: string; streaming: boolean; h: ReturnType<typeof useMdHandlers>; unverified?: string[] }) {
   const s = useSmoothText(text, streaming);
-  return <StreamMarkdown text={s.text} streaming={s.live} {...h} />;
+  return <StreamMarkdown text={s.text} streaming={s.live} unverified={unverified} {...h} />;
 }
 
-export const AssistantBody = memo(function AssistantBody({ parts, streaming, last }: { parts: Part[]; streaming: boolean; last?: boolean }) {
+export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string }) {
   const h = useMdHandlers();
   const [animate] = useState(streaming); // messages loaded from history render instantly
   if (!parts.length && streaming) return <div className="thinking" />;
   let lastTodo = -1;
   parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
   return <>{parts.map((p, i) => p.type === "text"
-    ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} /> : <StreamMarkdown key={i} text={p.text} streaming={false} {...h} />
-    : <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} />)}</>;
+    ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />
+    : p.type === "reasoning" ? <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && i === parts.length - 1} />
+    : <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} mid={mid} />)}</>;
 });
 
 /** <ui_event label="…"> from a BlocksUI form/button: shown as a compact card instead of raw XML. */
@@ -218,7 +243,7 @@ export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit,
   const text = m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   return (
     <div className="turn ai" data-mid={m.id}>
-      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} /></div>
+      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} /></div>
       {!streaming && <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={text} />

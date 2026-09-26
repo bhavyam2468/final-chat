@@ -10,8 +10,12 @@ import { mcpTools, readServers } from "./mcp";
 import { skillsIndex, findSkill, skillMeta, skillAllowed } from "./skills";
 import { varsFor, varsIn } from "./credentials";
 import { lintFiles } from "./harness/check";
+import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, urlsIn } from "./harness/stream";
+import { StuckDetector } from "./harness/stuck";
+import { integrityIssues, isCodeFile } from "./harness/integrity";
+import { fmtIssues } from "./harness/slop";
 import { mode as execMode } from "./exec";
-import { est, estMsg, endpoint, headers, normalize, OAMsg } from "./llm";
+import { est, estMsg, endpoint, headers, normalize, complete, OAMsg } from "./llm";
 import { chain, assistantText, compactTools, compactWeb, compactHistory, turnReport, Msg, Conv, CtxReport, CtxSection } from "./context";
 import { canvasPath } from "./shared";
 
@@ -144,6 +148,23 @@ export async function contextReport(convId: string, leafId: string | null, threa
   return { budget, window: st.contextTokens, total: sections.reduce((a, s) => a + s.tokens, 0), sections, turns: hist ? turnReport(hist.path, conv) : [] };
 }
 
+/** Script intrusion (e.g. Chinese tokens in an English reply from a quantized distill): punctuation fixed locally, words via one short call. */
+async function fixForeign(st: Settings, parts: Part[], userText: string) {
+  const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
+  const jobs = texts.flatMap((p) => foreignSpans(p.text, userText).map((s) => ({ p, s })));
+  if (!jobs.length) return;
+  const need = jobs.filter((j) => fixPunct(j.s.span) === null);
+  let tr: unknown[] = [];
+  if (need.length) {
+    const out = await complete(st, [{ role: "user", content: `Fragments in another script slipped into a reply. For each, give the replacement word(s) in the reply's own language that fit the context. Reply with only a JSON array of strings, same order.\n\n${need.map((j, i) => `${i + 1}. "${j.s.span}" in: …${j.s.context.replace(/\n/g, " ")}…`).join("\n")}` }], 300);
+    try { const m = out.match(/\[[\s\S]*\]/); tr = m ? JSON.parse(m[0]) : []; } catch {}
+  }
+  for (const p of texts) {
+    const mine = jobs.filter((j) => j.p === p).map((j) => ({ ...j.s, r: fixPunct(j.s.span) ?? tr[need.indexOf(j)] })).filter((x): x is typeof x & { r: string } => typeof x.r === "string" && !!x.r.trim());
+    if (mine.length) p.text = replaceSpans(p.text, mine, mine.map((x) => x.r));
+  }
+}
+
 export async function runAgent(opts: { conv: Conv; assistantId: string; parentId: string; threadOf: string | null; emit: Emit; signal: AbortSignal }) {
   await ensureWorkspace();
   const { assistantId, parentId, threadOf, emit, signal } = opts;
@@ -175,7 +196,11 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   let toolDefTok = est(JSON.stringify(tools));
 
   const parts: Part[] = [];
-  const pushText = (d: string) => { const l = parts[parts.length - 1]; if (l?.type === "text") l.text += d; else parts.push({ type: "text", text: d }); };
+  const lastText = () => { for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; if (p.type === "text") return p; if (p.type === "tool") return null; } return null; };
+  let thinkStart = 0;
+  const endThink = () => { const r = parts[parts.length - 1]; if (r?.type === "reasoning" && r.ms === undefined) r.ms = Date.now() - thinkStart; };
+  const pushText = (d: string) => { endThink(); const l = parts[parts.length - 1]; if (l?.type === "text") l.text += d; else parts.push({ type: "text", text: d }); };
+  const pushReasoning = (d: string) => { const l = parts[parts.length - 1]; if (l?.type === "reasoning") l.text += d; else { thinkStart = Date.now(); parts.push({ type: "reasoning", text: d }); } emit({ t: "reasoning", d }); };
   const reload = async () => { all = await db.select().from(messages).where(eq(messages.conversationId, conv.id)); [conv] = await db.select().from(conversations).where(eq(conversations.id, conv.id)); };
   const ctx: ToolCtx = {
     settings: st, conversationId: conv.id, pinned: conv.context, emit, state,
@@ -217,8 +242,26 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   }
 
   const touched = new Set<string>();
-  let qualityRounds = 0;
+  const snapshots = new Map<string, string>(); // file content before this turn's first write (integrity diff)
+  const brief = [...hist.path.filter((m) => m.role === "user").slice(-3).map((m) => m.content)].join("\n");
+  type TP = Extract<Part, { type: "tool" }>;
+  const toolSeen = (ps: Part[]) => ps.filter((p): p is TP => p.type === "tool").map((p) => `${p.result || ""} ${JSON.stringify((p.meta as { sources?: unknown } | undefined)?.sources || "")}`);
+  /** Everything the model actually saw: prompt + pinned files, user messages, tool results and sources (never its own earlier prose). */
+  const seenText = () => [sys.text, ...hist.path.flatMap((m) => (m.role === "user" ? [m.content] : toolSeen(m.parts))), ...toolSeen(parts)].join("\n");
+  const stuck = new StuckDetector();
+  let opener = new OpenerGate();
+  let sep = false; // next visible text continues a cut-off part: start a new paragraph
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false;
+  const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
+  /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
+  const rewriteStep = (stepText: string, next: string) => {
+    const lt = lastText();
+    if (!lt || !lt.text.endsWith(stepText)) return;
+    lt.text = lt.text.slice(0, lt.text.length - stepText.length) + next;
+    if (!lt.text) parts.splice(parts.indexOf(lt), 1);
+    emit({ t: "retext", text: lt.text });
+  };
   try {
     for (let step = 0; step < maxSteps(); step++) {
       tools = allTools(st, packsFor(st, state), mcp);
@@ -230,10 +273,23 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
       if (!res.ok || !res.body) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 400)}`);
       const reader = res.body.getReader();
       const dec = new TextDecoder();
-      let buf = "", text = "";
+      const split = new ReasoningSplitter();
+      let buf = "", text = "", thought = "", checkedAt = 0, thoughtAt = 0, looped = false;
+      const stepStart = Date.now();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const calls: any[] = [];
-      for (;;) {
+      const visible = (t: string) => {
+        let v = opener.push(t);
+        if (v && sep) { const lt = lastText(); if (lt && lt.text && !/\s$/.test(lt.text)) v = "\n\n" + v.replace(/^\s+/, ""); sep = false; }
+        if (v) { text += v; pushText(v); emit({ t: "text", d: v }); }
+      };
+      const onContent = (c: string) => {
+        const r = split.push(c);
+        if (r.orphan) { rewriteStep(text, ""); text = ""; opener = new OpenerGate(); }
+        if (r.reasoning) { thought += r.reasoning; pushReasoning(r.reasoning); if (r.orphan) thinkStart = stepStart; }
+        if (r.text) visible(r.text);
+      };
+      read: for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
@@ -246,8 +302,11 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
           let j; try { j = JSON.parse(data); } catch { continue; }
           const d = j.choices?.[0]?.delta;
           if (!d) continue;
-          if (d.content) { text += d.content; pushText(d.content); emit({ t: "text", d: d.content }); }
+          const rc = d.reasoning_content ?? d.reasoning;
+          if (typeof rc === "string" && rc) { thought += rc; pushReasoning(rc); }
+          if (d.content) onContent(d.content);
           for (const tc of d.tool_calls || []) {
+            endThink();
             const i = tc.index ?? calls.length;
             const fresh = !calls[i];
             calls[i] ??= { id: tc.id || `call_${i}_${Date.now()}`, type: "function", function: { name: "", arguments: "" } };
@@ -257,33 +316,79 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             if (tc.extra_content) calls[i].extra_content = tc.extra_content;
             if (fresh && calls[i].function.name) emit({ t: "toolStart", id: calls[i].id, name: calls[i].function.name });
           }
+          // Degenerate repetition: cut the stream instead of burning the whole output budget.
+          if (text.length - checkedAt > 240) { checkedAt = text.length; const k = findLoop(text); if (k >= 0) { rewriteStep(text, text.slice(0, k)); text = text.slice(0, k); looped = true; } }
+          if (thought.length - thoughtAt > 600) { thoughtAt = thought.length; if (findLoop(thought) >= 0) looped = true; }
+          if (looped) { await reader.cancel().catch(() => {}); break read; }
         }
       }
+      if (!looped) { const e = split.end(); if (e.reasoning) pushReasoning(e.reasoning); if (e.text) visible(e.text); }
+      { const held = opener.flush(); if (held) { text += held; pushText(held); emit({ t: "text", d: held }); } }
+      endThink();
+      if (looped) {
+        emit({ t: "notice", text: "Stopped a repetition loop in the model output." });
+        if (loopRetries++ < 1) {
+          sep = true;
+          loopMsgs.push({ role: "assistant", content: text || "(cut)" });
+          loopMsgs.push({ role: "user", content: "[Automatic note, not from the user] Your output began repeating itself and was cut. Continue from where the useful content ended. Do not repeat earlier sentences." });
+          continue;
+        }
+        break;
+      }
       const valid = calls.filter(Boolean);
+      // Small local models often print the tool call as text instead of calling it; promote it to a real call.
+      if (!valid.length && text) {
+        const x = extractTextCalls(text, new Set(tools.map((t) => t.function.name)));
+        if (x.calls.length) {
+          rewriteStep(text, x.cleaned); text = x.cleaned;
+          x.calls.forEach((c, i) => valid.push({ id: `txt_${step}_${i}_${Date.now()}`, type: "function", function: { name: c.name, arguments: JSON.stringify(c.args) } }));
+        }
+      }
       if (!valid.length) {
-        // Post-turn quality guard: design/slop lint on UI files built this turn; "fix" gets one repair round.
-        const ui = [...touched].filter((p) => /\.(html?|css|jsx|tsx|vue|svelte|ui)$/i.test(p));
-        if (st.quality !== "off" && ui.length && qualityRounds < 1 && !signal.aborted) {
+        // Post-turn quality guard (one round): design/prose lint, code integrity and "changed but never ran it".
+        if (st.quality !== "off" && touched.size && qualityRounds < 1 && !signal.aborted) {
           qualityRounds++;
-          const report = await lintFiles(ui.map((p) => ({ path: p, abs: resolvePath(p, st.access) })));
+          const files = [...touched];
+          const lint = await lintFiles(files.map((p) => ({ path: p, abs: resolvePath(p, st.access) })), brief);
+          const integ: string[] = [];
+          for (const f of files) {
+            if (!isCodeFile(f)) continue;
+            const now = await fs.readFile(resolvePath(f, st.access), "utf8").catch(() => "");
+            const iss = integrityIssues(f, snapshots.get(f) ?? "", now, brief);
+            if (iss.length) integ.push(fmtIssues(iss, f));
+          }
+          const code = files.filter(isCodeFile);
+          const unverified = code.length && lastVerify < lastEdit ? `- ${code.slice(0, 4).join(", ")}: code changed but nothing ran after the last edit. Run it or its tests before claiming it works; if it cannot run here, say it is untested.` : "";
+          const report = [lint, ...integ, unverified].filter(Boolean).join("\n");
           if (report) {
             const id = `qc_${Date.now()}`;
-            const part: Part = { type: "tool", id, name: "quality_check", args: { files: ui }, result: report, ok: false };
+            const part: Part = { type: "tool", id, name: "quality_check", args: { files }, result: report, ok: false };
             parts.push(part);
             emit({ t: "tool", id, name: part.name, args: part.args });
             emit({ t: "toolResult", id, result: report, ok: false });
             if (st.quality === "fix") {
               loopMsgs.push({ role: "assistant", content: text || "(done)" });
-              loopMsgs.push({ role: "user", content: `[Automatic design check, not from the user] Issues in files you wrote:\n${report}\nFix them now with fs_edit, then reply with one short line saying what changed.` });
+              loopMsgs.push({ role: "user", content: `[Automatic check, not from the user] Issues in files you changed:\n${report}\nFix what is real (fs_edit / run it). If a flag is wrong for this request, ignore it. Then reply with one short line saying what changed.` });
               continue;
             }
+          }
+        }
+        // Citation guard: links in a web-backed answer that never appeared in any result → verify or drop, once.
+        if (st.quality === "fix" && usedWeb && citeRounds < 1 && text && !signal.aborted) {
+          const bad = unverifiedUrls(text, seenText());
+          if (bad.length) {
+            citeRounds++;
+            rewriteStep(text, "");
+            loopMsgs.push({ role: "assistant", content: text });
+            loopMsgs.push({ role: "user", content: `[Automatic citation check, not from the user] These links did not appear in any search result or page you opened: ${bad.slice(0, 8).join(" ")}. web_fetch the ones you need to confirm them, or remove them. Cite only pages you actually saw. Then give the complete answer again.` });
+            continue;
           }
         }
         break;
       }
       loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
       const images: string[] = [];
-      let stop = false;
+      let stop = false, nudge = "";
       for (const c of valid) {
         let args: Record<string, unknown> = {};
         let bad = "";
@@ -291,18 +396,28 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         const part: Part = { type: "tool", id: c.id, name: c.function.name, args };
         parts.push(part);
         emit({ t: "tool", id: c.id, name: part.name, args });
-        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(c.function.name, args, ctx);
-        if (out.ok && /^fs_(write|edit|insert)$/.test(c.function.name) && typeof args.path === "string") touched.add(args.path);
+        const name = c.function.name;
+        if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
+        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, ctx);
+        callNo++;
+        if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }
+        if (VERIFY.test(name)) lastVerify = callNo;
+        if (/^web_/.test(name) || /^mcp__.*(search|fetch|browse)/i.test(name)) usedWeb = true;
         if (out.images?.length) images.push(...out.images);
         if (out.stop) stop = true;
         Object.assign(part, { result: out.result, ok: out.ok, meta: out.meta });
         emit({ t: "toolResult", id: c.id, result: out.result.slice(0, 20000), ok: out.ok, meta: out.meta });
         loopMsgs.push({ role: "tool", tool_call_id: c.id, content: out.result });
+        stuck.add({ name, args, result: out.result, ok: out.ok });
+        const s = stuck.check();
+        if (s?.stop) { stop = true; emit({ t: "notice", text: s.stop }); pushText(`\n\n> ${s.stop}`); }
+        else if (s?.nudge) nudge = s.nudge;
       }
       if (stop) break;
+      const lastTool = loopMsgs[loopMsgs.length - 1];
+      if (nudge && lastTool.role === "tool" && typeof lastTool.content === "string") lastTool.content += `\n\n[Automatic note] ${nudge}`;
       // Recitation: keep the open plan at the end of context (only while a checklist exists).
       const rem = todoReminder(state.todo);
-      const lastTool = loopMsgs[loopMsgs.length - 1];
       if (rem && lastTool.role === "tool" && typeof lastTool.content === "string" && !valid.some((c) => c.function.name === "todo")) lastTool.content += rem;
       // Vision: tool results are text-only in the OpenAI format, so images follow as a user message.
       if (images.length && st.vision !== false) {
@@ -326,6 +441,14 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     if (!signal.aborted) { const msg = e instanceof Error ? e.message : String(e); pushText(`\n\n> ${msg}`); emit({ t: "error", text: msg }); }
   }
 
+  // End-of-turn text hygiene. The client refetches the saved message right after the stream, so fixes show up there.
+  if (!signal.aborted) {
+    const lt = lastText();
+    if (lt) lt.text = trimCloser(lt.text);
+    await fixForeign(st, parts, brief).catch(() => {});
+    const seen = seenText();
+    for (const p of parts) if (p.type === "text" && urlsIn(p.text).length) { const u = unverifiedUrls(p.text, seen); if (u.length) p.unverified = u; else delete p.unverified; }
+  }
   const content = parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
   await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts });
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));

@@ -15,6 +15,9 @@ import { procStart, procLogs, procStop, procRestart } from "../procs";
 import { browse, Step } from "../browser";
 import { runChecks, lintFiles } from "../harness/check";
 import { findSkill, skillMeta, skillFiles } from "../skills";
+import { destructive, checkInstalls } from "../harness/guard";
+import { createHash } from "crypto";
+import os from "os";
 
 export type ToolDef = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
 const T = (name: string, description: string, props: Record<string, unknown> = {}, required: string[] = []): ToolDef => ({
@@ -27,7 +30,7 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[] };
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[] };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in
@@ -49,8 +52,8 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("fs_write", "Create a file or replace it entirely. Existing files: fs_read first; prefer fs_edit for changes", { path: s(), content: s(), mode: { type: "string", enum: ["overwrite", "append"] } }, ["path", "content"]),
     T("fs_edit", "Replace exact text. find must match the file (copy from fs_read without line numbers) and be unique unless all=true. Several edits apply atomically", { path: s(), find: s(), replace: s(), all: b(), edits: arr({ type: "object", properties: { find: s(), replace: s(), all: b() }, required: ["find", "replace"] }, "multiple edits in one call") }, ["path"]),
     T("fs_insert", "Insert lines after line N (0 = top, -1 = end) without matching text", { path: s(), line: n(), text: s() }, ["path", "line", "text"]),
-    T("fs_move", "Move/rename", { from: s(), to: s() }, ["from", "to"]),
-    T("fs_delete", "Delete file or dir", { path: s() }, ["path"]),
+    T("fs_move", "Move/rename. Into a folder: end `to` with /. Refuses to replace an existing file unless overwrite=true", { from: s(), to: s(), overwrite: b() }, ["from", "to"]),
+    T("fs_delete", "Delete file or dir (goes to trash; recoverable)", { path: s() }, ["path"]),
     T("run_python", "Run python3 in your sandbox, cwd=workspace", { code: s() }, ["code"]),
     T("pip_install", "Install python packages for run_python", { packages: arr({ type: "string" }) }, ["packages"]),
     T("shell", "Run bash in YOUR sandbox (cwd=workspace). Not the user's machine", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
@@ -81,6 +84,38 @@ export type ToolCtx = {
   state: ConvState; setState: (s: ConvState) => Promise<void>;
 };
 export type ToolOut = { result: string; ok: boolean; meta?: unknown; images?: string[]; stop?: boolean };
+
+export const approvalHash = (cmd: string, host: boolean) => createHash("sha1").update(`${host ? "host" : "sandbox"}\0${cmd.trim()}`).digest("hex").slice(0, 16);
+/**
+ * Destructive or risky actions need one click from the user. Returns null when this exact command was approved
+ * (the approval is consumed), otherwise a stop result the UI renders with Approve / Deny. Enforced here, not in the prompt.
+ */
+async function approvalGate(ctx: ToolCtx, cmd: string, reason: string, host: boolean): Promise<ToolOut | null> {
+  const hash = approvalHash(cmd, host);
+  const ok = ctx.state.approved || [];
+  if (ok.includes(hash)) { await ctx.setState({ ...ctx.state, approved: ok.filter((h) => h !== hash) }); return null; }
+  return { ok: false, stop: true, result: `Not run: needs the user's approval (${reason}). The user sees Approve / Deny. Stop here and wait; if approved, run exactly the same command again.`, meta: { approval: { cmd, hash, reason, host } } };
+}
+
+/** Recoverable delete: workspace files → workspace/.trash, others → the desktop trash (freedesktop / macOS). */
+// paths built with Array.join: path.join here makes the bundler trace the project folder (see workspace.ts)
+async function trash(abs: string): Promise<string> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  let dir: string, label: string;
+  if (abs.startsWith(WS + path.sep)) { dir = [WS, ".trash"].join("/"); label = ".trash/"; }
+  else if (process.platform === "darwin") { dir = [os.homedir(), ".Trash"].join("/"); label = "the Trash"; }
+  else { dir = [process.env.XDG_DATA_HOME || [os.homedir(), ".local/share"].join("/"), "Trash/files"].join("/"); label = "the Trash"; }
+  await fs.mkdir(dir, { recursive: true });
+  const base = path.basename(abs);
+  const dest = [dir, `${base}.${stamp}`].join("/");
+  await fs.rename(abs, dest).catch(async (e) => { if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e; await fs.cp(abs, dest, { recursive: true }); await fs.rm(abs, { recursive: true, force: true }); });
+  if (label === "the Trash" && process.platform !== "darwin") {
+    const info = dir.replace(/files$/, "info"); // not path.dirname: the bundler would trace it to the project root
+    await fs.mkdir(info, { recursive: true });
+    await fs.writeFile([info, `${base}.${stamp}.trashinfo`].join("/"), `[Trash Info]\nPath=${encodeURI(abs)}\nDeletionDate=${new Date().toISOString().slice(0, 19)}\n`).catch(() => {});
+  }
+  return label === ".trash/" ? `.trash/${path.basename(dest)}` : label;
+}
 
 const cut = (x: string, max = 8000) => (x.length > max ? x.slice(0, max) + `\n… (${x.length - max} more chars)` : x);
 
@@ -223,14 +258,45 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         if (out.ok) ledger(ctx.conversationId).set(f, mtime(f));
         return { ...out, result: out.ok ? `Inserted ${r.span[1] - r.span[0] + 1} lines into ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: "", after: String(a.text ?? "") } };
       }
-      case "fs_delete": { await fs.rm(P(a.path), { recursive: true, force: true }); return { ok: true, result: "Deleted " + a.path }; }
-      case "fs_move": { const to = P(a.to); await fs.mkdir(path.dirname(to), { recursive: true }); await fs.rename(P(a.from), to); return { ok: true, result: `Moved to ${a.to}` }; }
+      case "fs_delete": {
+        const f = P(a.path);
+        if (f === WS || f === os.homedir() || f === "/") return { ok: false, result: `Refusing to delete ${a.path}.` };
+        await fs.lstat(f).catch(() => { throw new Error(`${a.path} does not exist`); });
+        const where = await trash(f);
+        return { ok: true, result: `Deleted ${a.path} (moved to ${where}; recoverable)` };
+      }
+      case "fs_move": {
+        const from = P(a.from);
+        await fs.lstat(from).catch(() => { throw new Error(`${a.from} does not exist`); });
+        let to = P(a.to);
+        const toStat = await fs.stat(to).catch(() => null);
+        if (String(a.to).endsWith("/") || toStat?.isDirectory()) { await fs.mkdir(to, { recursive: true }); to = path.join(to, path.basename(from)); }
+        if (to === from) return { ok: true, result: "Source and destination are the same" };
+        const clash = await fs.lstat(to).catch(() => null);
+        if (clash && !a.overwrite) return { ok: false, result: `${rel(to)} already exists; nothing moved. Pick another name, or pass overwrite=true to replace it.` };
+        await fs.mkdir(path.dirname(to), { recursive: true });
+        if (clash) await trash(to);
+        await fs.rename(from, to).catch(async (e) => { if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e; await fs.cp(from, to, { recursive: true }); await fs.rm(from, { recursive: true, force: true }); });
+        return { ok: true, result: `Moved ${rel(from)} → ${rel(to)}${clash ? " (replaced file moved to trash)" : ""}` };
+      }
       case "run_python": { const r = await execPython(st, a.code); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
-      case "pip_install": { const r = await pipInstall(([] as string[]).concat(a.packages)); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) }; }
+      case "pip_install": {
+        const pk = ([] as string[]).concat(a.packages).map(String);
+        const chk = await checkInstalls(pk, "pypi");
+        if (chk?.block) return { ok: false, result: chk.block };
+        if (chk?.approve) { const gate = await approvalGate(ctx, `pip install ${pk.join(" ")}`, chk.approve, false); if (gate) return gate; }
+        const r = await pipInstall(pk); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
+      }
       case "shell":
       case "host_shell": {
         const host = name === "host_shell";
         if (host && hostDenied(st)) return { ok: false, result: hostDenied(st)! };
+        const cmd = String(a.command);
+        const danger = destructive(cmd, host ? "host" : "sandbox");
+        if (danger) { const gate = await approvalGate(ctx, cmd, danger.reason, host); if (gate) return gate; }
+        const chk = await checkInstalls(cmd);
+        if (chk?.block) return { ok: false, result: chk.block };
+        if (chk?.approve) { const gate = await approvalGate(ctx, cmd, chk.approve, host); if (gate) return gate; }
         const cwd = a.cwd ? resolvePath(String(a.cwd), host ? st.access : "sandbox") : undefined;
         const r = await runShell(st, String(a.command), Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd);
         return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}`) };

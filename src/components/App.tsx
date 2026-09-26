@@ -147,7 +147,14 @@ export default function App() {
             setMsgs((ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: e.conversationId })));
             setSel((s) => Object.fromEntries(Object.entries(s).map(([k, v]) => [r(k)!, r(v)!])));
             ta = e.assistantId; setStreamId(ta);
-          } else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
+          } else if (e.t === "reasoning") patchA((p) => { const l = p[p.length - 1]; return l?.type === "reasoning" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "reasoning", text: e.d }]; });
+          else if (e.t === "retext") patchA((p) => {
+            // the server rewrote the current text part (reasoning retracted, loop cut, printed tool call removed)
+            let i = p.length - 1; while (i >= 0 && p[i].type === "reasoning") i--;
+            if (i < 0 || p[i].type !== "text") return p;
+            return e.text ? p.map((x, k) => (k === i ? { ...x, text: e.text } : x)) : p.filter((_, k) => k !== i);
+          });
+          else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
           else if (e.t === "toolStart") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p : [...p, { type: "tool", id: e.id, name: e.name, args: {} }]));
           else if (e.t === "tool") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, name: e.name, args: e.args } : x)) : [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]));
           else if (e.t === "canvas") openCanvasRef.current(e.spec, { dock: e.dock });
@@ -203,6 +210,13 @@ export default function App() {
       sendMain({ content: `<ui_event${attr}>\n${o?.prompt ? `<instruction>${o.prompt}</instruction>\n` : ""}${toXml(d)}\n</ui_event>`, attachments: [], quote: null });
     },
     sendText: (t: string) => sendMain({ content: t, attachments: [], quote: null }),
+    decide: async (messageId: string, partId: string, decision: "approve" | "deny", cmd: string) => {
+      const cid = convRef.current?.id; if (!cid) return;
+      const r = await fetch(`/api/conversations/${cid}/approve`, { method: "POST", body: JSON.stringify({ messageId, partId, decision }) });
+      if (!r.ok) return;
+      setMsgs((ms) => ms.map((m) => (m.id !== messageId ? m : { ...m, parts: m.parts.map((p) => (p.type === "tool" && p.id === partId ? { ...p, meta: { ...(p.meta as object), approval: { ...((p.meta as { approval?: object }).approval || {}), decision } } } : p)) })));
+      sendMain({ content: decision === "approve" ? `Approved: \`${cmd.length > 200 ? cmd.slice(0, 200) + "…" : cmd}\`. Run it.` : "Denied. Do not run it. Suggest a safer way if there is one.", attachments: [], quote: null });
+    },
     mention: (p: string) => mainRef.current?.insert("@" + p + " "),
     quote: (t: string) => setQuotes((q) => ({ ...q, [active.current]: t })),
   }), [openFile, openCanvas, refreshTree, tree, conv?.context, toggleContext, sendMain]);

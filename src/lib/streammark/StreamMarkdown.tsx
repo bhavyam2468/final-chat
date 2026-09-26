@@ -21,6 +21,10 @@ const EXTS: Ext[] = [
   { name: "fnDef", level: "block", start: (s: string) => { const i = s.search(/^\[\^/m); return i < 0 ? undefined : i; },
     tokenizer(src: string) { const m = /^\[\^([^\]]+)\]:\s*([^\n]*(?:\n(?!\n|\[\^)[^\n]*)*)\n*/.exec(src); if (m) return { type: "fnDef", raw: m[0], id: m[1], text: m[2], tokens: this.lexer.inlineTokens(m[2]) }; }, renderer: () => "" },
   inline("mark", "==", /^==(?!=)([^\n]+?)==/, (m) => ({ text: m[1] })),
+  // LaTeX-style delimiters (DeepSeek, Qwen and most papers use \( \) and \[ \] instead of $)
+  { name: "mathBlockTex", level: "block", start: (s: string) => { const i = s.indexOf("\\["); return i < 0 ? undefined : i; },
+    tokenizer(src: string) { const m = /^\\\[([\s\S]+?)\\\]\s*(?:\n|$)/.exec(src); if (m) return { type: "mathBlock", raw: m[0], tex: m[1].trim() }; }, renderer: () => "" },
+  inline("mathInlineTex", "\\(", /^\\\(([^\n]+?)\\\)/, (m) => ({ tex: m[1].trim() })),
   inline("mathInline", "$", /^\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/, (m) => ({ tex: m[1] })),
   inline("fnRef", "[^", /^\[\^([^\]]+)\](?!:)/, (m) => ({ id: m[1] })),
 ];
@@ -36,7 +40,7 @@ export type SMComponents = {
   /** A link to a local (non-URL) file alone on its own line renders as an inline preview card. */
   file?: (p: { href: string; label: string }) => React.ReactNode;
 };
-type Ctx = { onLink?: (href: string, e: React.MouseEvent) => boolean | void; streaming: boolean; fn: Map<string, number>; components: SMComponents; resolveSrc?: (s: string) => string };
+type Ctx = { onLink?: (href: string, e: React.MouseEvent) => boolean | void; streaming: boolean; fn: Map<string, number>; components: SMComponents; resolveSrc?: (s: string) => string; unverified?: string[] };
 const C = createContext<Ctx>({ streaming: false, fn: new Map(), components: {} });
 
 const yt = (u: string) => u.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/)?.[1];
@@ -85,11 +89,12 @@ function Inline({ tokens }: { tokens?: Token[] }) {
       case "codespan": return <code key={i} className="sm-codespan">{decode(tk.text || "")}</code>;
       case "br": return <br key={i} />;
       case "mark": return <mark key={i} className="sm-mark"><Inline tokens={tk.tokens} /></mark>;
-      case "mathInline": return <Tex key={i} tex={tk.tex!} />;
+      case "mathInline": case "mathInlineTex": return <Tex key={i} tex={tk.tex!} />;
       case "fnRef": { const n = ctx.fn.get(tk.id!) ?? 0; return ctx.streaming ? null : <sup key={i} className="sm-fnref"><a href={`#fn-${tk.id}`}>{n || tk.id}</a></sup>; }
       case "image": return <Img key={i} src={tk.href!} alt={tk.text} />;
       case "link": return (
-        <a key={i} href={tk.href} target={/^https?:/.test(tk.href || "") ? "_blank" : undefined} rel="noreferrer" className="sm-link"
+        <a key={i} href={tk.href} target={/^https?:/.test(tk.href || "") ? "_blank" : undefined} rel="noreferrer" className={"sm-link" + (ctx.unverified?.includes(tk.href || "") ? " sm-unv" : "")}
+          title={ctx.unverified?.includes(tk.href || "") ? "Not opened by the AI in this chat. Check before relying on it." : undefined}
           onClick={(e) => { if (ctx.onLink && ctx.onLink(tk.href!, e) === true) e.preventDefault(); }}><Inline tokens={tk.tokens} /></a>);
       case "html": {
         const h = tk.text || "";
@@ -207,8 +212,10 @@ function Segments({ text, live }: { text: string; live: boolean }) {
   })}</>;
 }
 
-export function StreamMarkdown({ text, streaming = false, onLink, components = {}, resolveSrc, className }: {
+export function StreamMarkdown({ text, streaming = false, onLink, components = {}, resolveSrc, className, unverified }: {
   text: string; streaming?: boolean; onLink?: Ctx["onLink"]; components?: SMComponents; resolveSrc?: (s: string) => string; className?: string;
+  /** hrefs to mark as not opened by the model (dotted underline + tooltip) */
+  unverified?: string[];
 }) {
   const defs = useMemo(() => {
     if (streaming) return [] as { id: string; tokens: Token[] }[];
@@ -217,7 +224,7 @@ export function StreamMarkdown({ text, streaming = false, onLink, components = {
     return out;
   }, [text, streaming]);
   const fn = useMemo(() => new Map(defs.map((d, i) => [d.id, i + 1])), [defs]);
-  const ctx = useMemo(() => ({ onLink, streaming, fn, components, resolveSrc }), [onLink, streaming, fn, components, resolveSrc]);
+  const ctx = useMemo(() => ({ onLink, streaming, fn, components, resolveSrc, unverified }), [onLink, streaming, fn, components, resolveSrc, unverified]);
   return (
     <C.Provider value={ctx}>
       <div className={"sm " + (className || "")}>
