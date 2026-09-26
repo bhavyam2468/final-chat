@@ -1,68 +1,102 @@
 "use client";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+/* BlocksUI host. One sandboxed iframe per <ui> block, created the moment the block opens.
+   The growing source is streamed into it; the in-frame runtime mounts finished elements once
+   (with an enter animation) and shows shape-matched placeholders for the element being written. */
+import { memo, useEffect, useRef, useState } from "react";
 import { useApp } from "./ctx";
+import { youtubeId } from "@/lib/shared";
 
-const VARS = ["--bg", "--fg", "--muted", "--line", "--surface", "--accent", "--success", "--danger", "--r"];
-function themeVars() {
+const VARS = ["--bg", "--fg", "--muted", "--faint", "--line", "--surface", "--bubble", "--float", "--accent", "--success", "--danger", "--r"];
+export function themeVars() {
   const cs = getComputedStyle(document.documentElement);
   return Object.fromEntries(VARS.map((v) => [v, cs.getPropertyValue(v).trim()]));
 }
 
-export function splitSource(src: string) {
-  let rel = "", js = "", py = "";
-  const html = src
-    .replace(/<style\s+type="rel"\s*>([\s\S]*?)(<\/style>|$)/gi, (_, c) => ((rel += c + "\n"), ""))
-    .replace(/<script\s+type="(?:text\/)?python"\s*>([\s\S]*?)(<\/script>|$)/gi, (_, c) => ((py += c + "\n"), ""))
-    .replace(/<script(?:\s[^>]*)?>([\s\S]*?)(<\/script>|$)/gi, (_, c) => ((js += c + "\n"), ""))
-    .replace(/<style[\s\S]*?(<\/style>|$)/gi, "");
-  return { html, rel, js, py };
-}
-
-function srcdoc(source: string, fill: boolean, id: string) {
+/** Frame document: static shell. Content arrives via postMessage, so the frame never reloads while streaming. */
+export function blocksShell(id: string, fill: boolean, inline?: string) {
   const o = location.origin;
-  const { html, rel, js, py } = splitSource(source);
-  const vars = themeVars();
   const theme = document.documentElement.dataset.theme || "dark";
-  const esc = (s: string) => s.replace(/<\/script/gi, "<\\/script");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="${o}/blocks/runtime.css"><style>:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(";")}}</style></head><body class="${fill ? "fill" : ""}" data-theme="${theme}"><div id="root">${html}</div><script type="text/rel">${esc(rel)}</script>${py ? `<script type="text/python">${esc(py)}</script>` : ""}<script type="text/blocks">${esc(js)}</script><script>window.name=${JSON.stringify(id)}</script><script src="${o}/blocks/runtime.js"></script><script>BlocksBoot()</script></body></html>`;
+  const vars = Object.entries(themeVars()).map(([k, v]) => `${k}:${v}`).join(";");
+  const tpl = inline !== undefined ? `<template data-blocks>${inline.replace(/<\/template/gi, "<\\/template")}</template>` : "";
+  return `<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="${o}/blocks/runtime.css"><style>:root{${vars}}</style></head><body class="${fill ? "fill" : ""}" data-theme="${theme}"><div id="root"></div>${tpl}<script>window.name=${JSON.stringify(id)};window.BLOCKS_ORIGIN=${JSON.stringify(o)}</script><script src="${o}/blocks/runtime.js"></script><script src="${o}/blocks/elements.js"></script><script>Blocks.connect()</script></body></html>`;
 }
 
-function Skeleton({ source }: { source: string }) {
-  const tags = useMemo(() => [...source.matchAll(/<(x-[\w-]+|button|input|select|textarea|h[1-3]|p|label)\b/g)].map((m) => m[1]).slice(0, 14), [source]);
-  return (
-    <div className="blk-skel" aria-hidden>
-      {tags.map((t, i) => <span key={i} data-t={t.startsWith("x-") ? "viz" : t} style={{ animationDelay: `${i * 30}ms` }} />)}
-    </div>
-  );
+async function toWorkspace(path: string, text: string) {
+  const r = await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path, content: text }) });
+  return r.ok;
 }
 
 export const Block = memo(function Block({ source, done, fill = false }: { source: string; done: boolean; fill?: boolean }) {
   const app = useApp();
   const ref = useRef<HTMLIFrameElement>(null);
-  const [h, setH] = useState(120);
-  const id = useMemo(() => "blk" + Math.random().toString(36).slice(2), []);
-  const doc = useMemo(() => (done && typeof window !== "undefined" ? srcdoc(source, fill, id) : ""), [done, source, fill, id]);
+  const [h, setH] = useState(fill ? 0 : 64);
+  const [id] = useState(() => "blk" + Math.random().toString(36).slice(2));
+  const [doc] = useState(() => (typeof window === "undefined" ? "" : blocksShell(id, fill)));
+  const st = useRef({ ready: false, sent: "", sentDone: false, timer: 0 as unknown as ReturnType<typeof setTimeout> | 0, source, done });
+  st.current.source = source; st.current.done = done;
+
+  const post = (m: unknown) => ref.current?.contentWindow?.postMessage(m, "*");
+  const flush = () => {
+    const s = st.current;
+    s.timer = 0;
+    if (!s.ready || s.sentDone || (s.sent === s.source && !s.done)) return;
+    s.sent = s.source; s.sentDone = s.done;
+    post({ type: "source", source: s.source, done: s.done });
+  };
+
+  // stream source into the frame (throttled; completion is sent immediately)
+  useEffect(() => {
+    const s = st.current;
+    if (!s.ready) return;
+    if (done) { if (s.timer) clearTimeout(s.timer); flush(); }
+    else if (!s.timer) s.timer = setTimeout(flush, 60);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, done]);
 
   useEffect(() => {
     const onMsg = async (e: MessageEvent) => {
       const m = e.data;
       if (!m || m.src !== "blocks" || m.frame !== id) return;
-      const reply = (value: unknown) => ref.current?.contentWindow?.postMessage({ type: "reply", id: m.id, value }, "*");
-      if (m.type === "height" && !fill) setH(Math.min(1400, Math.max(40, m.h)));
-      else if (m.type === "lm") app.sendUiEvent(m.data);
-      else if (m.type === "save") { await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path: m.path, content: m.text }) }); app.refreshTree(); reply(true); }
-      else if (m.type === "py") { const r = await fetch("/api/python", { method: "POST", body: JSON.stringify({ code: m.code }) }).then((r) => r.json()); reply(r.out); app.refreshTree(); }
+      const reply = (value: unknown) => post({ type: "reply", id: m.id, value });
+      switch (m.type) {
+        case "ready":
+          st.current.ready = true;
+          post({ type: "theme", vars: themeVars(), theme: document.documentElement.dataset.theme });
+          flush(); break;
+        case "height": if (!fill) setH(Math.min(2400, Math.max(24, m.h))); break;
+        case "lm": app.sendUiEvent(m.data); break;
+        case "save": { const ok = await toWorkspace(String(m.path), String(m.text)); app.refreshTree(); reply(ok); break; }
+        case "py": {
+          const r = await fetch("/api/python", { method: "POST", body: JSON.stringify({ code: m.code }) }).then((r) => r.json()).catch((err) => ({ out: String(err) }));
+          reply(r.out); app.refreshTree(); break;
+        }
+        case "upload": {
+          const bin = Uint8Array.from(atob(m.data), (c) => c.charCodeAt(0));
+          const fd = new FormData(); fd.append("dir", m.dir || "uploads"); fd.append("files", new File([bin], m.name, { type: m.type }));
+          const out = await fetch("/api/workspace/upload", { method: "POST", body: fd }).then((r) => r.json()).catch(() => []);
+          app.refreshTree(); reply(out[0] || null); break;
+        }
+        case "open": {
+          const t = String(m.target || "");
+          const yt = youtubeId(t);
+          if (yt) app.openCanvas({ kind: "youtube", title: "Video", id: yt });
+          else if (/^https?:/.test(t)) app.openCanvas({ kind: "web", title: t.replace(/^https?:\/\/(www\.)?/, "").split("/")[0], url: t });
+          else app.openFile(t);
+          break;
+        }
+        case "error": console.warn("[blocks]", m.text); break;
+      }
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, fill, app]);
 
   useEffect(() => {
-    const obs = new MutationObserver(() => ref.current?.contentWindow?.postMessage({ type: "theme", vars: themeVars(), theme: document.documentElement.dataset.theme }, "*"));
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const obs = new MutationObserver(() => post({ type: "theme", vars: themeVars(), theme: document.documentElement.dataset.theme }));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style"] });
     return () => obs.disconnect();
   }, []);
 
-  if (!done) return <Skeleton source={source} />;
-  return <iframe ref={ref} className={fill ? "blk-frame fill" : "blk-frame"} style={fill ? undefined : { height: h }} sandbox="allow-scripts allow-forms allow-popups" srcDoc={doc} title="block" />;
+  return <iframe ref={ref} className={fill ? "blk-frame fill" : "blk-frame"} style={fill ? undefined : { height: h }} sandbox="allow-scripts allow-forms allow-popups allow-modals" srcDoc={doc} title="block" />;
 });

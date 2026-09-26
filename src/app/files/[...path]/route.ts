@@ -9,7 +9,7 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ path: 
   const { path } = await params;
   const p = path.map(decodeURIComponent).join("/");
   try {
-    const abs = resolvePath(p, (await getSettings()).access === "full");
+    const abs = resolvePath(p, (await getSettings()).access);
     const buf = await fs.readFile(abs);
     return new Response(new Uint8Array(buf), { headers: { "Content-Type": mimeOf(abs), "Cache-Control": "no-store" } });
   } catch { return new Response("Not found", { status: 404 }); }

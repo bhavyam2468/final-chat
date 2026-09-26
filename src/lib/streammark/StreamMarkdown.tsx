@@ -32,7 +32,7 @@ md.use({ extensions: EXTS });
 
 export type SMComponents = {
   ui?: (p: { source: string; done: boolean; attrs: Record<string, string> }) => React.ReactNode;
-  canvas?: (p: { title: string; body: string; done: boolean }) => React.ReactNode;
+  canvas?: (p: { title: string; body: string; done: boolean; attrs: Record<string, string> }) => React.ReactNode;
 };
 type Ctx = { onLink?: (href: string, e: React.MouseEvent) => boolean | void; streaming: boolean; fn: Map<string, number>; components: SMComponents; resolveSrc?: (s: string) => string };
 const C = createContext<Ctx>({ streaming: false, fn: new Map(), components: {} });
@@ -75,7 +75,7 @@ function Inline({ tokens }: { tokens?: Token[] }) {
   return <>{tokens.map((t, i) => {
     const tk = t as Token & { tokens?: Token[]; text?: string; href?: string; title?: string; tex?: string; id?: string };
     switch (t.type) {
-      case "text": return tk.tokens ? <Inline key={i} tokens={tk.tokens} /> : <React.Fragment key={i}>{decode(tk.text || "")}</React.Fragment>;
+      case "text": return tk.tokens ? <Inline key={i} tokens={tk.tokens} /> : (tk as { fresh?: boolean }).fresh ? <Fresh key={i} text={decode(tk.text || "")} /> : <React.Fragment key={i}>{decode(tk.text || "")}</React.Fragment>;
       case "escape": return <React.Fragment key={i}>{tk.text}</React.Fragment>;
       case "strong": return <strong key={i}><Inline tokens={tk.tokens} /></strong>;
       case "em": return <em key={i}><Inline tokens={tk.tokens} /></em>;
@@ -98,6 +98,25 @@ function Inline({ tokens }: { tokens?: Token[] }) {
       default: return <React.Fragment key={i}>{tk.text || ""}</React.Fragment>;
     }
   })}</>;
+}
+
+/** Trailing words of the live stream: each fades in once (keyed by offset), then merges into plain text. */
+function Fresh({ text }: { text: string }) {
+  const words: [number, string][] = [];
+  const re = /\S+\s*/g; let m: RegExpExecArray | null;
+  const lead = text.match(/^\s*/)![0].length; re.lastIndex = lead;
+  while ((m = re.exec(text))) words.push([m.index, m[0]]);
+  const K = 6, cut = words.length > K ? words[words.length - K][0] : lead;
+  return <>{text.slice(0, cut)}{words.filter(([o]) => o >= cut).map(([o, w]) => <span key={o} className="sm-w">{w}</span>)}</>;
+}
+/** Mark the last text leaf of a live token so only the stream's frontier animates. */
+function markTail(t: Token | undefined): void {
+  if (!t) return;
+  const x = t as Token & { tokens?: Token[]; items?: Token[]; fresh?: boolean };
+  if (x.type === "list" && x.items?.length) return markTail(x.items[x.items.length - 1]);
+  if (x.type === "code" || x.type === "table" || x.type === "mathBlock") return;
+  if (x.tokens?.length) { for (let i = x.tokens.length - 1; i >= 0; i--) { const c = x.tokens[i]; if (c.type !== "space" && c.type !== "checkbox") return markTail(c); } return; }
+  if (x.type === "text") x.fresh = true;
 }
 
 const decode = (s: string) => s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
@@ -155,7 +174,7 @@ const TopBlock = memo(function TopBlock({ t, done }: { raw: string; t: Token; do
 
 function MdSegment({ text, live }: { text: string; live: boolean }) {
   const ctx = useContext(C);
-  const tokens = useMemo(() => md.lexer(live ? remend(text) : text), [text, live]);
+  const tokens = useMemo(() => { const tk = md.lexer(live ? remend(text) : text); if (live) { for (let i = tk.length - 1; i >= 0; i--) if (tk[i].type !== "space") { markTail(tk[i]); break; } } return tk; }, [text, live]);
   const fnKey = ctx.streaming ? "s" : [...ctx.fn.keys()].join(",");
   return <>{tokens.map((t, i) => <TopBlock key={i} raw={t.raw} t={t} done={!live || i < tokens.length - 1} fnKey={fnKey} />)}</>;
 }
@@ -178,7 +197,7 @@ function Segments({ text, live }: { text: string; live: boolean }) {
     if (s.kind === "md") return <MdSegment key={i} text={s.text} live={live && isLast} />;
     if (s.kind === "details") return <Details key={i} seg={s as XSeg} live={live && isLast} />;
     if (s.kind === "ui") return <React.Fragment key={i}>{ctx.components.ui ? ctx.components.ui({ source: s.body, done: s.closed, attrs: s.attrs }) : <CodeBlock code={s.body} lang="html" done={s.closed} />}</React.Fragment>;
-    if (s.kind === "canvas") return <React.Fragment key={i}>{ctx.components.canvas ? ctx.components.canvas({ title: s.attrs.title || "Canvas", body: s.body, done: s.closed }) : null}</React.Fragment>;
+    if (s.kind === "canvas") return <React.Fragment key={i}>{ctx.components.canvas ? ctx.components.canvas({ title: s.attrs.title || "Canvas", body: s.body, done: s.closed, attrs: s.attrs }) : null}</React.Fragment>;
     return null;
   })}</>;
 }

@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 
-const sans = Geist({ subsets: ["latin"], variable: "--font-sans" });
-const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
+// bundled from the geist package: builds and runs offline (local-first)
+const sans = localFont({ src: "../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2", variable: "--font-sans", weight: "100 900" });
+const mono = localFont({ src: "../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2", variable: "--font-mono", weight: "100 900" });
 
 export const metadata: Metadata = { title: "Workspace", description: "A quiet AI workspace" };
 

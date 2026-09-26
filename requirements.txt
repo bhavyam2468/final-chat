@@ -1,0 +1,11 @@
+# Python used by run_python, office previews (xlsx/pptx) and the agent's default toolset
+numpy
+pandas
+matplotlib
+scipy
+sympy
+openpyxl
+python-docx
+python-pptx
+pypdf
+beautifulsoup4

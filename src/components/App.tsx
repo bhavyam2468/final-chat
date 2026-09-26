@@ -1,10 +1,10 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeft, SquarePen, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
-import { AppApi, AppCtx, CanvasSpec, Conv, Msg, Part, TreeNode, isExternal } from "./ctx";
+import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command } from "./Composer";
-import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel } from "./Panels";
+import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win } from "./Canvas";
 import { Settings } from "./Settings";
 
@@ -21,6 +21,11 @@ export default function App() {
   const [panels, setPanels] = useState({ chats: false, ws: false, art: false, src: false });
   const [thread, setThread] = useState<string | null>(null);
   const [wins, setWins] = useState<Win[]>([]);
+  const [dockW, setDockWS] = useState(560);
+  const [ctxRev, setCtxRev] = useState(0);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
+  useEffect(() => { const v = Number(localStorage.getItem("dockW")); setDockWS(v >= 320 ? Math.min(v, innerWidth - 380) : Math.round(Math.min(720, Math.max(380, innerWidth * 0.42)))); }, []);
+  const setDockW = useCallback((w: number) => { setDockWS(w); localStorage.setItem("dockW", String(w)); }, []);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [theme, setThemeS] = useState("dark");
   const [settings, setSettings] = useState(false);
@@ -33,6 +38,7 @@ export default function App() {
   const abort = useRef<AbortController | null>(null);
   const convRef = useRef<Conv | null>(null); convRef.current = conv;
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
   useEffect(() => { const t = localStorage.getItem("theme") || "dark"; setThemeS(t); }, []);
   const setTheme = useCallback((t: string) => { setThemeS(t); localStorage.setItem("theme", t); document.documentElement.dataset.theme = t; }, []);
   const refreshTree = useCallback(() => { fetch("/api/workspace").then((r) => r.json()).then(setTree).catch(() => {}); }, []);
@@ -132,16 +138,19 @@ export default function App() {
             setSel((s) => Object.fromEntries(Object.entries(s).map(([k, v]) => [r(k)!, r(v)!])));
             ta = e.assistantId; setStreamId(ta);
           } else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
-          else if (e.t === "tool") patchA((p) => [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]);
+          else if (e.t === "toolStart") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p : [...p, { type: "tool", id: e.id, name: e.name, args: {} }]));
+          else if (e.t === "tool") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, name: e.name, args: e.args } : x)) : [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]));
+          else if (e.t === "canvas") openCanvasRef.current(e.spec, { dock: e.dock });
+          else if (e.t === "compacted") setCtxRev((r) => r + 1);
           else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta } : x))); refreshTree(); }
           else if (e.t === "context") setConv((c) => (c ? { ...c, context: e.context } : c));
-          else if (e.t === "artifact") { refreshTree(); openFileRef.current(e.path); }
+          else if (e.t === "artifact") refreshTree(); // canvas cards open themselves
           else if (e.t === "error" || e.t === "notice") patchA((p) => [...p, { type: "text", text: `\n\n> ${e.text}\n` }]);
         }
       }
     } catch { /* aborted */ }
     setStreamId(null); abort.current = null;
-    refreshTree(); refreshConvs();
+    refreshTree(); refreshConvs(); setCtxRev((r) => r + 1);
     if (convId) setTimeout(() => { fetch(`/api/conversations/${convId}`).then((r) => r.json()).then((j) => { if (j.messages && convRef.current?.id === convId) { setMsgs(j.messages); setConv(j.conversation); } }); }, 300);
   }, [streamId, refreshConvs, refreshTree]);
 
@@ -150,21 +159,24 @@ export default function App() {
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
   // ---- canvases
-  const openCanvas = useCallback((spec: CanvasSpec) => {
+  const openCanvas = useCallback((spec: CanvasSpec, o?: OpenOpts) => {
     setWins((ws) => {
+      const dock = !!o?.dock && innerWidth >= 760;
       const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
       const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
-      if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false } : w));
-      const w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72), n = ws.length;
-      return [...ws, { id: rid(), spec, x: innerWidth - w - 24 - n * 24, y: 56 + n * 24, w, h, z, min: false, pinned: false }];
+      const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
+      if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock } : undock(w)));
+      const floating = ws.filter((w) => !w.dock).length;
+      const w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72), n = floating;
+      return [...ws.map(undock), { id: rid(), spec, x: innerWidth - w - 24 - n * 24, y: 56 + n * 24, w, h, z, min: false, pinned: false, dock }];
     });
   }, []);
+  const openCanvasRef = useRef(openCanvas); openCanvasRef.current = openCanvas;
   const openFile = useCallback((p: string) => {
     if (isExternal(p)) { window.open(p, "_blank"); return; }
     const clean = p.replace(/^\/?files\//, "").replace(/^\.\//, "");
     openCanvas({ kind: "file", path: clean, title: clean.split("/").pop() || clean });
   }, [openCanvas]);
-  const openFileRef = useRef(openFile); openFileRef.current = openFile;
 
   const toggleContext = useCallback(async (p: string) => {
     const c = convRef.current;
@@ -224,7 +236,8 @@ export default function App() {
 
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
-    { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id }) }); loadConv(c.id, last.id); } },
+    { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
+    { name: "fold", hint: "Fold old tool output", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "tools", keepLast: 2 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
     { name: "chats", hint: "Chats", run: () => setPanels((p) => ({ ...p, chats: true })) },
     { name: "workspace", hint: "Files", run: () => setPanels((p) => ({ ...p, ws: true })) },
     { name: "artifacts", hint: "Artifacts", run: () => setPanels((p) => ({ ...p, art: true })) },
@@ -255,10 +268,13 @@ export default function App() {
   const tog = (k: keyof typeof panels) => setPanels((p) => ({ ...p, [k]: !p[k] }));
   const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
   const chromeIdle = idle && !hasOpenPanel;
+  const docked = wins.some((w) => w.dock);
+  const leaf = (thread ? threadPath : mainPath).filter((m) => !m.id.startsWith("tmp")).slice(-1)[0];
+  const ctxRef: CtxRef | null = useMemo(() => (conv ? { convId: conv.id, leafId: leaf?.id || null, thread, rev: ctxRev + (streamId ? 0 : 1000), reload: () => { const c = convRef.current; if (c) loadConv(c.id, leaf?.id); } } : null), [conv, leaf?.id, thread, ctxRev, streamId, loadConv]);
 
   return (
     <AppCtx.Provider value={api}>
-      <div className="shell">
+      <div className={"shell" + (docked ? " has-dock" : "")} style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
           <button className="ib" aria-label="New chat" onClick={newChat}><SquarePen /></button>
@@ -291,12 +307,12 @@ export default function App() {
             <Composer inline onSend={sendThread} streaming={!!streamId && threadPath.some((m) => m.id === streamId)} onStop={stop}
               quote={quotes.thread} onClearQuote={() => setQuotes((q) => ({ ...q, thread: null }))} onFocus={() => (active.current = "thread")} autoFocus />
           </div>}
-          {panels.ws && <WorkspacePanel onClose={() => tog("ws")} />}
+          {panels.ws && <WorkspacePanel onClose={() => tog("ws")} ctx={ctxRef} />}
           {panels.art && <ArtifactsPanel onClose={() => tog("art")} />}
           {panels.src && <SourcesPanel sources={sources} onClose={() => tog("src")} />}
         </div>}
 
-        <CanvasLayer wins={wins} setWins={setWins} />
+        <CanvasLayer wins={wins} setWins={setWins} dockW={dockW} setDockW={setDockW} />
         {qpop && <button className="qpop" style={{ left: qpop.x, top: qpop.y }} onMouseDown={(e) => e.preventDefault()}
           onClick={() => { setQuotes((q) => ({ ...q, [active.current]: qpop.text })); setQpop(null); window.getSelection()?.removeAllRanges(); }}>Quote</button>}
         {settings && <Settings onClose={() => setSettings(false)} theme={theme} setTheme={setTheme} />}

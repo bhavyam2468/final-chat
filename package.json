@@ -9,12 +9,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@modelcontextprotocol/sdk": "^1.30.1",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
+    "geist": "^1.7.2",
     "highlight.js": "^11.12.0",
     "katex": "^0.18.9",
     "lucide-react": "^1.48.0",
+    "mammoth": "^1.12.3",
     "marked": "^18.0.14",
     "nanoid": "^6.0.1",
     "next": "16.2.6",

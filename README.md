@@ -12,8 +12,11 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 |---|---|
 | **Chat** | Streaming multi-turn AI chat with branching, threading, and side-threads |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
-| **Workspace** | Sandboxed file tree the agent operates in; togglable "full disk" access |
-| **Blocks / Generative UI** | `<canvas>` blocks in chat can render live interactive HTML+CSS+JS+Python (Pyodide) |
+| **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
+| **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
+| **Canvas** | Floating windows or **docked** beside the chat (drag the left edge to resize). Anything chat can show can go in a canvas; native viewers for PDF, Word, Excel/CSV, PowerPoint, zip/tar (browse without extracting), images, audio/video, code |
+| **Context status** | Live token meter in the workspace panel, per-section breakdown, and scoped compaction: fold tool output, fold web results, summarise history, or compact selected turns. Everything is restorable |
+| **Streaming** | Rate-adaptive smoothing for text, markdown and every Blocks component: no jitter, no re-render flashes, stable skeletons while a component streams |
 | **MCP Servers** | Add any stdio or HTTP MCP server via Settings → MCP |
 | **Skills** | Progressive-disclosure skill system (SKILL.md files teach the agent new capabilities on demand) |
 | **Hybrid Firecrawl** | Smart routing: local Firecrawl for free scraping, cloud key only for anti-bot bypass / AI extraction |
@@ -25,7 +28,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 - **Framework**: Next.js 16 (App Router, Turbopack)  
 - **Language**: TypeScript 5 + React 19  
-- **Database**: PostgreSQL 16 (Docker) + Drizzle ORM  
+- **Database**: Drizzle ORM on PostgreSQL (`DATABASE_URL`) or embedded **PGlite** (default, zero setup)  
 - **Styling**: Tailwind CSS v4  
 - **Markdown**: Custom `streammark` streaming renderer (KaTeX math, highlight.js, footnotes, embeds)  
 - **AI**: OpenAI-compatible API (configured to FreeLLMAPI)  
@@ -102,36 +105,76 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `streammark/StreamMarkdown.tsx` | Streaming Markdown renderer (React, memoised blocks) |
 | `streammark/remend.ts` | Core markdown-to-VDOM streaming engine |
 | `blocks/catalog.ts` | `ui_search` catalog: index of available Blocks UI components by tags |
+| `exec.ts` | Shell/Python/pip execution: bubblewrap sandbox when available, host terminal, sudo gate |
+| `context.ts` | Scoped compaction (tools, web, messages, history), restore, context reports |
+| `shared.ts` | Client/server helpers (canvas slugs, YouTube ids) |
 
 ### `src/db/` — Database
 
 | File | Purpose |
 |---|---|
-| `index.ts` | Drizzle + `pg` pool connection |
+| `index.ts` | `pg` pool when `DATABASE_URL` is set, otherwise embedded PGlite in `./data/pglite`; idempotent schema |
 | `schema.ts` | Tables: `conversations`, `messages`, `settings` |
 
 ---
 
 ## Environment Variables (`.env`)
 
-```env
-# Database
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db
+See [`.env.example`](.env.example). Everything except the workspace location can also be changed in Settings.
 
-# LLM Provider (FreeLLMAPI local proxy)
-LLM_BASE_URL=http://localhost:3001/v1
-LLM_API_KEY=freellmapi-<your-key>
-LLM_MODEL=gemini-2.5-flash
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | unset → PGlite | Postgres connection string |
+| `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | FreeLLMAPI | Any OpenAI-compatible endpoint (Gemini, OpenRouter, OpenAI, Ollama, FreeLLMAPI) |
+| `LLM_CONTEXT_TOKENS` | model preset | Context window; prompts are budgeted to fit (16k works) |
+| `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Local-first search/scrape with cloud fallback |
+| `WORKSPACE_DIR` | `./workspace` | Agent root |
+| `ACCESS_MODE` | `sandbox` | Initial file access: `sandbox`, `home`, `full` |
+| `TERMINAL_MODE` | `sandbox` | Initial terminal: `sandbox` or `host` |
+| `ALLOW_SUDO` | `0` | Initial sudo switch (host terminal only) |
+| `SUDO_PASSWORD` | unset | Only if sudo needs a password (or add it as a secret in Settings → Tools) |
+| `HOST_ACCESS` | on | Set `off` on hosted/web deployments: pins everything to the sandbox, whatever the UI or API says |
 
-# Firecrawl — hybrid: local for free scraping, cloud for bot bypass & AI extraction
-FIRECRAWL_URL=http://localhost:3002
-FIRECRAWL_API_KEY=fc-<your-cloud-key>
-FIRECRAWL_CLOUD_URL=https://api.firecrawl.dev
+---
 
-# Workspace
-WORKSPACE_DIR=./workspace   # or an absolute path
-ACCESS_MODE=sandbox          # "full" = agent can use absolute paths
-```
+## Host Access & Safety
+
+Settings → **Access** has four switches. They're independent and off by default.
+
+| Switch | Off | On |
+|---|---|---|
+| Home folder | Files confined to the workspace | Agent can read/write `~` (paths like `~/notes/x.md`) |
+| Entire disk | Needs home access first | Absolute paths anywhere |
+| Host terminal | Commands run in the workspace with app secrets stripped. With [bubblewrap](https://github.com/containers/bubblewrap) installed they are truly isolated (system read-only, home hidden, only the workspace writable) | Your real shell, as you |
+| Allow sudo | `sudo`/`su`/`doas`/`pkexec` are refused | `sudo -n` (passwordless rules) or `sudo -A` using the `SUDO_PASSWORD` secret. Asks for confirmation when you enable it |
+
+The server clamps these values on every read and write (sudo can never be on without the host terminal), and `HOST_ACCESS=off` locks all of them for web deployments.
+
+---
+
+## Canvas, Viewers & Context
+
+- `<canvas title="…">…</canvas>` in a reply (or the `canvas_open` tool) opens a window; add `dock` to place it beside the chat. Only one window is docked at a time; opening another parks the previous one in the tray at the top.
+- File viewers, each with its own bottom-bar actions:
+  - **PDF**: pages, zoom, pen annotations, notes.
+  - **Word**: rendered document, word count. Uses mammoth, or LibreOffice for `.doc`/`.odt`.
+  - **Excel/CSV**: grid with sheet tabs, filter, copy as CSV.
+  - **PowerPoint**: rendered slides, grid, speaker notes, present mode, outline. Uses python-pptx, or LibreOffice for page-accurate output.
+  - **zip/tar**: browse and peek into entries, extract selected ones.
+  - **Media**: playback speed, loop, picture-in-picture.
+  - **Code/Markdown**: edit and save.
+- Notes and ink save to `notes/<file>.md` and `notes/<file>.ink.json`, and the agent reads them when you mention them.
+- **Context meter** (workspace panel):
+  - Click it for the per-section breakdown and per-turn checkboxes.
+  - The shrink button offers: fold tool output, fold web results, summarise history, or restore.
+  - `/compact` and `/fold` do the same from the composer.
+  - The agent can call `compact_context(scope)` itself.
+
+---
+
+## Development Without a Key
+
+`node scripts/mock-llm.mjs` starts an offline OpenAI-compatible mock on port 3099. It streams deliberately irregular chunks to exercise the renderer, and has scenarios for "jee mock test", "graph", "aspirin", "open <file>" and plain markdown. Point the app at it with `LLM_BASE_URL=http://127.0.0.1:3099/v1`.
 
 ---
 
@@ -164,14 +207,12 @@ git clone https://github.com/bhavyam2468/final-chat.git && cd final-chat
 cp .env.example .env
 # Edit .env with your FreeLLMAPI key, Firecrawl keys, etc.
 
-# 3. Start Postgres
-docker compose up -d db
-
-# 4. Install and migrate
+# 3. Install (Postgres optional: without DATABASE_URL an embedded PGlite DB is used)
 npm install
-npx drizzle-kit push
+pip install -r requirements.txt          # Python tools + office previews
+# optional: bubblewrap (sandbox isolation), libreoffice (page-accurate .doc/.ppt previews)
 
-# 5. Build and run
+# 4. Build and run
 npm run build
 npm start
 

@@ -1,8 +1,10 @@
 "use client";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { youtubeId } from "@/lib/shared";
 import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X } from "lucide-react";
 import { StreamMarkdown, SMComponents } from "@/lib/streammark/StreamMarkdown";
 import { Block } from "./Block";
+import { useSmoothText } from "@/lib/streammark/useSmoothText";
 import { Msg, Part, useApp, fileUrl, isExternal } from "./ctx";
 
 export function CopyBtn({ text }: { text: string }) {
@@ -37,7 +39,7 @@ const TOOL_META: Record<string, { icon: typeof FileText; verb: string; arg?: str
   fs_delete: { icon: Trash2, verb: "Deleted", arg: "path" }, fs_move: { icon: FilePen, verb: "Moved", arg: "to" },
   run_python: { icon: Code2, verb: "Ran Python" }, pip_install: { icon: Package, verb: "Installed", arg: "packages" },
   shell: { icon: Terminal, verb: "Ran", arg: "command" }, web_search: { icon: Search, verb: "Searched", arg: "query" },
-  web_fetch: { icon: Globe, verb: "Read", arg: "url" }, ui_search: { icon: AppWindow, verb: "Looked up components", arg: "query" },
+  web_fetch: { icon: Globe, verb: "Read", arg: "url" }, web_extract: { icon: Globe, verb: "Extracted", arg: "url" }, canvas_open: { icon: AppWindow, verb: "Opened", arg: "target" }, ui_search: { icon: AppWindow, verb: "Looked up components", arg: "query" },
 };
 
 type Src = { url: string; title: string; snippet?: string };
@@ -79,14 +81,21 @@ const ToolCall = memo(function ToolCall({ p }: { p: Extract<Part, { type: "tool"
   );
 });
 
-function CanvasCard({ title, body, done }: { title: string; body: string; done: boolean }) {
+/** <canvas title="…" [dock]> anything you could put in chat </canvas>. A lone <ui> block fills the window;
+    a lone YouTube link becomes a player; anything else renders as rich markdown (with inline blocks, media, math). */
+function CanvasCard({ title, body, done, attrs }: { title: string; body: string; done: boolean; attrs: Record<string, string> }) {
   const app = useApp();
+  const liveAtMount = useRef(!done);
+  const dock = attrs.dock !== undefined && attrs.dock !== "false";
   const open = useCallback(() => {
-    const yt = body.trim().match(/(?:youtu\.be\/|v=)([\w-]{11})/);
-    if (yt && !body.includes("<ui")) app.openCanvas({ kind: "youtube", title, id: yt[1] });
-    else if (body.includes("<ui")) app.openCanvas({ kind: "ui", title, source: body.replace(/^[\s\S]*?<ui[^>]*>/, "").replace(/<\/ui>[\s\S]*$/, "") });
-    else app.openCanvas({ kind: "md", title, body });
-  }, [app, title, body]);
+    const t = body.trim();
+    const yt = youtubeId(t);
+    const onlyUi = /^<ui[\s>]/.test(t) && /<\/ui>$/.test(t) && t.indexOf("<ui", 1) < 0;
+    if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, { dock });
+    else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, { dock });
+    else app.openCanvas({ kind: "md", title, body }, { dock });
+  }, [app, title, body, dock]);
+  useEffect(() => { if (done && liveAtMount.current) { liveAtMount.current = false; open(); } }, [done, open]);
   return <div className="canvas-card" onClick={done ? open : undefined} role="button"><AppWindow /><span className="t">{title}</span><small>{done ? "Open" : "Building…"}</small></div>;
 }
 
@@ -101,11 +110,18 @@ export function useMdHandlers() {
   return { onLink, components, resolveSrc };
 }
 
+/** Live text part: bursty chunks are paced into a steady reveal before rendering. */
+function LiveText({ text, streaming, h }: { text: string; streaming: boolean; h: ReturnType<typeof useMdHandlers> }) {
+  const s = useSmoothText(text, streaming);
+  return <StreamMarkdown text={s.text} streaming={s.live} {...h} />;
+}
+
 export const AssistantBody = memo(function AssistantBody({ parts, streaming }: { parts: Part[]; streaming: boolean }) {
   const h = useMdHandlers();
+  const [animate] = useState(streaming); // messages loaded from history render instantly
   if (!parts.length && streaming) return <div className="thinking" />;
   return <>{parts.map((p, i) => p.type === "text"
-    ? <StreamMarkdown key={i} text={p.text} streaming={streaming && i === parts.length - 1} {...h} />
+    ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} /> : <StreamMarkdown key={i} text={p.text} streaming={false} {...h} />
     : <ToolCall key={p.id + i} p={p} />)}</>;
 });
 

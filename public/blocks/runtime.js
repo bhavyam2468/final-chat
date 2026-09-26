@@ -1,267 +1,528 @@
-/* Blocks runtime v1 — extended HTML + relational styles + JS/Python logic.
-   Standalone: include runtime.css + runtime.js, put markup in #root, rel styles in <script type="text/rel">. */
+/* Blocks runtime v2 — core engine.
+ *
+ * A Blocks document is extended HTML + reactive bindings + relational styles + JS/Python logic:
+ *   <style type="rel"> relations only (size/orient/group/place/...) — write it first
+ *   <script type="data" name="qs">[...json...]</script> — data, available as `qs`
+ *   markup: native HTML + x-* elements; {{expr}} text, :attr="expr", show="expr", each="q in qs",
+ *           @click="statements", on="click:fnName" (JS or Python function)
+ *   <script> JS </script>  <script type="python"> Python (Pyodide) </script>
+ *
+ * Streams: the host posts the growing source; complete elements mount once and animate in,
+ * the element being written shows a shape-matched placeholder, nothing re-renders or jumps.
+ * Standalone: include runtime.css, runtime.js, elements.js and call Blocks.render(source).
+ */
 (function () {
   "use strict";
+  const B = (window.Blocks = window.Blocks || {});
   const NS = "http://www.w3.org/2000/svg";
   const FRAME = window.name || "blk";
-  const post = (type, data) => parent.postMessage({ src: "blocks", frame: FRAME, type, ...data }, "*");
-  const svg = (tag, attrs = {}, parentEl) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parentEl) parentEl.appendChild(e); return e; };
+  const ORIGIN = window.BLOCKS_ORIGIN || (location.origin !== "null" ? location.origin : "");
+
+  // ---------------------------------------------------------------- utils
   const num = (v, d = 0) => (v === null || v === undefined || v === "" || isNaN(+v) ? d : +v);
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  const PAL = () => [css("--fg"), css("--accent"), "#6f8a9c", "#8f7aa8", "#7c9a6d", "#c29a4a"];
+  const svg = (tag, attrs = {}, parentEl) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parentEl) parentEl.appendChild(e); return e; };
+  // bundled libs are served by the app (/vendor/<lib>/…, offline); the CDN is only a fallback
+  const CDN = { katex: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/" };
+  const loadLib = (lib, file) => load(`${ORIGIN}/vendor/${lib}/${file}`).catch(() => load(CDN[lib] + file));
+  let katexCore = null;
+  B.katex = () => (katexCore ||= Promise.all([loadLib("katex", "katex.min.css"), loadLib("katex", "katex.min.js")]));
+  B.loadLib = loadLib;
+  // failed optional loads (offline CDN) must not surface as uncaught errors
+  addEventListener("unhandledrejection", (e) => { if (e.reason instanceof Event || /load|fetch/i.test(String(e.reason && e.reason.message))) e.preventDefault(); });
   const loaded = {};
-  const load = (src) => loaded[src] || (loaded[src] = new Promise((res, rej) => { const s = document.createElement(src.endsWith(".css") ? "link" : "script"); if (src.endsWith(".css")) { s.rel = "stylesheet"; s.href = src; res(); } else { s.src = src; s.onload = res; s.onerror = rej; } document.head.appendChild(s); }));
-  const pathLen = (p) => { try { return Math.ceil(p.getTotalLength()) + 2; } catch { return 2000; } };
-  const drawIn = (p) => { requestAnimationFrame(() => { p.style.setProperty("--len", pathLen(p)); p.classList.add("draw"); }); };
-  const define = (name, cls) => { if (!customElements.get(name)) customElements.define(name, cls); };
+  const load = (src) => loaded[src] || (loaded[src] = new Promise((res, rej) => {
+    if (src.endsWith(".css")) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = src; document.head.appendChild(l); res(); return; }
+    const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s);
+  }));
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const fileUrl = (p) => (/^(https?:|data:|blob:|\/\/)/.test(p) ? p : `${ORIGIN}/files/${String(p).replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/")}`);
+  const fmt = (s) => { s = Math.max(0, Math.round(num(s))); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : String(m).padStart(2, "0")) + ":" + String(x).padStart(2, "0"); };
+  const PAL = () => [css("--accent"), "#6f8a9c", "#8f7aa8", "#7c9a6d", "#c29a4a", "#b0707a", css("--fg")];
+  Object.assign(B, { num, css, svg, load, esc, fileUrl, fmt, PAL, NS, ORIGIN });
 
-  class Base extends HTMLElement {
-    static get observedAttributes() { return ["value", "data", "seconds", "time", "fn", "tex", "smiles", "options", "checked", "labels", "type", "csv", "cols"]; }
-    connectedCallback() { if (!this._init) { this._init = true; this._src = this.textContent; this.init && this.init(); } this.render && this.render(); }
-    attributeChangedCallback() { if (this._init && this.render) this.render(); }
-  }
-
-  define("x-grid", class extends Base { render() { this.style.setProperty("--cols", this.getAttribute("cols") || 2); } });
-  define("x-card", class extends Base { init() { const t = this.getAttribute("title"); if (t) { const h = document.createElement("div"); h.className = "t"; h.textContent = t; this.prepend(h); } } });
-  define("x-stat", class extends Base { render() { const d = this.getAttribute("delta"); this.innerHTML = `<span class="v">${this.getAttribute("value") ?? ""}</span><span class="l">${this.getAttribute("label") ?? ""}</span>${d ? `<span class="d ${d.trim().startsWith("-") ? "neg" : ""}">${d}</span>` : ""}`; } });
-  define("x-badge", class extends Base { render() { const t = this.getAttribute("tone"); if (t) this.style.setProperty("--tone", `var(--${t === "neutral" ? "muted" : t})`); } });
-  define("x-icon", class extends Base { render() { const n = this.getAttribute("name"); if (!n || this._n === n) return; this._n = n; fetch(`https://unpkg.com/lucide-static@0.469.0/icons/${n}.svg`).then((r) => r.ok ? r.text() : "").then((t) => { this.innerHTML = t; }).catch(() => {}); } });
-  define("x-progress", class extends Base { render() { if (!this._i) { this._i = document.createElement("i"); this.appendChild(this._i); this._i.style.width = "0"; } requestAnimationFrame(() => (this._i.style.width = Math.max(0, Math.min(1, num(this.getAttribute("value")))) * 100 + "%")); } });
-  define("x-ring", class extends Base { render() {
-    const v = Math.max(0, Math.min(1, num(this.getAttribute("value")))), C = 2 * Math.PI * 42;
-    if (!this._s) { this._s = svg("svg", { viewBox: "0 0 100 100" }, this); svg("circle", { cx: 50, cy: 50, r: 42, fill: "none", stroke: "var(--line)", "stroke-width": 6 }, this._s);
-      this._c = svg("circle", { cx: 50, cy: 50, r: 42, fill: "none", stroke: "var(--tone)", "stroke-width": 6, "stroke-linecap": "round", transform: "rotate(-90 50 50)", "stroke-dasharray": C, "stroke-dashoffset": C }, this._s);
-      this._c.style.transition = "stroke-dashoffset .9s cubic-bezier(.2,.7,.2,1)"; this._t = svg("text", { x: 50, y: 55, "text-anchor": "middle", "font-size": 16, "font-weight": 600, fill: "var(--fg)" }, this._s); }
-    this._t.textContent = this.getAttribute("label") ?? Math.round(v * 100) + "%"; requestAnimationFrame(() => this._c.setAttribute("stroke-dashoffset", C * (1 - v)));
-  } });
-
-  const fmt = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : String(m).padStart(2, "0")) + ":" + String(x).padStart(2, "0"); };
-  define("x-timer", class extends Base {
-    init() { this.total = num(this.getAttribute("seconds"), 60); this.left = this.total; this.running = false; }
-    render() { if (!this.running && this.hasAttribute("seconds") && num(this.getAttribute("seconds")) !== this.total) { this.total = this.left = num(this.getAttribute("seconds")); } this.textContent = fmt(this.left); }
-    tick() { this.textContent = fmt(this.left); this.dispatchEvent(new CustomEvent("tick", { bubbles: true, detail: { id: this.id, left: this.left, total: this.total } })); }
-    start() { if (this.running) return; this.running = true; this._last = Date.now(); this._iv = setInterval(() => { const n = Date.now(); this.left -= (n - this._last) / 1000; this._last = n; if (this.left <= 0) { this.left = 0; this.stop(); this.tick(); this.dispatchEvent(new CustomEvent("done", { bubbles: true })); return; } this.tick(); }, 250); }
-    stop() { this.running = false; clearInterval(this._iv); }
-    reset(s) { this.stop(); this.total = this.left = s ?? this.total; this.tick(); }
-    set(s) { this.reset(s); }
-  });
-  define("x-clock", class extends Base {
-    init() { const s = this._s = svg("svg", { viewBox: "0 0 100 100" }, this);
-      svg("circle", { cx: 50, cy: 50, r: 47, fill: "var(--surface)", stroke: "var(--line)" }, s);
-      for (let i = 0; i < 60; i++) { const a = (i / 60) * 2 * Math.PI, r1 = i % 5 ? 43 : 40; svg("line", { x1: 50 + Math.sin(a) * r1, y1: 50 - Math.cos(a) * r1, x2: 50 + Math.sin(a) * 45, y2: 50 - Math.cos(a) * 45, stroke: i % 5 ? "var(--line)" : "var(--muted)", "stroke-width": i % 5 ? .6 : 1.2 }, s); }
-      const C = 2 * Math.PI * 36; this._C = C;
-      this._arc = svg("circle", { cx: 50, cy: 50, r: 36, fill: "none", stroke: "var(--accent)", "stroke-width": 3, opacity: .85, transform: "rotate(-90 50 50)", "stroke-dasharray": C, "stroke-dashoffset": C }, s);
-      this._arc.style.transition = "stroke-dashoffset .3s linear";
-      this._h = svg("line", { x1: 50, y1: 50, x2: 50, y2: 28, stroke: "var(--fg)", "stroke-width": 2.6, "stroke-linecap": "round" }, s);
-      this._m = svg("line", { x1: 50, y1: 50, x2: 50, y2: 16, stroke: "var(--fg)", "stroke-width": 1.8, "stroke-linecap": "round" }, s);
-      this._sec = svg("line", { x1: 50, y1: 56, x2: 50, y2: 12, stroke: "var(--accent)", "stroke-width": .8 }, s);
-      svg("circle", { cx: 50, cy: 50, r: 2, fill: "var(--fg)" }, s);
-      document.addEventListener("tick", (e) => { const f = this.getAttribute("for"); if (!this.hasAttribute("seconds") || (f && f !== e.detail.id)) return; this.show(e.detail.left, e.detail.total); });
-      if (!this.hasAttribute("seconds") && !this.hasAttribute("time")) { const up = () => { const d = new Date(); this.hands(d.getHours(), d.getMinutes(), d.getSeconds() + d.getMilliseconds() / 1000); }; up(); setInterval(up, 200); }
-    }
-    hands(h, m, s) { const rot = (el, deg) => el.setAttribute("transform", `rotate(${deg} 50 50)`); rot(this._h, ((h % 12) + m / 60) * 30); rot(this._m, (m + s / 60) * 6); rot(this._sec, s * 6); }
-    show(left, total) { const m = Math.floor(left / 60), s = left % 60; this.hands(0, m, s); this._h.style.opacity = 0; this._arc.setAttribute("stroke-dashoffset", this._C * (1 - left / Math.max(1, total))); }
-    render() { if (this.hasAttribute("time")) { const [h, m, s] = this.getAttribute("time").split(":").map(Number); this.hands(h || 0, m || 0, s || 0); } else if (this.hasAttribute("seconds")) { const t = num(this.getAttribute("seconds")); this.show(t, t); } }
-  });
-
-  function parseSeries(el) {
-    const d = (el.getAttribute("data") || "").split("|").map((s) => s.split(",").map((x) => x.trim()).filter(Boolean));
-    const names = (el.getAttribute("series") || "").split("|");
-    const labels = (el.getAttribute("labels") || "").split(",").map((x) => x.trim()).filter(Boolean);
-    return { series: d.map((arr, i) => ({ name: names[i] || "", values: arr })), labels };
-  }
-  define("x-chart", class extends Base { render() {
-    this.innerHTML = ""; const type = this.getAttribute("type") || "line"; const { series, labels } = parseSeries(this); const pal = PAL();
-    const W = 320, H = 180, P = { l: 28, r: 8, t: 8, b: 20 };
-    if (type === "pie" || type === "donut") {
-      const vals = series[0]?.values.map(Number) || [], tot = vals.reduce((a, b) => a + b, 0) || 1; const s = svg("svg", { viewBox: "0 0 200 200" }, this); s.style.maxWidth = "240px"; s.style.margin = "0 auto";
-      const r = 60, C = 2 * Math.PI * r; let acc = 0;
-      vals.forEach((v, i) => { const c = svg("circle", { cx: 100, cy: 100, r, fill: "none", stroke: pal[i % pal.length], "stroke-width": type === "donut" ? 26 : 120, "stroke-dasharray": `0 ${C}`, transform: `rotate(${-90 + (acc / tot) * 360} 100 100)` }, s); if (type === "pie") c.setAttribute("r", 30), c.setAttribute("stroke-width", 60);
-        const rr = type === "pie" ? 30 : r, CC = 2 * Math.PI * rr, len = (v / tot) * CC; c.setAttribute("stroke-dasharray", `0 ${CC}`); c.style.transition = `stroke-dasharray .8s cubic-bezier(.2,.7,.2,1) ${i * 0.12}s`; requestAnimationFrame(() => requestAnimationFrame(() => c.setAttribute("stroke-dasharray", `${len} ${CC}`))); acc += v; });
-      const lg = document.createElement("div"); lg.className = "legend"; lg.innerHTML = vals.map((v, i) => `<span><i style="background:${pal[i % pal.length]}"></i>${labels[i] || i + 1} · ${Math.round((v / tot) * 100)}%</span>`).join(""); this.appendChild(lg); return;
-    }
-    const s = svg("svg", { viewBox: `0 0 ${W} ${H}` }, this);
-    const pts = type === "scatter" ? series.flatMap((se) => se.values.map((p) => p.split(":").map(Number))) : null;
-    const all = pts ? pts.map((p) => p[1]) : series.flatMap((x) => x.values.map(Number));
-    const max = Math.max(...all, 0), min = Math.min(...all, 0), rng = max - min || 1;
-    const n = Math.max(...series.map((x) => x.values.length), 1);
-    const y = (v) => P.t + (H - P.t - P.b) * (1 - (v - min) / rng);
-    for (let k = 0; k <= 3; k++) { const v = min + (rng * k) / 3; svg("line", { x1: P.l, x2: W - P.r, y1: y(v), y2: y(v), class: "ax" }, s); svg("text", { x: P.l - 4, y: y(v) + 3, "text-anchor": "end", class: "lbl" }, s).textContent = +v.toFixed(v % 1 ? 1 : 0); }
-    if (pts) { const xs = pts.map((p) => p[0]), xmin = Math.min(...xs), xr = Math.max(...xs) - xmin || 1; pts.forEach((p, i) => { const c = svg("circle", { cx: P.l + ((p[0] - xmin) / xr) * (W - P.l - P.r), cy: y(p[1]), r: 3, fill: pal[1], class: "pop" }, s); c.style.animationDelay = i * 20 + "ms"; }); return; }
-    const x = (i) => P.l + (type === "bar" ? ((i + 0.5) * (W - P.l - P.r)) / n : n === 1 ? (W - P.l - P.r) / 2 : (i * (W - P.l - P.r)) / (n - 1));
-    labels.forEach((l, i) => { if (i < n && (n < 12 || i % Math.ceil(n / 8) === 0)) svg("text", { x: x(i), y: H - 5, "text-anchor": "middle", class: "lbl" }, s).textContent = l; });
-    series.forEach((se, si) => { const col = pal[si % pal.length], v = se.values.map(Number);
-      if (type === "bar") { const bw = ((W - P.l - P.r) / n) * 0.7 / series.length; v.forEach((val, i) => { const r = svg("rect", { x: x(i) - (bw * series.length) / 2 + si * bw, y: y(Math.max(val, 0)), width: bw - 2, height: Math.abs(y(val) - y(0)), rx: 2, fill: col, class: "grow" }, s); r.style.animationDelay = i * 40 + si * 80 + "ms"; }); }
-      else { const d = v.map((val, i) => `${i ? "L" : "M"}${x(i)},${y(val)}`).join(" ");
-        if (type === "area") { const a = svg("path", { d: `${d} L${x(v.length - 1)},${y(0)} L${x(0)},${y(0)} Z`, fill: col, opacity: 0.12, class: "pop" }, s); a.style.animationDelay = ".6s"; }
-        drawIn(svg("path", { d, fill: "none", stroke: col, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, s)); }
-    });
-    if (series.length > 1) { const lg = document.createElement("div"); lg.className = "legend"; lg.innerHTML = series.map((se, i) => `<span><i style="background:${pal[i % pal.length]}"></i>${se.name}</span>`).join(""); this.appendChild(lg); }
-  } });
-  define("x-sparkline", class extends Base { render() { this.innerHTML = ""; const v = (this.getAttribute("data") || "").split(",").map(Number); const mx = Math.max(...v), mn = Math.min(...v), r = mx - mn || 1; const s = svg("svg", { viewBox: "0 0 100 30", preserveAspectRatio: "none" }, this); drawIn(svg("path", { d: v.map((x, i) => `${i ? "L" : "M"}${(i / (v.length - 1 || 1)) * 100},${28 - ((x - mn) / r) * 26}`).join(" "), fill: "none", stroke: "var(--tone)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }, s)); } });
-  define("x-table", class extends Base { render() { const rows = (this.getAttribute("csv") || this._src || "").replace(/\\n/g, "\n").trim().split("\n").map((r) => r.split(",")); if (!rows[0]?.[0]) return; this.innerHTML = `<table><thead><tr>${rows[0].map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.slice(1).map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`; } });
-
-  const compileFn = (src) => { const e = src.replace(/\^/g, "**").replace(/(\d)([a-z(])/gi, "$1*$2"); return new Function("x", `with(Math){return (${e})}`); };
-  define("x-plot", class extends Base { render() {
-    this.innerHTML = ""; const fns = (this.getAttribute("fn") || this._src || "x").split(";").map((f) => f.trim()).filter(Boolean);
-    const x0 = num(this.getAttribute("xmin"), -10), x1 = num(this.getAttribute("xmax"), 10), W = 320, H = 200, N = 400, pal = PAL();
-    const data = fns.map((f) => { let g; try { g = compileFn(f); } catch { return []; } return Array.from({ length: N + 1 }, (_, i) => { const x = x0 + ((x1 - x0) * i) / N; let y; try { y = g(x); } catch { y = NaN; } return [x, y]; }); });
-    const ys = data.flat().map((p) => p[1]).filter((v) => isFinite(v)); let y0 = num(this.getAttribute("ymin"), Math.min(...ys, -1)), y1 = num(this.getAttribute("ymax"), Math.max(...ys, 1)); if (y1 - y0 > 1e4) { y0 = -10; y1 = 10; }
-    const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (y) => H - ((y - y0) / (y1 - y0)) * H; const s = svg("svg", { viewBox: `0 0 ${W} ${H}` }, this);
-    for (let gx = Math.ceil(x0); gx <= x1; gx += Math.max(1, Math.round((x1 - x0) / 10))) svg("line", { x1: X(gx), x2: X(gx), y1: 0, y2: H, class: "ax", opacity: gx === 0 ? 1 : 0.4 }, s);
-    if (y0 < 0 && y1 > 0) svg("line", { x1: 0, x2: W, y1: Y(0), y2: Y(0), class: "ax" }, s);
-    data.forEach((pts, i) => { let d = "", pen = false; pts.forEach(([x, y]) => { if (!isFinite(y) || y < y0 - (y1 - y0) || y > y1 + (y1 - y0)) { pen = false; return; } d += `${pen ? "L" : "M"}${X(x).toFixed(1)},${Y(y).toFixed(1)}`; pen = true; }); drawIn(svg("path", { d, fill: "none", stroke: pal[i % pal.length], "stroke-width": 2 }, s)); });
-    if (fns.length > 1) { const lg = document.createElement("div"); lg.className = "legend"; lg.innerHTML = fns.map((f, i) => `<span><i style="background:${pal[i % pal.length]}"></i>y = ${f}</span>`).join(""); this.appendChild(lg); }
-  } });
-  define("x-math", class extends Base { render() { const tex = this.getAttribute("tex") || this._src || ""; load("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"); load("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js").then(() => { this.innerHTML = window.katex.renderToString(tex, { displayMode: true, throwOnError: false }); }); } });
-  define("x-smiles", class extends Base { render() { const sm = this.getAttribute("smiles") || this._src?.trim(); if (!sm) return; this.innerHTML = ""; const s = svg("svg", { id: "sm" + Math.random().toString(36).slice(2) }, this); s.style.minHeight = "180px";
-    load("https://unpkg.com/smiles-drawer@2.0.1/dist/smiles-drawer.min.js").then(() => { const SD = window.SmilesDrawer; const dark = document.body.dataset.theme === "dark"; const d = new SD.SvgDrawer({ width: 300, height: 200, bondThickness: 1.2 }); SD.parse(sm, (tree) => d.draw(tree, s, dark ? "dark" : "light", false), (e) => { this.innerHTML = `<div class="err">${e}</div>`; }); }); } });
-  define("x-mermaid", class extends Base { init() { this._code = this._src.trim(); } render() { const dark = document.body.dataset.theme === "dark";
-    import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(async ({ default: m }) => { m.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral", fontFamily: "inherit" }); try { const { svg: out } = await m.render("m" + Math.random().toString(36).slice(2), this._code); this.innerHTML = out; this.firstElementChild?.classList.add("pop"); } catch (e) { this.innerHTML = `<div class="err">${e.message || e}</div>`; } }); } });
-  define("x-draw", class extends Base { init() { this._code = this._src; } render() {
-    this.innerHTML = ""; const W = num(this.getAttribute("w"), 300), H = num(this.getAttribute("h"), 200); const s = svg("svg", { viewBox: `0 0 ${W} ${H}` }, this);
-    const defs = svg("defs", {}, s); const mk = svg("marker", { id: "ah", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, defs); svg("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--accent)" }, mk);
-    const st = { fill: "none", stroke: "var(--fg)", "stroke-width": 1.6, "stroke-linecap": "round", "stroke-linejoin": "round" }; let k = 0;
-    const T = (x, y, t, a = "middle") => { const e = svg("text", { x, y, "text-anchor": a, "font-size": 12, fill: "var(--fg)", class: "pop" }, s); e.textContent = t; e.style.animationDelay = (k++ * 60) + "ms"; };
-    const P = (el) => { drawIn(el); return el; };
-    for (const line of this._code.split("\n")) { const m = line.trim().match(/^(\w+)\s+([-\d.\s]+?)(?:\s+"([^"]*)")?$/); if (!m) continue; const [cmd, nums, label] = [m[1], m[2].trim().split(/\s+/).map(Number), m[3]]; const [a, b, c, d, e2] = nums;
-      switch (cmd) {
-        case "rect": P(svg("rect", { x: a, y: b, width: c, height: d, rx: 3, ...st }, s)); if (label) T(a + c / 2, b + d / 2 + 4, label); break;
-        case "mass": P(svg("rect", { x: a - 18, y: b - 18, width: 36, height: 36, rx: 3, ...st, fill: "var(--surface)" }, s)); if (label) T(a, b + 4, label); break;
-        case "circle": P(svg("circle", { cx: a, cy: b, r: c, ...st }, s)); if (label) T(a, b + 4, label); break;
-        case "pulley": P(svg("circle", { cx: a, cy: b, r: c, ...st }, s)); svg("circle", { cx: a, cy: b, r: 2.5, fill: "var(--fg)" }, s); P(svg("line", { x1: a, y1: b, x2: a, y2: b - c - 12, ...st }, s)); P(svg("line", { x1: a - 14, y1: b - c - 12, x2: a + 14, y2: b - c - 12, ...st, "stroke-width": 3 }, s)); break;
-        case "line": P(svg("line", { x1: a, y1: b, x2: c, y2: d, ...st }, s)); if (label) T((a + c) / 2, (b + d) / 2 - 6, label); break;
-        case "dashed": svg("line", { x1: a, y1: b, x2: c, y2: d, ...st, "stroke-dasharray": "4 4", opacity: 0.6 }, s); break;
-        case "arrow": P(svg("line", { x1: a, y1: b, x2: c, y2: d, ...st, stroke: "var(--accent)", "marker-end": "url(#ah)" }, s)); if (label) T(c + (c >= a ? 8 : -8), d + 4, label, c >= a ? "start" : "end"); break;
-        case "text": T(a, b, label || ""); break;
-        case "ground": { P(svg("line", { x1: 0, y1: a, x2: W, y2: a, ...st }, s)); for (let x = 4; x < W; x += 12) svg("line", { x1: x, y1: a, x2: x - 6, y2: a + 7, ...st, "stroke-width": 0.8, opacity: 0.5 }, s); break; }
-        case "incline": P(svg("path", { d: `M${a},${b + d} L${a + c},${b + d} L${a + c},${b} Z`, ...st }, s)); break;
-        case "spring": { const L = Math.hypot(c - a, d - b), n = 10, ang = Math.atan2(d - b, c - a); let p = `M0,0 L${L * 0.1},0`; for (let i = 0; i < n; i++) p += ` L${L * 0.1 + ((i + 0.5) * L * 0.8) / n},${i % 2 ? 7 : -7}`; p += ` L${L * 0.9},0 L${L},0`; P(svg("path", { d: p, ...st, transform: `translate(${a},${b}) rotate(${(ang * 180) / Math.PI})` }, s)); break; }
-        case "angle": { const r = c, s1 = (d * Math.PI) / 180, s2 = (e2 * Math.PI) / 180; P(svg("path", { d: `M${a + r * Math.cos(s1)},${b - r * Math.sin(s1)} A${r},${r} 0 0 0 ${a + r * Math.cos(s2)},${b - r * Math.sin(s2)}`, ...st, "stroke-width": 1 }, s)); if (label) T(a + (r + 10) * Math.cos((s1 + s2) / 2), b - (r + 10) * Math.sin((s1 + s2) / 2) + 4, label); break; }
-      } }
-  } });
-  define("x-segmented", class extends Base { render() { const opts = (this.getAttribute("options") || "").split(",").map((x) => x.trim()); if (!this.value) this.value = this.getAttribute("value") || opts[0]; this.innerHTML = ""; opts.forEach((o) => { const b = document.createElement("button"); b.type = "button"; b.textContent = o; if (o === this.value) b.className = "on"; b.onclick = () => { this.value = o; this.render(); this.dispatchEvent(new Event("change", { bubbles: true })); }; this.appendChild(b); }); } });
-  define("x-toggle", class extends Base { init() { this.addEventListener("click", () => { this.toggleAttribute("checked"); this.dispatchEvent(new Event("change", { bubbles: true })); }); } get value() { return this.hasAttribute("checked"); } });
-  define("x-youtube", class extends Base { render() { this.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${this.getAttribute("id") || this.getAttribute("vid")}" allow="encrypted-media; picture-in-picture" allowfullscreen></iframe>`; } });
-  define("x-image", class extends Base { render() { this.innerHTML = `<img src="${this.getAttribute("src")}" alt="${this.getAttribute("alt") || ""}">`; } });
-  ["x-stack", "x-row", "x-col", "x-divider", "x-spacer", "x-kbd"].forEach((n) => define(n, class extends HTMLElement {}));
-
-  // ---------- helpers exposed to model code ----------
-  const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
-  const on = (sel, ev, fn) => { (typeof sel === "string" ? $$(sel) : [sel]).forEach((el) => el.addEventListener(ev, fn)); };
-  const form = () => { const o = {}; $$("[name]").forEach((el) => { const n = el.getAttribute("name"); if (el.type === "checkbox") o[n] = el.checked; else if (el.type === "radio") { if (el.checked) o[n] = el.value; } else o[n] = el.tagName === "X-TOGGLE" ? el.value : el.value ?? el.getAttribute("value"); if (el.type === "range" || el.type === "number") o[n] = +o[n]; }); return o; };
+  // ---------------------------------------------------------------- host bridge
+  const post = (type, data) => { try { parent.postMessage({ src: "blocks", frame: FRAME, type, ...data }, "*"); } catch {} };
   let reqId = 0; const pending = {};
   const call = (type, data) => new Promise((res) => { const id = ++reqId; pending[id] = res; post(type, { id, ...data }); });
-  const notify = (t) => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), 2200); post("notify", { text: t }); };
-  const sendToLm = (data) => { post("lm", { data: typeof data === "string" ? data : JSON.parse(JSON.stringify(data)) }); notify("Sent"); };
-  const saveIn = (path, text) => call("save", { path, text: typeof text === "string" ? text : JSON.stringify(text, null, 2) });
-  const py = (code) => call("py", { code });
-  const store = {};
-  const state = (k, init) => ({ get: () => (k in store ? store[k] : init), set: (v) => { store[k] = v; post("state", { key: k, value: v }); } });
-  const every = (ms, fn) => setInterval(fn, ms);
-  Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, notify, state, every });
-  window.addEventListener("message", (e) => { const m = e.data || {}; if (m.type === "reply" && pending[m.id]) { pending[m.id](m.value); delete pending[m.id]; } if (m.type === "theme") applyTheme(m.vars, m.theme); });
-  function applyTheme(vars, theme) { for (const k in vars) document.documentElement.style.setProperty(k, vars[k]); document.body.dataset.theme = theme; }
+  const standalone = window.parent === window;
 
-  // ---------- relational style language ----------
+  // ---------------------------------------------------------------- reactive store
+  const store = {};
+  let root = null;
+  const dataVars = {};
+  const inputOf = (k) => (root ? root.querySelectorAll(`[name="${CSS.escape(k)}"]`) : []);
+  function readInput(k) {
+    const els = [...inputOf(k)]; if (!els.length) return undefined;
+    const e = els[0];
+    if (e.type === "radio") { const c = els.find((x) => x.checked); return c ? c.value : null; }
+    if (e.type === "checkbox") return els.length > 1 ? els.filter((x) => x.checked).map((x) => x.value) : e.checked;
+    if (e.type === "range" || e.type === "number") return e.value === "" ? null : +e.value;
+    return e.value;
+  }
+  function writeInput(k, v) {
+    for (const e of inputOf(k)) {
+      if (e.type === "radio") e.checked = String(e.value) === String(v);
+      else if (e.type === "checkbox") e.checked = Array.isArray(v) ? v.includes(e.value) : !!v;
+      else if ("value" in e) e.value = v;
+    }
+    if (inputOf(k)[0]) inputOf(k).forEach((e) => e.dispatchEvent(new Event("input", { bubbles: true })));
+  }
+  // state keys are mirrored as window accessors so plain <script> code (`score = 3`) and bindings share one store
+  function expose(k) {
+    if (typeof k !== "string" || !/^[A-Za-z_$][\w$]*$/.test(k)) return;
+    const d = Object.getOwnPropertyDescriptor(window, k);
+    if (d && !d.configurable) return;
+    if (d && !d.get && k in window && !(d.value === undefined)) return; // real global already exists
+    Object.defineProperty(window, k, { configurable: true, get: () => store[k], set: (v) => { store[k] = v; schedule(); } });
+  }
+  const setStore = (k, v) => { store[k] = v; expose(k); schedule(); };
+  const S = new Proxy(store, {
+    get: (t, k) => (k in t ? t[k] : typeof k === "string" && inputOf(k).length ? readInput(k) : dataVars[k]),
+    set: (t, k, v) => { if (typeof k === "string" && !(k in t) && inputOf(k).length) writeInput(k, v); else setStore(k, v); return true; },
+  });
+
+  // ---------------------------------------------------------------- expression helpers
+  const shuffle = (a) => { a = [...(a || [])]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const H = {
+    fmt, num, shuffle,
+    sum: (a) => (a || []).reduce((x, y) => x + num(y), 0),
+    avg: (a) => (a && a.length ? H.sum(a) / a.length : 0),
+    count: (a, f) => (a || []).filter(f || Boolean).length,
+    pct: (a, b) => (b ? Math.round((a / b) * 100) : 0),
+    round: (x, d = 0) => { const p = 10 ** d; return Math.round(num(x) * p) / p; },
+    clamp: (x, a, b) => Math.min(b, Math.max(a, x)),
+    range: (n, m) => (m === undefined ? Array.from({ length: Math.max(0, n) }, (_, i) => i) : Array.from({ length: Math.max(0, m - n) }, (_, i) => n + i)),
+    pick: (a) => (a || [])[Math.floor(Math.random() * (a || []).length)],
+    len: (a) => (a ? a.length : 0),
+    now: () => Date.now(),
+    json: (x) => JSON.stringify(x),
+    date: (t) => new Date(t ?? Date.now()).toLocaleDateString(),
+    time: (t) => new Date(t ?? Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+  };
+  for (const k of Object.getOwnPropertyNames(Math)) if (!(k in H)) H[k] = Math[k];
+
+  const byId = (k) => (root ? root.querySelector("#" + CSS.escape(k)) : null);
+  function scope(locals) {
+    return new Proxy(Object.create(null), {
+      has(_, k) {
+        if (typeof k !== "string") return false;
+        if ((locals && k in locals) || k in store || k in dataVars || k in H || inputOf(k).length || byId(k)) return true;
+        return !(k in window);
+      },
+      get(_, k) {
+        if (k === Symbol.unscopables) return undefined;
+        if (locals && k in locals) return locals[k];
+        if (k in store) return store[k];
+        if (inputOf(k).length) return readInput(k);
+        if (k in dataVars) return dataVars[k];
+        if (k in H) return H[k];
+        return byId(k) || window[k];
+      },
+      set(_, k, v) {
+        if (locals && k in locals) locals[k] = v;
+        else if (!(k in store) && inputOf(k).length) writeInput(k, v);
+        else { store[k] = v; expose(k); }
+        schedule(); return true;
+      },
+    });
+  }
+  const cache = new Map();
+  function compile(src, stmt) {
+    const key = (stmt ? "s:" : "e:") + src;
+    let f = cache.get(key);
+    if (!f) {
+      try { f = stmt ? new Function("$s", "$event", "el", `with($s){return (async()=>{${src}\n})()}`) : new Function("$s", `with($s){return (${src}\n)}`); }
+      catch (e) { f = () => { throw e; }; }
+      cache.set(key, f);
+    }
+    return f;
+  }
+  const evaluate = (expr, locals) => { try { return compile(expr, false)(scope(locals)); } catch (e) { return undefined; } };
+  const runStmt = (code, locals, event, el) => {
+    try { return Promise.resolve(compile(code, true)(scope(Object.assign(Object.create(locals || null), { event, $event: event, el })), event, el)).catch(reportErr).finally(schedule); }
+    catch (e) { reportErr(e); }
+  };
+  const interp = (tpl, locals) => tpl.replace(/\{\{([\s\S]+?)\}\}/g, (_, e) => { const v = evaluate(e, locals); return v === undefined || v === null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); });
+  function reportErr(e) { const t = String(e && e.message ? e.message : e).slice(0, 200); post("error", { text: t }); if (standalone) console.warn("[blocks]", e); }
+
+  // ---------------------------------------------------------------- bindings
+  const rootBindings = [];
+  const PROPS = new Set(["value", "checked", "disabled", "selected", "open"]);
+  function bindEl(el, list, locals) {
+    if (el.__bound) return; el.__bound = true;
+    // each: turn element into a repeated template
+    if (el.hasAttribute && el.hasAttribute("each")) {
+      const m = el.getAttribute("each").match(/^\s*\(?\s*([\w$]+)\s*(?:,\s*([\w$]+))?\s*\)?\s+(?:in|of)\s+([\s\S]+)$/);
+      const anchor = document.createComment("each");
+      el.parentNode.insertBefore(anchor, el);
+      el.remove(); el.removeAttribute("each");
+      if (m) list.push({ type: "each", anchor, tpl: el, item: m[1], idx: m[2] || "i", expr: m[3], clones: [], locals });
+      return;
+    }
+    for (const a of [...el.attributes]) {
+      const n = a.name, v = a.value;
+      if (n[0] === ":") { list.push({ type: "attr", el, attr: n.slice(1), expr: v, locals }); el.removeAttribute(n); }
+      else if (n[0] === "@") { const ev = n.slice(1); el.removeAttribute(n); el.addEventListener(ev, (e) => { if (ev === "submit") e.preventDefault(); runStmt(v, locals, e, el); }); }
+      else if (n === "show") list.push({ type: "show", el, expr: v, locals });
+      else if (v.includes("{{")) list.push({ type: "tpl", el, attr: n, tpl: v, locals });
+    }
+    if (el.hasAttribute("on")) bindOn(el, locals);
+    // children (skip component-owned content)
+    if (el.__owns) return;
+    for (const c of [...el.childNodes]) {
+      if (c.nodeType === 3) { if (!c.__bound && c.textContent.includes("{{")) (c.__bound = true), list.push({ type: "text", node: c, tpl: c.textContent, locals }); }
+      else if (c.nodeType === 1 && c.tagName !== "SCRIPT" && c.tagName !== "STYLE") bindEl(c, list, locals);
+    }
+  }
+  function applyBinding(b) {
+    try {
+      if (b.type === "text") {
+        const v = interp(b.tpl, b.locals);
+        if (b.v === v) return; b.v = v;
+        // math renders by replacing text nodes, so math-bearing bindings own a span and re-typeset it on change
+        if (b.h || /\$|\\\(|\\\[/.test(v)) {
+          if (!b.h) { b.h = document.createElement("span"); b.h.className = "bt"; if (b.node.parentNode) b.node.replaceWith(b.h); }
+          b.h.textContent = v; typeset(b.h);
+        } else if (b.node.textContent !== v) b.node.textContent = v;
+      }
+      else if (b.type === "tpl") { const v = interp(b.tpl, b.locals); if (b.el.getAttribute(b.attr) !== v) b.el.setAttribute(b.attr, v); }
+      else if (b.type === "show") { const v = !!evaluate(b.expr, b.locals); if (b.el.hidden === v) b.el.hidden = !v; }
+      else if (b.type === "attr") {
+        const v = evaluate(b.expr, b.locals), a = b.attr;
+        if (a === "text") {
+          const s = String(v ?? "");
+          if (b.el.__owns) { if (b.el._src !== s) { b.el._src = s; b.el.refresh && b.el.refresh(true); } } // owners re-render from source
+          else if (b.el.textContent !== s) b.el.textContent = s;
+        }
+        else if (a === "class") b.el.className = typeof v === "object" && v ? Object.keys(v).filter((k) => v[k]).join(" ") : v ?? "";
+        else if (PROPS.has(a) && a in b.el) { if (a === "value" && document.activeElement === b.el) return; if (b.el[a] !== v) b.el[a] = a === "value" ? (v ?? "") : !!v; }
+        else if (v === false || v === null || v === undefined) b.el.removeAttribute(a);
+        else { const s = v === true ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); if (b.el.getAttribute(a) !== s) b.el.setAttribute(a, s); }
+      } else if (b.type === "each") renderEach(b);
+    } catch (e) { reportErr(e); }
+  }
+  function renderEach(b) {
+    let list = evaluate(b.expr, b.locals);
+    if (typeof list === "number") list = H.range(list);
+    if (!list || typeof list !== "object") list = [];
+    const arr = Array.isArray(list) ? list : Object.entries(list).map(([k, v]) => ({ key: k, value: v }));
+    let after = b.anchor;
+    arr.forEach((item, i) => {
+      let c = b.clones[i];
+      if (!c) {
+        const node = b.tpl.cloneNode(true);
+        const locals = Object.assign(Object.create(b.locals || null), { [b.item]: item, [b.idx]: i });
+        c = b.clones[i] = { node, locals, list: [] };
+        bindEl(node, c.list, locals); c.list.forEach(applyBinding); // bind while detached: components init with final attrs
+        after.parentNode.insertBefore(node, after.nextSibling);
+        enter(node, i); typeset(node);
+      } else { c.locals[b.item] = item; c.locals[b.idx] = i; c.list.forEach(applyBinding); }
+      after = c.node;
+    });
+    b.clones.splice(arr.length).forEach((c) => c.node.remove());
+  }
+  let queued = false;
+  function schedule() { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; render(); }); }
+  function render() {
+    rootBindings.forEach(applyBinding);
+    if (root) root.querySelectorAll("[data-reactive]").forEach((el) => el.refresh && el.refresh());
+  }
+
+  // on="click:start change:recalc" -> python def or JS function
+  let pyCall = null;
+  function bindOn(el, locals) {
+    el.getAttribute("on").split(/\s+/).forEach((pair) => {
+      const [ev, fn] = pair.split(":"); if (!fn) return;
+      el.addEventListener(ev, (e) => {
+        if (pyCall && pyCall(fn, e)) return schedule();
+        const f = window[fn];
+        if (typeof f === "function") { try { Promise.resolve(f(e, el, locals)).catch(reportErr).finally(schedule); } catch (err) { reportErr(err); } }
+        else if (!pyReady) pendingOn.push([fn, e]);
+      });
+    });
+  }
+  const pendingOn = []; let pyReady = true;
+
+  // ---------------------------------------------------------------- math typesetting ($..$, $$..$$ anywhere)
+  let katexP = null;
+  function typeset(el) {
+    if (!el || !/\$[^$]+\$|\\\(|\\\[/.test(el.textContent || "")) return;
+    katexP ||= B.katex().then(() => loadLib("katex", "contrib/auto-render.min.js"));
+    katexP.then(() => window.renderMathInElement && window.renderMathInElement(el, {
+      delimiters: [{ left: "$$", right: "$$", display: true }, { left: "$", right: "$", display: false }, { left: "\\(", right: "\\)", display: false }, { left: "\\[", right: "\\]", display: true }],
+      throwOnError: false, ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "x-math", "x-graph", "x-plot", "x-code", "input"],
+    })).catch(() => {});
+  }
+  B.typeset = typeset;
+
+  // ---------------------------------------------------------------- relational style language
   function parseRel(src) {
-    const rules = []; let i = 0; src = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const rules = []; let i = 0; src = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
     function block(scope, mode) {
       while (i < src.length) {
         const close = src.indexOf("}", i), open = src.indexOf("{", i);
-        if (close !== -1 && (open === -1 || close < open)) { const body = src.slice(i, close); addProps(scope, mode, body); i = close + 1; return; }
+        if (close !== -1 && (open === -1 || close < open)) { addProps(scope, mode, src.slice(i, close)); i = close + 1; return; }
         if (open === -1) return;
-        const pre = src.slice(i, open); const lastSemi = Math.max(pre.lastIndexOf(";"), pre.lastIndexOf("\n") > -1 && /[:=]/.test(pre.slice(0, pre.lastIndexOf("\n"))) ? pre.lastIndexOf("\n") : -1);
-        if (lastSemi > -1) addProps(scope, mode, pre.slice(0, lastSemi));
-        const sel = pre.slice(lastSemi + 1).trim(); i = open + 1;
+        const pre = src.slice(i, open);
+        const cut = Math.max(pre.lastIndexOf(";"), pre.lastIndexOf("\n"));
+        if (cut > -1) addProps(scope, mode, pre.slice(0, cut));
+        const sel = pre.slice(cut + 1).trim(); i = open + 1;
         if (sel === "portrait" || sel === "landscape") block(scope, sel);
-        else block(sel.split(",").map((x) => x.trim()).flatMap((s) => (scope.length ? scope.map((p) => p + " " + s) : [s])), mode);
+        else block(sel.split(",").map((x) => x.trim()).filter(Boolean).flatMap((s) => (scope.length ? scope.map((p) => p + " " + s) : [s])), mode);
       }
     }
-    function addProps(scope, mode, body) { const props = {}; body.split(/[;\n]/).forEach((l) => { const m = l.match(/^\s*([\w-]+)\s*[:=]\s*(.+?)\s*$/); if (m) props[m[1]] = m[2]; }); if (Object.keys(props).length && scope.length) rules.push({ sels: scope, mode, props }); }
+    function addProps(scope, mode, body) {
+      const props = {};
+      body.split(/[;\n]/).forEach((l) => { const m = l.match(/^\s*([\w-]+)\s*[:=]\s*(.+?)\s*$/); if (m) props[m[1]] = m[2].replace(/["']/g, ""); });
+      if (Object.keys(props).length && scope.length) rules.push({ sels: scope, mode, props });
+    }
     block([], "all"); return rules;
   }
-  const scopeSel = (s) => s.split(/\s+/).map((p) => (p === "root" || p === "background" ? "#root" : p)).join(" ").replace(/^(?!#root)/, "#root ");
+  const scopeSel = (s) => s.split(/\s+/).map((p) => (p === "root" || p === "background" || p === "page" ? "#root" : p)).join(" ").replace(/^(?!#root)/, "#root ").replace(/#root #root/g, "#root");
+  const SIZE = { xs: 0.5, s: 0.75, sm: 0.75, m: 1, md: 1, l: 1.5, lg: 1.5, xl: 2, xxl: 3 };
   function compileRel(rules) {
     let out = ""; const groups = [], asides = [];
     for (const r of rules) {
       const pre = r.mode === "all" ? "" : `body[data-o=${r.mode}] `;
-      const sel = r.sels.map((s) => pre + scopeSel(s)).join(",").replace(/#root #root/g, "#root"); const p = r.props; let d = "";
-      if (p.size) { const n = parseFloat(p.size) || 1; d += `--s:${(0.6 + n * 0.4).toFixed(2)};--g:${n};flex-grow:${n};font-size:${(0.8 + n * 0.2).toFixed(2)}em;`; }
-      if (p.orient === "horizontal") d += "flex-direction:row;flex-wrap:wrap;align-self:stretch;width:100%;";
-      if (p.orient === "vertical") d += "flex-direction:column;";
-      if (p.place === "top") d += "order:-2;"; if (p.place === "bottom") d += "order:99;"; if (p.place === "center") d += "align-self:center;margin-inline:auto;";
+      const sel = r.sels.map((s) => pre + scopeSel(s)).join(","); const p = r.props; let d = "";
+      if (p.size) { const n = SIZE[p.size] ?? (parseFloat(p.size) || 1); d += `--s:${(0.55 + n * 0.45).toFixed(2)};--g:${n};flex-grow:${n};font-size:${(0.8 + n * 0.2).toFixed(2)}em;`; }
+      if (p.orient === "horizontal") d += "--dir:row;flex-direction:row;flex-wrap:wrap;align-items:center;";
+      if (p.orient === "vertical") d += "--dir:column;flex-direction:column;align-items:stretch;";
+      if (p.place === "top") d += "order:-2;"; if (p.place === "bottom") d += "order:99;"; if (p.place === "center") d += "align-self:center;margin-inline:auto;text-align:center;";
       if (p.emphasis === "low") d += "opacity:.62;"; if (p.emphasis === "high") d += "font-weight:600;";
       if (p.tone) d += `--tone:var(--${p.tone === "neutral" ? "muted" : p.tone});`;
-      if (p.gap) d += `--gap:${{ tight: "8px", normal: "14px", loose: "24px" }[p.gap] || "14px"};gap:var(--gap);`;
-      if (p.width === "fill") d += "flex:1 1 auto;width:100%;"; if (p.width === "hug") d += "flex:0 0 auto;width:auto;align-self:" + (p.align || "start") + ";";
+      if (p.gap) d += `--gap:${{ none: "0px", tight: "8px", normal: "14px", loose: "24px" }[p.gap] || "14px"};gap:var(--gap);`;
+      if (p.width === "fill") d += "flex:1 1 auto;width:100%;align-self:stretch;"; if (p.width === "hug") d += "flex:0 0 auto;width:auto;align-self:flex-start;";
+      if (p.max) d += `max-width:${{ narrow: "420px", medium: "680px", wide: "960px", full: "none" }[p.max] || "none"};margin-inline:auto;width:100%;`;
       if (p.align) d += `align-self:${p.align === "start" ? "flex-start" : p.align === "end" ? "flex-end" : "center"};text-align:${p.align};`;
+      if (p.columns) d += `display:grid;grid-template-columns:repeat(${p.columns === "auto" ? "auto-fit" : parseInt(p.columns) || 2},minmax(${p.columns === "auto" ? "180px" : "0"},1fr));`;
+      if (p.span) d += `grid-column:span ${parseInt(p.span) || 1};`;
+      if (p.sticky === "top") d += "position:sticky;top:0;z-index:5;background:var(--page-bg,var(--bg));padding-block:6px;";
+      if (p.sticky === "bottom") d += "position:sticky;bottom:0;z-index:5;background:var(--page-bg,var(--bg));padding-block:6px;";
+      if (p.hide === "true" || p.hide === "yes") d += "display:none!important;";
+      if (p.density === "compact") d += "--gap:8px;--pad:10px;font-size:.94em;"; if (p.density === "comfortable") d += "--gap:22px;--pad:20px;";
+      if (p.ratio) d += `aspect-ratio:${{ square: "1", wide: "16/9", tall: "3/4" }[p.ratio] || p.ratio};`;
       if (d) out += `${sel}{${d}}\n`;
-      if (p.group && r.mode === "all") r.sels.forEach((s) => groups.push({ sel: scopeSel(s), name: p.group }));
+      if (p.group && r.mode === "all") r.sels.forEach((s) => groups.push({ sel: scopeSel(s), name: p.group.replace(/[^\w-]/g, "") }));
       if (p.place === "start" || p.place === "end") r.sels.forEach((s) => asides.push({ sel: scopeSel(s), side: p.place, mode: r.mode }));
     }
     return { css: out, groups, asides };
   }
-
-  // ---------- layout engine ----------
-  let REL = { css: "", groups: [], asides: [] };
-  function formGroups(root) {
-    const byName = {};
-    REL.groups.forEach(({ sel, name }) => $$(sel).forEach((el) => { (byName[name] ||= []).includes(el) || byName[name].push(el); }));
-    for (const name in byName) { const els = byName[name]; if (!els.length) continue; const first = els[0]; const w = document.createElement("div"); w.className = "grp g-" + name + (els.length > 2 ? " wrap" : ""); first.parentNode.insertBefore(w, first); els.forEach((e) => w.appendChild(e.closest("label") && e.closest("label") !== w && e.closest("label").contains(e) ? e.closest("label") : e)); }
-    [...root.children].forEach((c, i) => c.style.setProperty("--i", i));
+  let REL = { css: "", groups: [], asides: [] }; let relSrc = null; let relStyle = null;
+  function applyRel(src) {
+    if (src === relSrc) return; relSrc = src;
+    REL = compileRel(parseRel(src));
+    if (!relStyle) { relStyle = document.createElement("style"); document.head.appendChild(relStyle); }
+    relStyle.textContent = REL.css;
+    if (root) { root.querySelectorAll(":scope > *").forEach(placeUnit); orient(); }
   }
-  let topOrder = null;
-  function layout() {
-    const root = $("#root"); if (!root) return;
-    const o = document.body.classList.contains("fill") ? (innerWidth >= innerHeight * 1.05 ? "landscape" : "portrait") : innerWidth > 520 ? "landscape" : "portrait";
-    document.body.dataset.o = o;
-    // restore
-    const main = root.querySelector(":scope>.main"); if (main) { [...main.children].forEach((c) => root.appendChild(c)); main.remove(); }
-    if (topOrder) topOrder.forEach((c) => root.appendChild(c));
-    root.classList.remove("aside", "end");
-    const a = REL.asides.find((x) => x.mode === "all" || x.mode === o); if (!a) return;
-    let el = $(a.sel); if (!el) return; while (el.parentElement && el.parentElement !== root) el = el.parentElement;
-    const m = document.createElement("div"); m.className = "main"; [...root.children].filter((c) => c !== el).forEach((c) => m.appendChild(c)); root.appendChild(m);
-    root.classList.add("aside"); if (a.side === "end") root.classList.add("end");
+  // groups: siblings sharing `group: name` are wrapped into one row; asides via CSS grid (stream-stable)
+  function placeUnit(unit) {
+    if (!unit || unit.nodeType !== 1 || !unit.parentElement) return;
+    for (const a of REL.asides) if (unit.matches(a.sel) || unit.querySelector(a.sel)) { const top = topLevel(unit); if (top) { top.classList.add("is-aside"); root.classList.add("as-" + a.mode, a.side === "end" ? "as-end" : "as-start"); const g = parseFloat(getComputedStyle(top).getPropertyValue("--g")) || 1; root.style.setProperty("--aside-w", Math.max(0.62, g * 0.55).toFixed(2) + "fr"); } }
+    for (const g of REL.groups) {
+      let hits;
+      try { hits = unit.matches(g.sel) ? [unit] : [...unit.querySelectorAll(g.sel)]; } catch { continue; }
+      for (const h of hits) {
+        const u = h.parentElement && h.parentElement.tagName === "LABEL" && h !== unit ? h.parentElement : h;
+        const parentEl = u.parentElement;
+        if (!parentEl || parentEl.classList.contains("grp")) continue;
+        let w = [...parentEl.children].find((c) => c.classList && c.classList.contains("grp") && c.dataset.g === g.name);
+        if (!w) { w = document.createElement("div"); w.className = "grp"; w.dataset.g = g.name; parentEl.insertBefore(w, u); }
+        w.appendChild(u); w.classList.toggle("wrap", w.children.length > 2);
+      }
+    }
+  }
+  const topLevel = (el) => { while (el && el.parentElement && el.parentElement !== root) el = el.parentElement; return el && el.parentElement === root ? el : null; };
+  function orient() {
+    const fill = document.body.classList.contains("fill");
+    document.body.dataset.o = fill ? (innerWidth >= innerHeight * 1.05 ? "landscape" : "portrait") : innerWidth > 560 ? "landscape" : "portrait";
+  }
+  addEventListener("resize", orient);
+
+  // ---------------------------------------------------------------- source handling
+  const ATTRS = `((?:\\s+[^\\s=>/"']+(?:\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s>]+))?)*)`;
+  const TAG_RE = new RegExp(`<(\\/?)([a-zA-Z][\\w-]*)${ATTRS}\\s*(\\/?)>`, "g");
+  const HTML_VOID = new Set("area base br col embed hr img input link meta param source track wbr".split(" "));
+  const AUTO_CLOSE = new Set(["p", "li", "option", "tr", "td", "th", "dt", "dd"]);
+  B.VOIDX = B.VOIDX || new Set();
+  function split(src) {
+    let rel = "", relOpen = false, js = "", py = "";
+    const data = [];
+    let html = src
+      .replace(/<style\s+type=["']?rel["']?\s*>([\s\S]*?)(<\/style>|$)/gi, (_, c, end) => { if (end) rel += c + "\n"; else relOpen = true; return ""; })
+      .replace(/<script\s+type=["']?(?:application\/)?(?:data|json)["']?\s+(?:name|id)=["']?([\w$-]+)["']?\s*>([\s\S]*?)(<\/script>|$)/gi, (_, n, c, end) => { if (end) data.push([n, c]); return ""; })
+      .replace(/<script\s+type=["']?(?:text\/)?python["']?\s*>([\s\S]*?)(<\/script>|$)/gi, (_, c) => ((py += c + "\n"), ""))
+      .replace(/<script(?:\s[^>]*)?>([\s\S]*?)(<\/script>|$)/gi, (_, c) => ((js += c + "\n"), ""))
+      .replace(/<style[\s\S]*?(<\/style>|$)/gi, "");
+    // trailing partial tag / comment while streaming
+    html = html.replace(/<(?:[^>"']|"[^"]*"|'[^']*')*$/, "").replace(/<!--(?![\s\S]*-->)[\s\S]*$/, "");
+    // <x-foo/> and attribute-only components never need explicit closing
+    html = html.replace(new RegExp(`<(x-[\\w-]+)${ATTRS}\\s*\\/>`, "g"), "<$1$2></$1>");
+    html = html.replace(/<\/(x-[\w-]+)\s*>/g, (m, t) => (B.VOIDX.has(t) ? "" : m));
+    html = html.replace(new RegExp(`<(x-[\\w-]+)${ATTRS}\\s*>`, "g"), (m, t) => (B.VOIDX.has(t) ? m + `</${t}>` : m));
+    return { html, rel, relOpen, js, py, data };
+  }
+  function openStack(html) {
+    const st = []; let m; TAG_RE.lastIndex = 0;
+    while ((m = TAG_RE.exec(html))) {
+      const t = m[2].toLowerCase();
+      if (m[1]) { const i = st.lastIndexOf(t); if (i >= 0) st.length = i; }
+      else if (!m[4] && !HTML_VOID.has(t) && !B.VOIDX.has(t)) { if (AUTO_CLOSE.has(t) && st[st.length - 1] === t) st.pop(); st.push(t); }
+    }
+    return st;
   }
 
-  function bindOn(pyFns) {
-    $$("[on]").forEach((el) => el.getAttribute("on").split(/\s+/).forEach((pair) => { const [ev, fn] = pair.split(":"); if (!fn) return; el.addEventListener(ev, (e) => { if (pyFns && pyFns(fn, e)) return; if (typeof window[fn] === "function") window[fn](e, el); }); }));
-    $$('input[type=range]').forEach((r) => { const u = () => r.style.setProperty("--p", ((r.value - (r.min || 0)) / ((r.max || 100) - (r.min || 0))) * 100 + "%"); u(); r.addEventListener("input", u); });
-    $$("button[tone]").forEach(() => {});
+  // ---------------------------------------------------------------- streaming mount
+  const CONTAINERS = new Set(["div", "section", "article", "header", "footer", "main", "aside", "nav", "form", "ul", "ol", "details", "fieldset", "table", "thead", "tbody", "tr"]);
+  const TEXTY = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "small", "span", "strong", "em", "b", "i", "a", "label", "blockquote", "td", "th", "summary", "button", "legend", "figcaption", "dt", "dd", "pre", "code"]);
+  B.CONTAINERS = B.CONTAINERS || new Set(); // x-* containers register here (elements.js)
+  const isContainer = (t) => CONTAINERS.has(t) || B.CONTAINERS.has(t);
+  let seq = 0;
+  function enter(el, i) {
+    if (el.nodeType !== 1) return;
+    el.classList.add("b-in");
+    el.style.setProperty("--i", Math.min(i ?? seq++, 14));
+    el.addEventListener("animationend", () => el.classList.remove("b-in"), { once: true });
+  }
+  function skeleton(tag) {
+    const s = document.createElement("div");
+    s.className = "b-skel"; s.dataset.k = B.skelKind ? B.skelKind(tag) : "block";
+    return s;
+  }
+  const kids = (n) => [...n.childNodes].filter((c) => c.nodeType === 1 || (c.nodeType === 3 && c.textContent.trim()));
+  /** Bind a finished node BEFORE it is connected (templates stay pristine, first paint has final values).
+      Returns the node to insert (an anchor comment when the node itself repeats with each=). */
+  function prepare(el) {
+    const list = []; let node = el;
+    if (el.nodeType === 1 && el.hasAttribute("each") && !el.parentNode) { const f = document.createDocumentFragment(); f.appendChild(el); bindEl(el, list, null); node = f.firstChild; }
+    else bindEl(el, list, null);
+    list.forEach((b) => b.type !== "each" && applyBinding(b));
+    rootBindings.push(...list);
+    return node;
+  }
+  function settle(el) { typeset(el); if (el.parentElement) placeUnit(el); }
+  function sync(src, live, stack, depth, done) {
+    live.__kids ||= [];
+    const list = kids(src);
+    const lastEl = src.lastElementChild;
+    list.forEach((s, i) => {
+      let l = live.__kids[i];
+      if (s.nodeType === 3) {
+        const t = s.textContent.replace(/\{\{[^}]*\}?\}?/g, (m) => (done ? m : ""));
+        if (!l) { l = live.__kids[i] = document.createTextNode(t); live.appendChild(l); }
+        else if (!l.__done && l.textContent !== t) l.textContent = t;
+        if (done && !l.__done) { l.__done = l.__bound = true; if (t.includes("{{")) rootBindings.push({ type: "text", node: l, tpl: t, locals: null }); }
+        return;
+      }
+      if (l && l.__done) return;
+      const tag = s.tagName.toLowerCase();
+      const open = !done && s === lastEl && depth < stack.length && tag === stack[depth];
+      if (!open) {
+        if (l && l.__shell) { sync(s, l, stack, depth + 1, true); l.__done = true; prepare(l); settle(l); return; }
+        const full = document.importNode(s, true);
+        const node = prepare(full);
+        if (l) live.replaceChild(node, l); else live.appendChild(node);
+        live.__kids[i] = node; node.__done = true;
+        if (node === full) { if (!l || !l.__texty) enter(full); settle(full); }
+        return;
+      }
+      if (s.hasAttribute("each")) { if (!l) { l = live.__kids[i] = skeleton("each"); live.appendChild(l); } return; }
+      if (isContainer(tag)) {
+        if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__shell = true; live.appendChild(l); enter(l); if (l.parentElement === root) placeUnit(l); }
+        sync(s, l, stack, depth + 1, false);
+      } else if (TEXTY.has(tag)) {
+        if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__texty = true; live.appendChild(l); enter(l); }
+        l.innerHTML = s.innerHTML.replace(/\{\{[^}]*\}?\}?/g, "");
+      } else if (!l) { l = live.__kids[i] = skeleton(tag); live.appendChild(l); enter(l); }
+    });
   }
 
+  // ---------------------------------------------------------------- logic
+  let started = false;
+  async function startLogic(js, py) {
+    if (started) return; started = true;
+    if (js.trim()) { try { (0, eval)(js); } catch (err) { showErr(err); } }
+    if (py.trim()) {
+      pyReady = false;
+      try { pyCall = await runPython(py); } catch (err) { showErr(err); }
+      pyReady = true;
+      pendingOn.splice(0).forEach(([fn, e]) => pyCall && pyCall(fn, e));
+    }
+    schedule();
+  }
+  function showErr(err) { reportErr(err); root && root.insertAdjacentHTML("beforeend", `<div class="err">${esc(err)}</div>`); }
   async function runPython(code) {
     await load("https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js");
     const pyo = await window.loadPyodide();
-    pyo.globals.set("_js", { el: $, els: $$, form: () => pyo.toPy(form()), send_to_lm: (d) => sendToLm(d?.toJs ? Object.fromEntries(d.toJs()) : d), save_in: saveIn, notify, every: (ms, f) => setInterval(() => f(), ms) });
+    const imports = [...code.matchAll(/^\s*(?:import|from)\s+([\w]+)/gm)].map((m) => m[1]).filter((m) => ["numpy", "pandas", "scipy", "sympy", "matplotlib", "networkx", "scikit-learn", "sklearn"].includes(m));
+    if (imports.length) await pyo.loadPackage(imports.map((m) => (m === "sklearn" ? "scikit-learn" : m))).catch(() => {});
+    pyo.globals.set("_js", { el: (s) => document.querySelector(s), els: (s) => [...document.querySelectorAll(s)], form: () => pyo.toPy(form()), S, send_to_lm: (d) => sendToLm(d && d.toJs ? d.toJs({ dict_converter: Object.fromEntries }) : d), save_in: saveIn, notify, render: schedule, every: (ms, f) => setInterval(() => { f(); schedule(); }, ms), after: (ms, f) => setTimeout(() => { f(); schedule(); }, ms) });
     await pyo.runPythonAsync(`
-from pyodide.ffi import create_proxy
-el=_js.el; els=_js.els; notify=_js.notify; save_in=_js.save_in
+from pyodide.ffi import create_proxy, to_js
+el=_js.el; els=_js.els; notify=_js.notify; save_in=_js.save_in; S=_js.S; render=_js.render
 def form(): return _js.form()
-def send_to_lm(d): _js.send_to_lm(__import__('pyodide').ffi.to_js(d))
+def send_to_lm(d): _js.send_to_lm(to_js(d, dict_converter=__import__('js').Object.fromEntries))
 def every(ms, fn): return _js.every(ms, create_proxy(fn))
+def after(ms, fn): return _js.after(ms, create_proxy(fn))
 `);
     await pyo.runPythonAsync(code);
-    return (name, e) => { const f = pyo.globals.get(name); if (!f) return false; try { f.length ? f(e) : f(); } catch (err) { try { f(); } catch (er2) { notify(String(er2).slice(0, 120)); } } return true; };
+    return (name, e) => { const f = pyo.globals.get(name); if (!f || typeof f !== "function") return false; try { try { f(e); } catch (err) { if (/argument/.test(String(err))) f(); else throw err; } } catch (err) { notify(String(err).split("\n").slice(-2).join(" ").slice(0, 160)); } schedule(); return true; };
   }
 
-  window.addEventListener("error", (e) => post("error", { text: String(e.message) }));
+  // ---------------------------------------------------------------- helpers exposed to model code
+  const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+  const on = (sel, ev, fn) => { (typeof sel === "string" ? $$(sel) : [sel]).forEach((el) => el && el.addEventListener(ev, (e) => { const r = fn(e, el); schedule(); return r; })); };
+  function form(scopeEl) {
+    const o = {}; const r = scopeEl ? (typeof scopeEl === "string" ? $(scopeEl) : scopeEl) : root;
+    (r || document).querySelectorAll("[name]").forEach((el) => { const n = el.getAttribute("name"); if (!(n in o)) o[n] = readInput(n); });
+    return o;
+  }
+  const notify = (t) => { const d = document.createElement("div"); d.className = "toast"; d.textContent = String(t); document.body.appendChild(d); setTimeout(() => d.classList.add("out"), 1900); setTimeout(() => d.remove(), 2300); };
+  const sendToLm = (data) => { post("lm", { data: typeof data === "string" ? data : JSON.parse(JSON.stringify(data ?? {})) }); if (!standalone) notify("Sent"); else console.log("[sendToLm]", data); };
+  const saveIn = (path, text) => (standalone ? Promise.resolve(false) : call("save", { path, text: typeof text === "string" ? text : JSON.stringify(text, null, 2) }));
+  const py = (code) => (standalone ? Promise.resolve("(server python unavailable standalone)") : call("py", { code }));
+  const open = (target) => post("open", { target });
+  const every = (ms, fn) => setInterval(() => { fn(); schedule(); }, ms);
+  const after = (ms, fn) => setTimeout(() => { fn(); schedule(); }, ms);
+  const state = (k, init) => { if (!(k in store)) store[k] = init; return { get: () => store[k], set: (v) => { store[k] = v; schedule(); } }; };
+  const upload = (file, dir) => new Promise((res) => { const r = new FileReader(); r.onload = () => call("upload", { name: file.name, type: file.type, data: String(r.result).split(",")[1], dir }).then(res); r.readAsDataURL(file); });
+  Object.assign(H, { sendToLm, saveIn, py, notify, form, every, after, open });
+  Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, notify, state, every, after, open, S, render: schedule });
+  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, post, upload, standalone, H });
 
-  window.BlocksBoot = async function () {
-    const root = $("#root");
-    const relEl = document.querySelector('script[type="text/rel"]');
-    REL = compileRel(parseRel(relEl ? relEl.textContent : ""));
-    const st = document.createElement("style"); st.textContent = REL.css; document.head.appendChild(st);
-    formGroups(root); topOrder = [...root.children]; layout();
-    addEventListener("resize", layout);
-    const pySrc = document.querySelector('script[type="text/python"]');
-    let pyFns = null;
-    bindOn((name, e) => (pyFns ? pyFns(name, e) : false));
-    const js = document.querySelector('script[type="text/blocks"]');
-    if (js) { try { (0, eval)(js.textContent); } catch (err) { root.insertAdjacentHTML("beforeend", `<div class="err">${err}</div>`); } }
-    if (pySrc) { try { pyFns = await runPython(pySrc.textContent); } catch (err) { root.insertAdjacentHTML("beforeend", `<div class="err">${err}</div>`); } }
-    const ro = new ResizeObserver(() => post("height", { h: Math.ceil(document.documentElement.scrollHeight) })); ro.observe(document.body);
+  window.addEventListener("message", (e) => {
+    const m = e.data || {};
+    if (m.type === "reply" && pending[m.id]) { pending[m.id](m.value); delete pending[m.id]; }
+    else if (m.type === "theme") { for (const k in m.vars) document.documentElement.style.setProperty(k, m.vars[k]); document.body.dataset.theme = m.theme; root && root.querySelectorAll("[data-themed]").forEach((x) => x.refresh ? x.refresh(true) : x.render && x.render()); }
+    else if (m.type === "source") feed(m.source, m.done);
+  });
+  window.addEventListener("error", (e) => reportErr(e.message));
+  root = document.getElementById("root");
+  root.addEventListener("input", schedule); root.addEventListener("change", schedule);
+  document.addEventListener("tick", schedule);
+
+  // ---------------------------------------------------------------- feed: the only entry point
+  let finished = false;
+  function feed(source, done) {
+    if (finished) return;
+    const p = split(source || "");
+    if (p.rel) applyRel(p.rel);
+    for (const [n, c] of p.data) if (!(n in dataVars)) { try { dataVars[n] = JSON.parse(c); } catch { dataVars[n] = c.trim(); } if (!(n in window)) window[n] = dataVars[n]; }
+    const tpl = document.createElement("template"); tpl.innerHTML = p.html;
+    sync(tpl.content, root, done ? [] : openStack(p.html), 0, !!done);
+    if (done) { finished = true; startLogic(p.js, p.py); }
+    schedule();
+  }
+  B.feed = feed;
+  B.render = (source) => feed(source, true);
+  orient();
+  const ro = new ResizeObserver(() => post("height", { h: Math.ceil(Math.max(root.scrollHeight + 8, document.body.scrollHeight)) }));
+  ro.observe(document.body); ro.observe(root);
+
+  B.connect = () => {
+    const tpl = document.querySelector("template[data-blocks]");
+    if (tpl) feed(tpl.innerHTML, true); else post("ready", {});
   };
 })();

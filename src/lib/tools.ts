@@ -1,55 +1,51 @@
 import fs from "fs/promises";
 import path from "path";
-import { spawn } from "child_process";
-import { WS, resolvePath, rel, tree, Node } from "./workspace";
+import { WS, resolvePath, rel, tree, Node, mimeOf } from "./workspace";
 import type { Settings } from "./settings";
 import { searchCatalog } from "./blocks/catalog";
 import { callMcp } from "./mcp";
+import { runShell, runPython as execPython, pipInstall } from "./exec";
+import { youtubeId } from "./shared";
 
 export type ToolDef = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
 const T = (name: string, description: string, props: Record<string, unknown> = {}, required: string[] = []): ToolDef => ({
   type: "function", function: { name, description, parameters: { type: "object", properties: props, required } },
 });
 const s = (d?: string) => ({ type: "string", ...(d ? { description: d } : {}) });
+const n = (d?: string) => ({ type: "number", ...(d ? { description: d } : {}) });
 
+// Descriptions are deliberately terse: tool schemas are sent on every request.
 export const CORE_TOOLS: ToolDef[] = [
   T("skill_open", "Load a skill's instructions", { name: s() }, ["name"]),
-  T("context_add", "Add workspace file to active context", { path: s() }, ["path"]),
+  T("context_add", "Add file to active context", { path: s() }, ["path"]),
   T("context_remove", "Remove file from active context", { path: s() }, ["path"]),
-  T("compact_context", "Summarise older chat history to free context"),
+  T("compact_context", "Free context. tools=fold old tool outputs to one line; web=old web results to key facts; history=summarise all but last keep_last messages", { scope: { type: "string", enum: ["tools", "web", "history"] }, keep_last: n() }),
   T("fs_list", "List directory", { path: s() }),
-  T("fs_read", "Read file lines", { path: s(), start: { type: "number" }, end: { type: "number" } }, ["path"]),
+  T("fs_read", "Read file lines", { path: s(), start: n(), end: n() }, ["path"]),
   T("fs_write", "Write file", { path: s(), content: s(), mode: { type: "string", enum: ["overwrite", "append"] } }, ["path", "content"]),
   T("fs_edit", "Replace exact text in file", { path: s(), find: s(), replace: s(), all: { type: "boolean" } }, ["path", "find", "replace"]),
   T("fs_delete", "Delete file or dir", { path: s() }, ["path"]),
   T("fs_move", "Move/rename", { from: s(), to: s() }, ["from", "to"]),
   T("run_python", "Run python3 code, cwd=workspace", { code: s() }, ["code"]),
   T("pip_install", "Install python packages", { packages: { type: "array", items: { type: "string" } } }, ["packages"]),
-  T("shell", "Run bash command", { command: s() }, ["command"]),
-  T("web_search", "Search the web", { query: s(), limit: { type: "number" } }, ["query"]),
+  T("shell", "Run bash command", { command: s(), timeout: n("seconds, default 120, max 600") }, ["command"]),
+  T("web_search", "Search the web", { query: s(), limit: n() }, ["query"]),
   T("web_fetch", "Fetch URL as markdown", { url: s() }, ["url"]),
   T("web_extract", "Extract structured data from a web page using Firecrawl Cloud AI", { url: s("URL to extract from"), prompt: s("Description or schema of data to extract") }, ["url", "prompt"]),
   T("ui_search", "Find Blocks UI components by tags", { query: s() }, ["query"]),
+  T("canvas_open", "Open a workspace file, web page or YouTube URL in a canvas window for the user", { target: s("path or URL"), title: s(), dock: { type: "boolean", description: "open docked beside chat" } }, ["target"]),
 ];
 
-export type ToolCtx = { settings: Settings; conversationId: string; pinned: string[]; setPinned: (p: string[]) => Promise<void>; compact: () => Promise<string> };
+export type ToolCtx = {
+  settings: Settings; conversationId: string; pinned: string[]; emit: (e: Record<string, unknown>) => void;
+  setPinned: (p: string[]) => Promise<void>; compact: (scope?: string, keepLast?: number) => Promise<string>;
+};
 export type ToolOut = { result: string; ok: boolean; meta?: unknown };
 
 const cut = (x: string, n = 8000) => (x.length > n ? x.slice(0, n) + `\n… (${x.length - n} more chars)` : x);
 
-function run(cmd: string, args: string[], opts: { cwd: string; timeout: number; input?: string }): Promise<{ out: string; code: number }> {
-  return new Promise((res) => {
-    const p = spawn(cmd, args, { cwd: opts.cwd, env: { ...process.env, MPLBACKEND: "Agg", PYTHONUNBUFFERED: "1" } });
-    let out = "";
-    const t = setTimeout(() => { p.kill("SIGKILL"); out += "\n(timeout)"; }, opts.timeout);
-    p.stdout.on("data", (d) => (out += d));
-    p.stderr.on("data", (d) => (out += d));
-    p.on("close", (code) => { clearTimeout(t); res({ out, code: code ?? 1 }); });
-    p.on("error", (e) => { clearTimeout(t); res({ out: String(e), code: 1 }); });
-    if (opts.input) { p.stdin.write(opts.input); p.stdin.end(); }
-  });
-}
-export const runPython = (code: string, cwd = WS) => run("python3", ["-"], { cwd, timeout: 120000, input: code });
+/** Server-side python for Blocks `py()` helper (respects terminal sandbox setting). */
+export const runPython = (code: string, st: Settings | null = null) => execPython(st, code);
 
 const listText = (nodes: Node[], ind = ""): string => nodes.map((n) => `${ind}${n.name}${n.dir ? "/" : ` (${n.size ?? 0}b)`}\n${n.children ? listText(n.children, ind + "  ") : ""}`).join("");
 
@@ -178,7 +174,7 @@ async function firecrawlExtract(st: Settings, url: string, prompt: string) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function execTool(name: string, a: Record<string, any>, ctx: ToolCtx): Promise<ToolOut> {
-  const full = ctx.settings.access === "full";
+  const full = ctx.settings.access;
   const P = (p: string) => resolvePath(p, full);
   try {
     switch (name) {
@@ -192,7 +188,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         return { ok: true, result: `Added ${p}; content visible from next step.` };
       }
       case "context_remove": { await ctx.setPinned(ctx.pinned.filter((x) => x !== a.path)); return { ok: true, result: "Removed " + a.path }; }
-      case "compact_context": return { ok: true, result: await ctx.compact() };
+      case "compact_context": return { ok: true, result: await ctx.compact(a.scope || "history", Number(a.keep_last) || undefined) };
       case "fs_list": return { ok: true, result: cut(listText(await treeAt(P(a.path || "."))) || "(empty)") };
       case "fs_read": {
         const lines = (await fs.readFile(P(a.path), "utf8")).split("\n");
@@ -215,12 +211,26 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       }
       case "fs_delete": { await fs.rm(P(a.path), { recursive: true, force: true }); return { ok: true, result: "Deleted " + a.path }; }
       case "fs_move": { const to = P(a.to); await fs.mkdir(path.dirname(to), { recursive: true }); await fs.rename(P(a.from), to); return { ok: true, result: `Moved to ${a.to}` }; }
-      case "run_python": { const r = await runPython(a.code); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
+      case "run_python": { const r = await execPython(ctx.settings, a.code); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
       case "pip_install": {
-        const r = await run("pip3", ["install", "--break-system-packages", "-q", ...[].concat(a.packages as never)], { cwd: WS, timeout: 300000 });
+        const r = await pipInstall(([] as string[]).concat(a.packages));
         return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
       }
-      case "shell": { const r = await run("bash", ["-lc", a.command], { cwd: WS, timeout: 120000 }); return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out}`) }; }
+      case "shell": {
+        const r = await runShell(ctx.settings, String(a.command), Math.min(600, Math.max(5, Number(a.timeout) || 120)) * 1000);
+        return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out}`) };
+      }
+      case "canvas_open": {
+        const t = String(a.target || "").trim();
+        const title = a.title ? String(a.title) : undefined;
+        const yt = youtubeId(t);
+        let spec: Record<string, unknown>;
+        if (yt) spec = { kind: "youtube", id: yt, title: title || "YouTube" };
+        else if (/^https?:\/\//.test(t)) spec = { kind: "web", url: t, title: title || new URL(t).hostname };
+        else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
+        ctx.emit({ t: "canvas", spec, dock: !!a.dock });
+        return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
+      }
       case "web_search": {
         const j = await firecrawlSearch(ctx.settings, a.query, Math.min(Number(a.limit) || 5, 8));
         const items = ((j.data as { url: string; title?: string; description?: string }[]) || []).map((d) => ({ url: d.url, title: d.title || d.url, snippet: (d.description || "").slice(0, 240) }));

@@ -9,3 +9,6 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Embedded database (PGlite) when DATABASE_URL is unset
+/data

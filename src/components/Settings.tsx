@@ -2,11 +2,13 @@
 import { useEffect, useState } from "react";
 import { X, Plus } from "lucide-react";
 
-type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "full"; secrets: Record<string, string> };
+type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; secrets: Record<string, string> };
+type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
 export function Settings({ onClose, theme, setTheme }: { onClose: () => void; theme: string; setTheme: (t: string) => void }) {
-  const [tab, setTab] = useState<"model" | "tools" | "mcp" | "skills">("model");
+  const [tab, setTab] = useState<"model" | "tools" | "access" | "mcp" | "skills">("model");
+  const [caps, setCaps] = useState<Caps | null>(null);
   const [s, setS] = useState<S | null>(null);
   const [presets, setPresets] = useState<Record<string, { baseUrl: string; model: string; contextTokens?: number }>>({});
   const [servers, setServers] = useState<Record<string, Srv>>({});
@@ -19,7 +21,7 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
   const [loadingModels, setLoadingModels] = useState(false);
 
   useEffect(() => {
-    fetch("/api/settings").then((r) => r.json()).then((j) => { setS(j.settings); setPresets(j.presets); });
+    fetch("/api/settings").then((r) => r.json()).then((j) => { setS(j.settings); setPresets(j.presets); setCaps(j.caps || null); });
     fetch("/api/mcp").then((r) => r.json()).then(setServers);
     fetch("/api/skills").then((r) => r.json()).then(setSkills);
   }, []);
@@ -57,7 +59,7 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" role="dialog">
         <div className="tabs">
-          <div className="seg">{(["model", "tools", "mcp", "skills"] as const).map((t) => <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{t === "mcp" ? "MCP" : t[0].toUpperCase() + t.slice(1)}</button>)}</div>
+          <div className="seg">{(["model", "tools", "access", "mcp", "skills"] as const).map((t) => <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{t === "mcp" ? "MCP" : t[0].toUpperCase() + t.slice(1)}</button>)}</div>
           <span style={{ flex: 1 }} /><small style={{ color: "var(--muted)", alignSelf: "center", fontSize: 12 }}>{msg}</small>
           <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button>
         </div>
@@ -96,7 +98,6 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
                         saveS(patch);
                       }
                     }}
-                    placeholder="e.g. gemini-2.5-flash"
                     style={{ flex: 1 }}
                   />
                   {models.length > 0 && (
@@ -142,12 +143,22 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
             <small style={{ color: "var(--muted)", fontSize: 11, marginTop: -6, marginBottom: 8, display: "block" }}>
               Hybrid routing: standard scrape uses local Firecrawl. Cloud API key is used for Cloudflare/anti-bot bypass, AI extraction, and search fallback.
             </small>
-            <div className="srv"><div className="t">Full disk & terminal access<small>Off: agent confined to workspace. On: absolute paths and your real filesystem.</small></div>
-              <button className={"sw" + (s.access === "full" ? " on" : "")} aria-label="Toggle full access" onClick={() => saveS({ access: s.access === "full" ? "sandbox" : "full" })} /></div>
             <div className="field">Secrets for MCP (${"{NAME}"} in servers.json)
               {Object.keys(s.secrets).map((k) => <div key={k} className="srv"><span className="t">{k}</span><small>••••</small></div>)}
               <div className="grid2"><input value={secretK} onChange={(e) => setSecretK(e.target.value.toUpperCase())} aria-label="Secret name" /><div style={{ display: "flex", gap: 6 }}><input type="password" value={secretV} onChange={(e) => setSecretV(e.target.value)} aria-label="Secret value" style={{ flex: 1 }} /><button className="ib" aria-label="Add secret" onClick={() => { if (secretK && secretV) { saveS({ secrets: { [secretK]: secretV } }); setSecretK(""); setSecretV(""); } }}><Plus /></button></div></div>
             </div>
+          </>}
+          {tab === "access" && <>
+            {caps?.locked && <small className="note">Locked to the sandbox by this server (HOST_ACCESS=off).</small>}
+            <div className="srv"><div className="t">Home folder<small>{s.access === "sandbox" ? `Off: files are confined to ${caps?.workspace || "the workspace"}.` : `On: the agent can read and write ${caps?.home || "~"} (use ~/path).`}</small></div>
+              <button className={"sw" + (s.access !== "sandbox" ? " on" : "")} disabled={caps?.locked} aria-label="Home folder access" onClick={() => saveS({ access: s.access === "sandbox" ? "home" : "sandbox" })} /></div>
+            <div className={"srv" + (s.access === "sandbox" ? " off" : "")}><div className="t">Entire disk<small>Absolute paths outside your home folder.</small></div>
+              <button className={"sw" + (s.access === "full" ? " on" : "")} disabled={caps?.locked || s.access === "sandbox"} aria-label="Entire disk access" onClick={() => saveS({ access: s.access === "full" ? "home" : "full" })} /></div>
+            <div className="srv"><div className="t">Host terminal<small>{s.terminal === "host" ? `On: shell and Python run as you, starting in ${s.access === "sandbox" ? "the workspace" : caps?.home || "~"}.` : caps?.bwrap ? "Off: commands run isolated with bubblewrap, only the workspace is writable." : "Off: commands run in the workspace with secrets stripped. Install bubblewrap for full isolation."}</small></div>
+              <button className={"sw" + (s.terminal === "host" ? " on" : "")} disabled={caps?.locked} aria-label="Host terminal" onClick={() => saveS({ terminal: s.terminal === "host" ? "sandbox" : "host", ...(s.terminal === "host" ? { sudo: false } : {}) })} /></div>
+            <div className={"srv" + (s.terminal !== "host" ? " off" : "")}><div className="t">Allow sudo<small>{s.terminal !== "host" ? "Requires the host terminal." : s.secrets.SUDO_PASSWORD ? "Uses the SUDO_PASSWORD secret." : "Passwordless sudo only (sudo -n). Add a SUDO_PASSWORD secret under Tools to allow password prompts."}</small></div>
+              <button className={"sw" + (s.sudo ? " on" : "")} disabled={s.terminal !== "host"} aria-label="Allow sudo" onClick={() => { if (!s.sudo && !confirm("Let the agent run commands as root?")) return; saveS({ sudo: !s.sudo }); }} /></div>
+            {caps && <small className="note">{caps.soffice ? "LibreOffice found: office files preview as pages." : "Install LibreOffice for page-accurate .doc/.ppt/.odp previews."}</small>}
           </>}
           {tab === "mcp" && <>
             {Object.entries(servers).map(([name, c]) => (

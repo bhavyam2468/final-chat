@@ -1,0 +1,188 @@
+#!/usr/bin/env node
+/**
+ * Offline OpenAI-compatible mock for UI development and demos (no key, no network).
+ * Streams deliberately irregular chunks (1–60 chars, 5–160 ms gaps, bursts) to exercise the streaming renderer.
+ *   node scripts/mock-llm.mjs [port=3099]   then LLM_BASE_URL=http://127.0.0.1:3099/v1
+ * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, fold/compact, else markdown.
+ */
+import http from "node:http";
+
+const PORT = Number(process.argv[2] || process.env.MOCK_PORT || 3099);
+
+const JEE = String.raw`Built from the pattern of recent JEE Main papers: 6 questions, +4 / −1, one hour. It opens beside the chat so you can ask about any question while you work.
+
+<canvas title="JEE Main mock 1" dock>
+<ui>
+<style type="rel">
+root { max: wide }
+.bar { sticky: top }
+.res { gap: loose }
+.stats { columns: 3 }
+</style>
+<script type="data" name="qs">[
+{"s":"Physics","t":"Laws of motion","q":"A block slides down a smooth incline of angle $\\theta$. Its acceleration is","o":["$g$","$g\\sin\\theta$","$g\\cos\\theta$","$g\\tan\\theta$"],"a":"B","fig":"ground 170\nincline 30 70 220 100\nmass 130 100 \"m\"\narrow 130 100 130 150 \"mg\"\nangle 250 170 30 150 180 \"θ\""},
+{"s":"Physics","t":"Electrostatics","q":"Two charges $+q$ and $-q$ are $2a$ apart. The field at the midpoint has magnitude","o":["$0$","$\\frac{kq}{a^2}$","$\\frac{2kq}{a^2}$","$\\frac{kq}{2a^2}$"],"a":"C"},
+{"s":"Chemistry","t":"Nomenclature","q":"The IUPAC name of the compound shown is","smiles":"CC(C)CO","o":["2-methylpropan-1-ol","butan-1-ol","2-methylpropan-2-ol","butan-2-ol"],"a":"A"},
+{"s":"Chemistry","t":"Chemical kinetics","q":"For a first-order reaction, $t_{1/2}$ is","o":["proportional to $[A]_0$","independent of $[A]_0$","inversely proportional to $[A]_0$","proportional to $[A]_0^2$"],"a":"B"},
+{"s":"Mathematics","t":"Definite integrals","q":"$\\int_0^{\\pi/2} \\sin^2 x\\,dx$ equals","o":["$\\frac{\\pi}{2}$","$\\frac{\\pi}{4}$","$1$","$\\pi$"],"a":"B"},
+{"s":"Mathematics","t":"Functions","q":"How many real roots does $x^3 - 3x + 1 = 0$ have? (see graph)","o":["0","1","2","3"],"a":"D","fn":"y=x^3-3x+1"}
+]</script>
+<x-state submitted="false" res="[]" picks="[]"></x-state>
+<x-row class="bar">
+  <h3>JEE Main · Mock 1</h3>
+  <x-spacer></x-spacer>
+  <x-badge>{{ answered() }} / {{ qs.length }}</x-badge>
+  <x-timer id="clock" seconds="3600" autostart @done="submit()"></x-timer>
+</x-row>
+<x-deck id="deck" nav="numbers" show="!submitted">
+  <x-slide each="(q, i) in qs" :label="'Q' + (i + 1)">
+    <small>{{ q.s }} · {{ q.t }}</small>
+    <p>{{ q.q }}</p>
+    <x-draw show="q.fig" w="300" h="190" :text="q.fig || ''"></x-draw>
+    <x-smiles show="q.smiles" :smiles="q.smiles || ''"></x-smiles>
+    <x-graph show="q.fn" :fn="q.fn || ''" xmin="-3" xmax="3" ymin="-4" ymax="4"></x-graph>
+    <x-choice :name="'q' + i" :options="q.o.join('|')" :answer="q.a" :reveal="res.length > 0"></x-choice>
+    <x-row>
+      <button show="i > 0" @click="deck.prev()">Previous</button>
+      <x-spacer></x-spacer>
+      <button tone="accent" @click="i === qs.length - 1 ? submit() : deck.next()">{{ i === qs.length - 1 ? 'Submit' : 'Next' }}</button>
+    </x-row>
+  </x-slide>
+</x-deck>
+<x-section class="res" show="submitted" title="Result">
+  <x-grid class="stats">
+    <x-stat :value="score" label="Score" :unit="'/ ' + qs.length * 4"></x-stat>
+    <x-stat :value="res.filter(r => r === true).length" label="Correct"></x-stat>
+    <x-stat :value="fmt(clock.elapsed || 0)" label="Time"></x-stat>
+  </x-grid>
+  <x-chart type="stacked" :data="bySubject()" labels="Physics,Chemistry,Mathematics" series="Correct|Wrong|Skipped" title="By subject"></x-chart>
+  <x-card each="(q, i) in qs" :tone="res[i] === true ? 'success' : res[i] === false ? 'danger' : 'neutral'" :title="'Q' + (i + 1) + ' · ' + q.t">
+    <p>{{ q.q }}</p>
+    <small>You: {{ picks[i] || 'skipped' }} · Answer: {{ q.o['ABCD'.indexOf(q.a)] }}</small>
+  </x-card>
+  <x-row>
+    <button @click="deck.go(0); submitted = false">Review questions</button>
+    <button tone="accent" @click="sendToLm({ test: 'JEE Main mock 1', score, correct: res.filter(r => r === true).length, wrong: res.filter(r => r === false).length, topics: qs.map((q, i) => q.t + ':' + (res[i] === true ? 'right' : res[i] === false ? 'wrong' : 'skipped')) })">Analyse my attempt</button>
+  </x-row>
+</x-section>
+<script>
+function answered() { return $$('x-choice').filter(c => c.answered).length }
+function submit() {
+  clock.stop();
+  const cs = $$('x-choice');
+  res = cs.map(c => c.answered ? c.correct : null);
+  picks = cs.map(c => c.value);
+  score = res.reduce((a, r) => a + (r === true ? 4 : r === false ? -1 : 0), 0);
+  submitted = true;
+}
+function bySubject() {
+  const subj = ['Physics', 'Chemistry', 'Mathematics'];
+  const k = (v) => subj.map(s => qs.filter((q, i) => q.s === s && res[i] === v).length).join(',');
+  return [k(true), k(false), k(null)].join('|');
+}
+</script>
+</ui>
+</canvas>
+
+Submit when done and press **Analyse my attempt** for per-topic feedback.`;
+
+const GRAPH = String.raw`Drag the sliders; the curve and its derivative update live.
+
+<ui>
+<style type="rel">
+.plot { size: 3x }
+.ctl { group: sliders }
+landscape { .plot { place: start } }
+</style>
+<x-graph class="plot" fn="y=a*sin(b*x); y=a*b*cos(b*x)" xmin="-6.3" xmax="6.3" legend></x-graph>
+<label class="ctl">a = {{ a }} <input type="range" name="a" min="0.2" max="3" step="0.1" value="1"></label>
+<label class="ctl">b = {{ b }} <input type="range" name="b" min="0.2" max="4" step="0.1" value="1"></label>
+</ui>
+
+Period is $\frac{2\pi}{b}$; the derivative's amplitude is $ab$.`;
+
+const CHEM = String.raw`Aspirin is acetylsalicylic acid: an ester of salicylic acid with acetic acid.
+
+<ui>
+<x-row>
+<x-smiles smiles="CC(=O)Oc1ccccc1C(=O)O" label="Aspirin"></x-smiles>
+<x-kv>Formula: C₉H₈O₄
+Molar mass: 180.16 g/mol
+pKa: 3.5</x-kv>
+</x-row>
+</ui>`;
+
+const MD = String.raw`## Streaming check
+
+Plain paragraphs arrive in irregular chunks; the renderer paces them. A table:
+
+| Model | Context | Notes |
+|---|---|---|
+| Local 8B | 16k | fits the lean prompt |
+| Flash-Lite | 1M | free tier |
+
+${"```"}python
+def fib(n):
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+${"```"}
+
+Euler: $e^{i\pi} + 1 = 0$, and
+
+$$\int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}$$
+
+- [x] markdown
+- [x] math
+- [ ] your next question`;
+
+function scenario(messages) {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const q = (typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content || "")).toLowerCase();
+  const afterTool = messages[messages.length - 1]?.role === "tool";
+  if (q.includes("ui_event")) return { text: "You scored well on mechanics; kinetics and function graphs need work. Next: 10 targeted questions on first-order kinetics and cubic root counting via turning points." };
+  if (/jee|mock test/.test(q)) return afterTool ? { text: JEE } : { text: "Checking recent paper patterns.", call: { name: "web_search", args: { query: "JEE Main 2026 question paper pattern physics chemistry maths", limit: 3 } } };
+  const open = q.match(/open\s+(\S+)/);
+  if (open) return afterTool ? { text: "Opened beside the chat." } : { call: { name: "canvas_open", args: { target: open[1], dock: true } } };
+  if (/graph|plot/.test(q)) return { text: GRAPH };
+  if (/chem|molecule|aspirin/.test(q)) return { text: CHEM };
+  return { text: MD };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function chunks(text) {
+  const out = []; let i = 0;
+  while (i < text.length) {
+    const burst = Math.random() < 0.08;
+    const n = burst ? 80 + Math.floor(Math.random() * 160) : 1 + Math.floor(Math.random() * 60);
+    out.push(text.slice(i, i + n)); i += n;
+  }
+  return out;
+}
+
+const server = http.createServer(async (req, res) => {
+  if (req.method === "GET" && req.url.endsWith("/models")) { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify({ data: [{ id: "mock" }] })); }
+  if (req.method !== "POST") { res.statusCode = 404; return res.end(); }
+  let body = ""; for await (const c of req) body += c;
+  let j = {}; try { j = JSON.parse(body); } catch {}
+  const msgs = j.messages || [];
+  if (!j.stream) {
+    const sys = msgs.find((m) => m.role === "system")?.content || "";
+    const text = /summar|compact/i.test(sys + JSON.stringify(msgs.slice(-1))) ? "Goal: practice JEE. Done: mock 1 built (6 q). Facts: +4/−1 marking. Open: analysis of attempt." : "Mock chat";
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: text } }], usage: { prompt_tokens: 10, completion_tokens: 10 } }));
+  }
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+  const send = (delta, finish = null) => res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+  const sc = scenario(msgs);
+  for (const c of chunks(sc.text || "")) { send({ content: c }); await sleep(5 + Math.random() * (Math.random() < 0.1 ? 400 : 160)); }
+  if (sc.call) {
+    const id = "call_" + Date.now();
+    send({ tool_calls: [{ index: 0, id, type: "function", function: { name: sc.call.name, arguments: "" } }] });
+    for (const c of chunks(JSON.stringify(sc.call.args))) { send({ tool_calls: [{ index: 0, function: { arguments: c } }] }); await sleep(20); }
+  }
+  send({}, sc.call ? "tool_calls" : "stop");
+  res.end("data: [DONE]\n\n");
+});
+server.listen(PORT, "127.0.0.1", () => console.log(`mock LLM on http://127.0.0.1:${PORT}/v1`));

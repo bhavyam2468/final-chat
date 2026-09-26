@@ -5,7 +5,7 @@ import { ensureWorkspace, resolvePath, tree, mimeOf } from "@/lib/workspace";
 import { getSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
-const full = async () => (await getSettings()).access === "full";
+const full = async () => (await getSettings()).access;
 
 export async function GET(req: NextRequest) {
   await ensureWorkspace();

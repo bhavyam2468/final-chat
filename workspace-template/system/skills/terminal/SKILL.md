@@ -1,8 +1,9 @@
 ---
 name: terminal
-description: Shell usage: git, grep, find, package managers, long commands, full-access mode.
+description: Shell usage: git, grep, find, package managers, long commands, host vs sandbox terminal, sudo.
 ---
-- shell(command): bash -lc, cwd=workspace, 120s timeout, output truncated to 8k. Use `| head`, `grep -n`, `rg` if present.
-- Chain with && . No interactive commands (use -y flags). No servers that never exit; use `timeout 20 cmd` or `nohup cmd &`.
-- git available: status, log --oneline -10, diff --stat.
-- In full-access mode commands affect the user's real machine: be explicit and conservative.
+- shell(command, timeout≤600): bash -lc; output truncated. Use `| head`, `grep -n`, `rg`.
+- Sandbox terminal: cwd workspace, secrets stripped, isolated when bubblewrap exists; no sudo.
+- Host terminal: runs as the user, cwd ~ when home access is on. Be explicit and conservative; prefer read-only commands first.
+- sudo works only when the user enabled it (non-interactive; fails fast if a password is needed and none is stored). Never loop on sudo failures: tell the user which switch or secret is missing.
+- Chain with &&. No interactive commands (-y flags). Never start servers that don't exit; use `timeout 20 cmd` or `nohup cmd > log 2>&1 &`.

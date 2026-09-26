@@ -12,7 +12,7 @@ export const conversations = pgTable("conversations", {
 
 export type Part =
   | { type: "text"; text: string }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
 
 export type Attachment = { path: string; name: string; mime: string; size: number };
 
@@ -28,6 +28,8 @@ export const messages = pgTable(
     parts: jsonb("parts").$type<Part[]>().notNull().default([]),
     attachments: jsonb("attachments").$type<Attachment[]>().notNull().default([]),
     quote: text("quote"),
+    /** Selective compaction: null = full, "" = folded into an earlier message's summary, text = summary replacing this message (and following "" ones). */
+    compact: text("compact"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (t) => [index("messages_conv_idx").on(t.conversationId)]

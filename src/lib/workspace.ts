@@ -1,38 +1,79 @@
 import fs from "fs/promises";
 import fss from "fs";
 import path from "path";
+import os from "os";
+import crypto from "crypto";
 import { execFile } from "child_process";
 
 export const WS = path.resolve(process.env.WORKSPACE_DIR || "./workspace");
 const TEMPLATE = path.resolve("./workspace-template");
 
 let seeded = false;
-async function copyDir(src: string, dst: string) {
+const sha1 = (b: Buffer) => crypto.createHash("sha1").update(b).digest("hex");
+/**
+ * Seed the workspace from the template. Files the user never edited are upgraded when the template changes
+ * (tracked in system/.template.json; .pristine.json lists hashes of earlier shipped versions); edited files are left alone.
+ */
+async function copyDir(src: string, dst: string, man: Record<string, string>, pristine: Set<string>, root = src) {
   await fs.mkdir(dst, { recursive: true });
   for (const e of await fs.readdir(src, { withFileTypes: true })) {
-    const s = path.join(src, e.name), d = path.join(dst, e.name);
-    if (e.isDirectory()) await copyDir(s, d);
-    else if (!fss.existsSync(d)) await fs.copyFile(s, d);
+    if (e.name === ".pristine.json") continue;
+    const s = path.join(src, e.name), d = path.join(dst, e.name), key = path.relative(root, s);
+    if (e.isDirectory()) { await copyDir(s, d, man, pristine, root); continue; }
+    const tpl = await fs.readFile(s), th = sha1(tpl);
+    if (!fss.existsSync(d)) { await fs.writeFile(d, tpl); man[key] = th; continue; }
+    const cur = sha1(await fs.readFile(d));
+    if (cur === th) { man[key] = th; continue; }
+    if (cur === man[key] || (!man[key] && pristine.has(cur))) { await fs.writeFile(d, tpl); man[key] = th; }
   }
 }
 export async function ensureWorkspace() {
   if (seeded) return;
   await fs.mkdir(WS, { recursive: true });
-  if (fss.existsSync(TEMPLATE)) await copyDir(TEMPLATE, WS);
+  if (fss.existsSync(TEMPLATE)) {
+    const mp = path.join(WS, "system/.template.json");
+    const man: Record<string, string> = JSON.parse(await fs.readFile(mp, "utf8").catch(() => "{}"));
+    const pristine = new Set<string>(JSON.parse(await fs.readFile(path.join(TEMPLATE, ".pristine.json"), "utf8").catch(() => "[]")));
+    await copyDir(TEMPLATE, WS, man, pristine);
+    await fs.mkdir(path.dirname(mp), { recursive: true });
+    await fs.writeFile(mp, JSON.stringify(man));
+  }
   seeded = true;
 }
 
-export function resolvePath(p: string, full = false): string {
-  const clean = (p || ".").replace(/^@/, "");
-  if (full && path.isAbsolute(clean)) return path.resolve(clean);
-  if (full && clean.startsWith("~")) return path.join(process.env.HOME || "/", clean.slice(1));
-  const abs = path.resolve(WS, clean.replace(/^\/+/, ""));
-  if (abs !== WS && !abs.startsWith(WS + path.sep)) throw new Error("Path escapes workspace: " + p);
-  return abs;
-}
-export const rel = (abs: string) => path.relative(WS, abs) || ".";
+export type AccessMode = "sandbox" | "home" | "full";
+export const HOME = process.env.HOME || os.homedir();
 
-const SKIP = new Set([".git", "node_modules", ".venv", "__pycache__", ".chroma", ".keep", ".DS_Store"]);
+/**
+ * Resolve an agent/user path.
+ * sandbox: everything is relative to the workspace ("/x" == "x").
+ * home:    "~/x" and absolute paths inside $HOME are real; anything else maps into the workspace.
+ * full:    "~/x" and any absolute path are real.
+ */
+export function resolvePath(p: string, access: AccessMode | boolean = "sandbox"): string {
+  const mode: AccessMode = access === true ? "full" : access === false ? "sandbox" : access;
+  const clean = (p || ".").replace(/^@/, "");
+  const inside = (abs: string, root: string) => abs === root || abs.startsWith(root + path.sep);
+  const wsAbs = () => {
+    const abs = path.resolve(WS, clean.replace(/^\/+/, ""));
+    if (!inside(abs, WS)) throw new Error("Path escapes workspace: " + p);
+    return abs;
+  };
+  if (mode === "sandbox") return wsAbs();
+  let real: string | null = null;
+  if (clean.startsWith("~")) real = path.join(HOME, clean.slice(1));
+  else if (path.isAbsolute(clean)) real = path.resolve(clean);
+  if (!real) return wsAbs();
+  if (inside(real, WS) || mode === "full" || inside(real, HOME)) return real;
+  return wsAbs();
+}
+export const rel = (abs: string) => {
+  if (abs === WS) return ".";
+  if (abs.startsWith(WS + path.sep)) return path.relative(WS, abs);
+  return abs.startsWith(HOME + path.sep) ? "~/" + path.relative(HOME, abs) : abs;
+};
+
+const SKIP = new Set([".git", ".cache", ".template.json", "node_modules", ".venv", "__pycache__", ".chroma", ".keep", ".DS_Store"]);
 
 export type Node = { name: string; path: string; dir: boolean; size?: number; children?: Node[] };
 export async function tree(dir = WS, depth = 4): Promise<Node[]> {

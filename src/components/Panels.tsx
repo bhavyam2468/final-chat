@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2 } from "lucide-react";
 import { TreeNode, useApp, flatFiles } from "./ctx";
 import { upload } from "./Composer";
 import { SourceList } from "./Message";
@@ -14,7 +14,7 @@ export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
   const [hits, setHits] = useState<{ convId: string; title: string; messageId: string; snippet: string }[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   useEffect(() => {
-    if (!q.trim()) { setHits([]); return; }
+    if (!q.trim()) return; // results are only shown while there is a query
     const t = setTimeout(() => fetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then(setHits), 160);
     return () => clearTimeout(t);
   }, [q]);
@@ -23,7 +23,7 @@ export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
       <div className="panel-head"><span>Chats</span><span className="sp" /><button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
       <input className="search" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search chats" autoFocus onKeyDown={(e) => e.key === "Escape" && onClose()} />
       <div className="panel-body">
-        {q ? hits.map((h) => (
+        {q.trim() ? hits.map((h) => (
           <button key={h.messageId} className="li" style={{ flexDirection: "column", alignItems: "stretch" }} onClick={() => onOpen(h.convId, undefined, h.messageId)}>
             <span className="t">{h.title}</span><span className="snip">{h.snippet}</span>
           </button>
@@ -69,7 +69,69 @@ function TreeItem({ n, depth }: { n: TreeNode; depth: number }) {
   );
 }
 
-export function WorkspacePanel({ onClose }: { onClose: () => void }) {
+type CtxReport = { budget: number; window: number; total: number; sections: { key: string; label: string; tokens: number; items?: { path: string; tokens: number }[] }[]; turns: { id: string; role: string; preview: string; tokens: number; tools: number; compacted: boolean }[] };
+export type CtxRef = { convId: string; leafId: string | null; thread: string | null; rev: number; reload: () => void };
+const kfmt = (n: number) => (n >= 10000 ? Math.round(n / 1000) + "k" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+const SEC_TONE: Record<string, string> = { system: "var(--faint)", memory: "var(--faint)", skills: "var(--faint)", tree: "var(--faint)", files: "var(--accent)", tooldefs: "var(--muted)", summary: "var(--success)", history: "var(--fg)", tools: "color-mix(in srgb, var(--accent) 55%, var(--muted))" };
+
+/** Context status: live token usage, per-section breakdown and scoped compaction (tools / web / chosen turns / history). */
+export function ContextStatus({ c }: { c: CtxRef }) {
+  const [r, setR] = useState<CtxReport | null>(null);
+  const [open, setOpen] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const [pick, setPick] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback(() => {
+    const q = new URLSearchParams(); if (c.leafId) q.set("leaf", c.leafId); if (c.thread) q.set("thread", c.thread);
+    fetch(`/api/conversations/${c.convId}/context?${q}`).then((x) => x.json()).then((j) => !j.error && setR(j)).catch(() => {});
+  }, [c.convId, c.leafId, c.thread]);
+  useEffect(() => { load(); }, [load, c.rev]);
+  const run = async (scope: string, extra: Record<string, unknown> = {}) => {
+    setMenu(false); setBusy(scope === "history" || scope === "messages" ? "Summarising…" : "Folding…");
+    const res = await fetch(`/api/conversations/${c.convId}/compact`, { method: scope === "restore" ? "DELETE" : "POST", body: scope === "restore" ? undefined : JSON.stringify({ leafId: c.leafId, scope, ...extra }) }).then((x) => x.json()).catch(() => ({}));
+    setBusy(res.error ? String(res.error) : null); setPick(new Set());
+    c.reload(); load();
+    if (res.error) setTimeout(() => setBusy(null), 3000);
+  };
+  if (!r) return null;
+  const pct = Math.min(100, (r.total / r.budget) * 100);
+  const tone = pct > 85 ? "var(--danger)" : pct > 65 ? "var(--accent)" : "var(--fg)";
+  return (
+    <div className="ctxs">
+      <div className="ctxs-row">
+        <button className="ctxs-meter" onClick={() => setOpen(!open)} aria-expanded={open} title="Context usage">
+          {open ? <ChevronDown /> : <ChevronRight />}
+          <span className="ctxs-bar">{r.sections.filter((s) => s.tokens > 0).map((s) => <i key={s.key} style={{ width: `${(s.tokens / r.budget) * 100}%`, background: SEC_TONE[s.key] || "var(--muted)" }} />)}</span>
+          <span className="ctxs-num" style={{ color: tone }}>{busy || `${kfmt(r.total)} / ${kfmt(r.budget)}`}</span>
+        </button>
+        <div className="ctxs-act">
+          <button className={"ib sm" + (menu ? " on" : "")} aria-label="Compact" title="Compact" onClick={() => setMenu(!menu)}><Shrink /></button>
+          {menu && <div className="ctxs-menu" onMouseLeave={() => setMenu(false)}>
+            <button onClick={() => run("tools", { keepLast: 2 })}>Fold tool output<small>keep last 2 turns</small></button>
+            <button onClick={() => run("web", { keepLast: 1 })}>Fold web results<small>searches and pages</small></button>
+            <button onClick={() => run("history", { keepLast: 4 })}>Summarise history<small>keep last 4 messages</small></button>
+            <button onClick={() => run("restore")}><span>Restore everything</span><Undo2 /></button>
+          </div>}
+        </div>
+      </div>
+      {open && <div className="ctxs-body">
+        {r.sections.filter((s) => s.tokens > 0).map((s) => <div key={s.key} className="ctxs-sec"><i style={{ background: SEC_TONE[s.key] || "var(--muted)" }} /><span>{s.label}</span><b>{kfmt(s.tokens)}</b></div>)}
+        {r.turns.length > 0 && <>
+          <div className="ctxs-h"><span>Turns</span><span className="sp" />{pick.size > 0 && <button className="txt-btn" onClick={() => run("messages", { ids: [...pick] })}>Compact {pick.size}</button>}</div>
+          <div className="ctxs-turns">{r.turns.map((t) => (
+            <label key={t.id} className={"ctxs-turn" + (t.compacted ? " done" : "")}>
+              <input type="checkbox" disabled={t.compacted} checked={pick.has(t.id)} onChange={() => setPick((s) => { const n = new Set(s); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); return n; })} />
+              <span className={"role " + t.role}>{t.role === "user" ? "U" : "A"}</span>
+              <span className="pv">{t.preview || "…"}</span>
+              <b>{kfmt(t.tokens + t.tools)}</b>
+            </label>))}</div>
+        </>}
+      </div>}
+    </div>
+  );
+}
+
+export function WorkspacePanel({ onClose, ctx }: { onClose: () => void; ctx?: CtxRef | null }) {
   const app = useApp();
   return (
     <div className="panel">
@@ -77,6 +139,7 @@ export function WorkspacePanel({ onClose }: { onClose: () => void }) {
         <label className="ib sm" aria-label="Upload" style={{ cursor: "pointer" }}><Upload /><input type="file" multiple hidden onChange={async (e) => { if (e.target.files) { await upload([...e.target.files]); app.refreshTree(); } e.target.value = ""; }} /></label>
         <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button>
       </div>
+      {ctx && <ContextStatus c={ctx} />}
       <div className="panel-body">{app.tree.map((n) => <TreeItem key={n.path} n={n} depth={0} />)}</div>
     </div>
   );

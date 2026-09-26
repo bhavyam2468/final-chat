@@ -3,11 +3,11 @@ import { createContext, useContext } from "react";
 
 export type Part =
   | { type: "text"; text: string }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
 export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
-  content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean;
+  content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null;
 };
 export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null };
 export type TreeNode = { name: string; path: string; dir: boolean; size?: number; children?: TreeNode[] };
@@ -15,11 +15,13 @@ export type CanvasSpec =
   | { kind: "ui"; title: string; source: string; path?: string }
   | { kind: "file"; title: string; path: string }
   | { kind: "youtube"; title: string; id: string }
-  | { kind: "md"; title: string; body: string };
+  | { kind: "md"; title: string; body: string }
+  | { kind: "web"; title: string; url: string };
+export type OpenOpts = { dock?: boolean };
 
 export type AppApi = {
   openFile: (path: string) => void;
-  openCanvas: (c: CanvasSpec) => void;
+  openCanvas: (c: CanvasSpec, o?: OpenOpts) => void;
   sendUiEvent: (data: unknown) => void;
   refreshTree: () => void;
   mention: (path: string) => void;
