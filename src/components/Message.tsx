@@ -256,7 +256,7 @@ export const AssistantBody = memo(function AssistantBody({ parts, streaming, las
     const seen = new Set<string>();
     for (const p of parts) if (p.type === "tool" && p.name === "web_search") for (const s of ((p.meta as { sources?: Src[] } | undefined)?.sources || [])) if (s.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); }
     const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
-    const searching = streaming && !texts.some((p) => p.text.trim()) && parts.some((p) => p.type === "tool" && p.result === undefined);
+    const searching = streaming && !texts.some((p) => p.text.trim());
     const keep = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && (p.name === "ask_user" || p.name === "remember"));
     return <>
       {sources.length > 0 && <SourceList items={sources} />}
