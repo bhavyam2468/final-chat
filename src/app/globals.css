@@ -267,7 +267,9 @@ input, textarea, select { font: inherit; color: inherit; }
 .win.peek::before { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 50%, transparent), transparent); }
 .win.peek-r:hover { transform: translateX(-10px); }
 .win.peek-l:hover { transform: translateX(10px); }
-.win.dockpeek { cursor: pointer; }
+.win.dockpeek { cursor: pointer; transition: width .2s var(--ease); }
+.win.dockpeek:hover { width: 26px; } /* peek out on hover; click or dwell restores the full dock */
+body.dragging .win.docked { transition: none; }
 .win.dockpeek .win-bar, .win.dockpeek .win-body, .win.dockpeek .win-dockresize { display: none; }
 .win.dockpeek::before { content: ""; position: absolute; inset: 4px 5px; border-radius: 6px; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent); }
 .win.dockpeek:hover::after { content: ""; position: absolute; left: -6px; top: 0; bottom: 0; width: 6px; background: color-mix(in srgb, var(--accent) 35%, transparent); }

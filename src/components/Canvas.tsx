@@ -329,27 +329,34 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
   const upd = (id: string, p: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? { ...w, ...p } : w)));
   const front = (id: string) => setWins((ws) => { const top = Math.max(0, ...ws.map((w) => w.z)); const me = ws.find((w) => w.id === id); if (me && me.z === top) return ws; return ws.map((w) => (w.id === id ? { ...w, z: top + 1 } : w)); });
   const setDock = (id: string, dock: boolean) => setWins((ws) => ws.map((w) => (w.id === id ? { ...w, dock, min: false, dockPeek: false } : dock && w.dock ? { ...w, dock: false, min: true } : w)));
-  const moved = useRef(false);
+  const dragEnd = useRef(0); // the click that ends a drag must not restore; later clicks do
+  const hoverT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restore = (w: Win) => {
+    if (hoverT.current) { clearTimeout(hoverT.current); hoverT.current = null; }
+    if (w.peek) upd(w.id, { ...w.peek, peek: null });
+    else if (w.dockPeek) { upd(w.id, { dockPeek: false }); setDockW(w.prevDockW || 560); }
+  };
   const drag = (e: React.PointerEvent, w: Win, kind: "move" | "resize" | "dock") => {
     if ((e.target as HTMLElement).closest("button") && kind === "move") return;
     if (w.dock && kind === "move") return;
     e.preventDefault(); front(w.id); document.body.classList.add("dragging");
     const sx = e.clientX, sy = e.clientY, o = { ...w }, ow = dockW;
-    moved.current = false;
+    let movedNow = false, live = ow;
     const mv = (ev: PointerEvent) => {
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
-      if (Math.abs(dx) + Math.abs(dy) > 4) moved.current = true;
-      if (kind === "dock") setDockW(Math.round(Math.min(innerWidth - 380, Math.max(24, ow - dx))));
+      if (Math.abs(dx) + Math.abs(dy) > 4) movedNow = true;
+      if (kind === "dock") { live = Math.round(Math.min(innerWidth - 380, Math.max(24, ow - dx))); setDockW(live); }
       else if (kind === "resize") upd(w.id, { w: Math.max(260, o.w + dx), h: Math.max(160, o.h + dy) });
       else upd(w.id, { x: Math.min(innerWidth - 40, Math.max(-o.w + 40, o.x + dx)), y: Math.min(innerHeight - 40, Math.max(0, o.y + dy)), peek: null });
     };
     const up = (ev: PointerEvent) => {
       removeEventListener("pointermove", mv); removeEventListener("pointerup", up); document.body.classList.remove("dragging");
+      if (movedNow) dragEnd.current = Date.now();
       if (kind === "dock") { // dragged thinner than the snap point: park as a peek at the edge
-        if (dockW < 120 && !w.dockPeek) { upd(w.id, { dockPeek: true, prevDockW: ow > 120 ? ow : w.prevDockW || 560 }); setDockW(16); }
+        if (live < 120 && !w.dockPeek) { upd(w.id, { dockPeek: true, prevDockW: ow >= 120 ? ow : w.prevDockW || 560 }); setDockW(16); }
         return;
       }
-      if (kind !== "move" || !moved.current) return;
+      if (kind !== "move" || !movedNow) return;
       if (ev.clientX > innerWidth - 28) upd(w.id, { peek: { x: o.x, y: o.y, w: o.w, h: o.h }, x: innerWidth - 14, y: Math.min(o.y, innerHeight - 120), w: 14, h: Math.max(120, o.h) });
       else if (ev.clientX < 28) upd(w.id, { peek: { x: o.x, y: o.y, w: o.w, h: o.h }, x: -o.w + 14, y: Math.min(o.y, innerHeight - 120) });
     };
@@ -368,14 +375,15 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
       <div key={w.id} data-win={w.id} className={`win${w.min && !w.dock ? " min" : ""}${w.pinned ? " pinned" : ""}${w.dock ? " docked" : ""}${w.peek ? " peek" + (w.peek.x > w.x ? " peek-r" : " peek-l") : ""}${w.dockPeek ? " dockpeek" : ""}${(show[w.id]?.t) ? " show-t" : ""}${(show[w.id]?.b) ? " show-b" : ""}`}
         style={w.dock ? { zIndex: 30 } : w.min ? { ...trayPos(trayIdx(w.id)), zIndex: 40 + w.z } : { left: w.x, top: w.y, width: w.w, height: w.h, zIndex: 40 + w.z }}
         onPointerDown={() => front(w.id)}
-        onClick={() => { if (moved.current) return; if (w.peek) upd(w.id, { ...w.peek, peek: null }); else if (w.dockPeek) { upd(w.id, { dockPeek: false }); setDockW(w.prevDockW || 560); } }}
+        onClick={() => { if (Date.now() - dragEnd.current < 400) return; restore(w); }}
+        onPointerEnter={() => { if (w.dockPeek) { if (hoverT.current) clearTimeout(hoverT.current); hoverT.current = setTimeout(() => restore(w), 450); } }}
         onPointerMove={(e) => {
           if (w.pinned || w.min || w.peek || w.dockPeek) return;
           const r = e.currentTarget.getBoundingClientRect();
           const y = e.clientY - r.top;
           reveal(w.id, y < 52 ? "t" : r.height - y < 52 ? "b" : null);
         }}
-        onPointerLeave={() => !w.pinned && reveal(w.id, null)}>
+        onPointerLeave={() => { if (hoverT.current) { clearTimeout(hoverT.current); hoverT.current = null; } if (!w.pinned) reveal(w.id, null); }}>
         <div className="win-bar top" onPointerDown={(e) => !w.min && drag(e, w, "move")} onClick={(e) => { if (w.min && !(e.target as HTMLElement).closest("button")) upd(w.id, { min: false }); if (!(e.target as HTMLElement).closest("button")) e.stopPropagation(); }} onDoubleClick={() => !w.dock && !w.min && upd(w.id, { min: true })}>
           <span className="title">{w.spec.title}</span>
           {!w.min && <button className="ib sm" aria-label={w.pinned ? "Unpin bars" : "Pin bars"} title={w.pinned ? "Unpin bars (bars float over content)" : "Pin bars (part of the layout)"} onClick={() => upd(w.id, { pinned: !w.pinned })}>{w.pinned ? <PinOff /> : <Pin />}</button>}
