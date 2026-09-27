@@ -3,25 +3,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeft, SquarePen, Search, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
-import { Composer, ComposerHandle, SendPayload, Command } from "./Composer";
+import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
+import { chatDir } from "@/lib/shared";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
-import { CanvasLayer, Win } from "./Canvas";
+import { CanvasLayer, Win, contentRatio } from "./Canvas";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
+function StreamClock() {
+  const [s, setS] = useState(0);
+  useEffect(() => { const t0 = Date.now(); const i = setInterval(() => setS(Math.floor((Date.now() - t0) / 1000)), 1000); return () => clearInterval(i); }, []);
+  return s >= 3 ? <span className="elapsed">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null;
+}
 function DockStatus({ conv, offerBrief, streamId, msgs, onBrief, onPromote, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; msgs: Msg[]; onBrief: () => void; onPromote: () => void; onUnlink: () => void }) {
   const live = streamId ? msgs.find((m) => m.id === streamId) : undefined;
   const tool = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.result === undefined);
+  const reasoning = [...(live?.parts || [])].reverse().find((p) => p.type === "reasoning");
   const todo = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.name === "todo" && p.meta && typeof p.meta === "object" && "todo" in (p.meta as object));
   const items = (todo && todo.type === "tool" ? (todo.meta as { todo?: { text: string; status: string }[] }).todo : []) || [];
   const doing = items.find((t) => t.status === "doing") || items.find((t) => t.status === "todo");
+  // a live activity chip whenever the model is working, so silence never reads as "stuck"
+  const act = streamId ? doing?.text || (tool && tool.type === "tool" ? tool.name.replaceAll("_", " ") : reasoning ? "Thinking" : "Working") : null;
   const showSearch = conv?.mode === "search" && msgs.some((m) => m.role === "user");
-  if (!showSearch && !offerBrief && !conv?.state?.project && !tool && !doing) return null;
+  if (!showSearch && !offerBrief && !conv?.state?.project && !act) return null;
   return <div className="dock-extra">
     {conv?.state?.project && <button className="promote" onClick={onUnlink} title="Unlink project">Project {conv.state.project}</button>}
     {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
     {showSearch && <button className="promote" onClick={onPromote}>Open in chat</button>}
-    {(tool && tool.type === "tool" || doing) && <span className="queue-now">{doing ? doing.text : tool && tool.type === "tool" ? tool.name.replaceAll("_", " ") : ""}</span>}
+    {act && <span className="queue-now"><i className="live-dot" />{act}<StreamClock /></span>}
   </div>;
 }
 const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
@@ -38,11 +47,21 @@ export default function App() {
   const [store, setStore] = useState<Record<string, Msg[]>>({});
   const [view, setViewS] = useState(() => "new:" + rid());
   const viewRef = useRef(view);
+  const winsCache = useRef<Record<string, Win[]>>({});
   const [surface, setSurface] = useState<"search" | "chat">("search");
   const modeRef = useRef<"chat" | "search">("search");
   const pendingProject = useRef<string | null>(null);
   const [offerBrief, setOfferBrief] = useState(false);
-  const setView = useCallback((k: string) => { viewRef.current = k; setViewS(k); }, []);
+  // canvases live per chat: switching chats parks this chat's windows and restores that chat's
+  const setView = useCallback((k: string) => {
+    const prev = viewRef.current;
+    if (prev !== k) {
+      winsCache.current[prev] = winsRef.current;
+      const load = winsCache.current[k] ?? (() => { try { const v = JSON.parse(localStorage.getItem("wins:" + k) || "null"); return Array.isArray(v) ? v as Win[] : null; } catch { return null; } })();
+      setWins(load || []);
+    }
+    viewRef.current = k; setViewS(k);
+  }, []);
   const msgs = store[view] || NONE;
   const setMsgsFor = useCallback((k: string, fn: (m: Msg[]) => Msg[]) => setStore((st) => ({ ...st, [k]: fn(st[k] || NONE) })), []);
   const setMsgs = useCallback((v: Msg[] | ((m: Msg[]) => Msg[])) => setMsgsFor(viewRef.current, typeof v === "function" ? v : () => v), [setMsgsFor]);
@@ -66,6 +85,19 @@ export default function App() {
   const [panels, setPanels] = useState({ chats: false, ws: false, art: false, src: false });
   const [thread, setThread] = useState<string | null>(null);
   const [wins, setWins] = useState<Win[]>([]);
+  const winsRef = useRef(wins); winsRef.current = wins;
+  const [recent, setRecent] = useState<CanvasSpec[]>([]);
+  // remember each chat's windows (shape, size, position, pinned, peeked) across reloads
+  useEffect(() => {
+    winsCache.current[view] = wins;
+    if (!view.startsWith("new:")) { try { localStorage.setItem("wins:" + view, JSON.stringify(wins)); } catch { /* quota */ } }
+  }, [wins, view]);
+  /* eslint-disable react-hooks/set-state-in-effect -- mirror the per-chat localStorage list */
+  useEffect(() => {
+    if (!conv?.id) { setRecent([]); return; }
+    try { setRecent(JSON.parse(localStorage.getItem("recent:" + conv.id) || "[]")); } catch { setRecent([]); }
+  }, [conv?.id]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const [dockW, setDockWS] = useState(560);
   const [ctxRev, setCtxRev] = useState(0);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
@@ -295,16 +327,37 @@ export default function App() {
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
   // ---- canvases
+  // a window is sized around its content: a 16:9 image opens as a ~16:9 window hugging it, centred,
+  // with just a little padding — never a generic box the content floats around
   const openCanvas = useCallback((spec: CanvasSpec, o?: OpenOpts) => {
-    setWins((ws) => {
-      const dock = !!o?.dock && innerWidth >= 760;
-      const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
-      const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
-      const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
-      if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock } : undock(w)));
-      const floating = ws.filter((w) => !w.dock).length;
-      const w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72), n = floating;
-      return [...ws.map(undock), { id: rid(), spec, x: innerWidth - w - 24 - n * 24, y: 56 + n * 24, w, h, z, min: false, pinned: false, dock }];
+    const remember = () => {
+      const k = viewRef.current; if (k.startsWith("new:")) return;
+      try {
+        const l = [spec, ...JSON.parse(localStorage.getItem("recent:" + k) || "[]").filter((x: CanvasSpec) => JSON.stringify(x) !== JSON.stringify(spec))].slice(0, 8);
+        localStorage.setItem("recent:" + k, JSON.stringify(l)); setRecent(l);
+      } catch { /* quota */ }
+    };
+    void contentRatio(spec).then((ratio) => {
+      remember();
+      setWins((ws) => {
+        const dock = !!o?.dock && innerWidth >= 760;
+        const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
+        const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
+        const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
+        if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock, peek: null } : undock(w)));
+        const floating = ws.filter((w) => !w.dock).length;
+        let w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72);
+        let x = innerWidth - w - 24 - floating * 24, y = 56 + floating * 24;
+        if (ratio) {
+          const pad = 24; // a little breathing room around the content
+          const maxW = Math.min(innerWidth - 48, 1280), maxH = innerHeight - 64;
+          w = Math.round(Math.max(340, Math.min(maxW, ratio.pw ? ratio.pw + pad : maxW * 0.66)));
+          h = Math.round(w / ratio.ratio);
+          if (h > maxH) { h = maxH; w = Math.round(h * ratio.ratio); }
+          x = Math.round((innerWidth - w) / 2); y = Math.max(20, Math.round((innerHeight - h) / 2));
+        }
+        return [...ws.map(undock), { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock }];
+      });
     });
   }, []);
   const openCanvasRef = useRef(openCanvas); openCanvasRef.current = openCanvas;
@@ -343,6 +396,7 @@ export default function App() {
       return null;
     },
     mention: (p: string) => mainRef.current?.insert("@" + p + " "),
+    addFiles: (fs: File[]) => mainRef.current?.addFiles(fs),
     quote: (t: string) => setQuotes((q) => ({ ...q, [active.current]: t })),
     convId: conv?.id || null,
     convTitles,
@@ -355,7 +409,8 @@ export default function App() {
       const s = window.getSelection(); const t = s?.toString().trim();
       if (!s || !t || !s.rangeCount) { setQpop(null); return; }
       const node = s.anchorNode?.parentElement;
-      if (!node?.closest(".ai-content")) { setQpop(null); return; }
+      // quote works on chat text, PDF text layers and rendered docs alike
+      if (!node?.closest(".ai-content, .txtlayer, .docview, .reader")) { setQpop(null); return; }
       if (node.closest(".thread")) active.current = "thread"; else active.current = "main";
       const r = s.getRangeAt(0).getBoundingClientRect();
       setQpop({ x: r.left + r.width / 2, y: r.top - 8, text: t });
@@ -363,6 +418,25 @@ export default function App() {
     document.addEventListener("mouseup", up);
     return () => document.removeEventListener("mouseup", up);
   }, []);
+
+  // ---- drag & drop: over the chat = save to uploads, over the input bar = attach
+  const [fileDrag, setFileDrag] = useState(0);
+  useEffect(() => {
+    const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types || [])].includes("Files");
+    const enter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setFileDrag((n) => n + 1); } };
+    const leave = (e: DragEvent) => { if (hasFiles(e)) setFileDrag((n) => Math.max(0, n - 1)); };
+    const over = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      if ((e.target as HTMLElement).closest(".composer")) return; // the input bar attaches to the message
+      e.preventDefault(); setFileDrag(0);
+      const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
+      const dir = convRef.current ? chatDir(convRef.current.id) + "/uploads" : "uploads";
+      void upload(files, dir).then(() => refreshTree());
+    };
+    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop);
+    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); };
+  }, [refreshTree]);
 
   // ---- auto-scroll while streaming
   useEffect(() => {
@@ -497,10 +571,14 @@ export default function App() {
               quote={quotes.thread} onClearQuote={() => setQuotes((q) => ({ ...q, thread: null }))} onFocus={() => (active.current = "thread")} autoFocus />
           </div>}
           {panels.ws && <WorkspacePanel onClose={() => tog("ws")} ctx={ctxRef} />}
-          {panels.art && <ArtifactsPanel onClose={() => tog("art")} />}
+          {panels.art && <ArtifactsPanel onClose={() => tog("art")} recent={recent} />}
           {panels.src && <SourcesPanel sources={sources} onClose={() => tog("src")} />}
         </div>}
 
+        {fileDrag > 0 && <div className="dropveil" aria-hidden>
+          <div className="dz">Drop to save into <b>{conv ? "this chat's uploads" : "workspace uploads"}</b></div>
+          <div className="dz sub">…or onto the input bar to attach</div>
+        </div>}
         <CanvasLayer wins={wins} setWins={setWins} dockW={dockW} setDockW={setDockW} />
         {qpop && <button className="qpop" style={{ left: qpop.x, top: qpop.y }} onMouseDown={(e) => e.preventDefault()}
           onClick={() => { setQuotes((q) => ({ ...q, [active.current]: qpop.text })); setQpop(null); window.getSelection()?.removeAllRanges(); }}>Quote</button>}
