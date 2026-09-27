@@ -23,7 +23,14 @@
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const svg = (tag, attrs = {}, parentEl) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parentEl) parentEl.appendChild(e); return e; };
   // bundled libs are served by the app (/vendor/<lib>/…, offline); the CDN is only a fallback
-  const CDN = { katex: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/" };
+  const CDN = {
+    katex: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/", mermaid: "https://cdn.jsdelivr.net/npm/mermaid@11/dist/", smiles: "https://unpkg.com/smiles-drawer@2.0.1/dist/",
+    "3dmol": "https://cdn.jsdelivr.net/npm/3dmol@2.4.2/build/", leaflet: "https://unpkg.com/leaflet@1.9.4/dist/", lucide: "https://unpkg.com/lucide-static@0.469.0/icons/",
+    marked: "https://cdn.jsdelivr.net/npm/marked@14/lib/", hljs: "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/", tikzjax: "https://cdn.jsdelivr.net/npm/node-tikzjax@1.0.5/css/",
+  };
+  B.vendor = (lib, file) => `${ORIGIN}/vendor/${lib}/${file}`;
+  B.libImport = (lib, file) => import(B.vendor(lib, file)).catch(() => import(CDN[lib] + file));
+  B.libFetch = (lib, file) => fetch(B.vendor(lib, file)).then((r) => { if (!r.ok) throw 0; return r; }).catch(() => fetch(CDN[lib] + file));
   const loadLib = (lib, file) => load(`${ORIGIN}/vendor/${lib}/${file}`).catch(() => load(CDN[lib] + file));
   let katexCore = null;
   B.katex = () => (katexCore ||= Promise.all([loadLib("katex", "katex.min.css"), loadLib("katex", "katex.min.js")]));
@@ -102,12 +109,31 @@
   };
   for (const k of Object.getOwnPropertyNames(Math)) if (!(k in H)) H[k] = Math[k];
 
-  const byId = (k) => (root ? root.querySelector("#" + CSS.escape(k)) : null);
+  // what people see: never "[object Object]", "undefined", "NaN" or raw JSON
+  const show = (v) => {
+    if (v === undefined || v === null || (typeof v === "number" && isNaN(v)) || typeof v === "function") return "";
+    if (Array.isArray(v)) return v.map(show).filter((x) => x !== "").join(", ");
+    if (typeof Element !== "undefined" && v instanceof Element) return "value" in v ? show(v.value) : v.textContent;
+    if (typeof v === "object") {
+      for (const k of ["label", "name", "title", "text", "value"]) if (k in v && typeof v[k] !== "object") return show(v[k]);
+      return Object.entries(v).map(([k, x]) => `${k}: ${show(x)}`).join(" · ");
+    }
+    return String(v);
+  };
+  B.show = show;
+  H.show = show;
+
+  const byId = (k) => { try { return root ? root.querySelector("#" + CSS.escape(k)) : null; } catch { return null; } };
+  const refs = new Proxy({}, { get: (_, k) => (root && typeof k === "string" ? root.querySelector(`[x-ref="${CSS.escape(k)}"],[ref="${CSS.escape(k)}"],#${CSS.escape(k)}`) : undefined) });
+  const MAGIC = { $refs: refs, $nextTick: (f) => new Promise((r) => requestAnimationFrame(() => r(f && f()))), $dispatch: null, $store: null };
+  // names read while evaluating bindings that exist nowhere: reported by the self-check (typos, missing state)
+  const missing = new Set(); let recording = false;
+  const known = (k, locals) => (locals && k in locals) || k in store || k in dataVars || k in H || k in window || !!inputOf(k).length || !!byId(k);
   function scope(locals) {
     return new Proxy(Object.create(null), {
       has(_, k) {
         if (typeof k !== "string") return false;
-        if ((locals && k in locals) || k in store || k in dataVars || k in H || inputOf(k).length || byId(k)) return true;
+        if ((locals && k in locals) || k in store || k in dataVars || k in H || k in MAGIC || inputOf(k).length || byId(k)) return true;
         return !(k in window);
       },
       get(_, k) {
@@ -117,7 +143,10 @@
         if (inputOf(k).length) return readInput(k);
         if (k in dataVars) return dataVars[k];
         if (k in H) return H[k];
-        return byId(k) || window[k];
+        if (k in MAGIC) return k === "$store" ? S : k === "$dispatch" ? (n, d) => root.dispatchEvent(new CustomEvent(n, { detail: d, bubbles: true })) : MAGIC[k];
+        const r = byId(k) || window[k];
+        if (r === undefined && recording && typeof k === "string" && !(k in window)) missing.add(k);
+        return r;
       },
       set(_, k, v) {
         if (locals && k in locals) locals[k] = v;
@@ -138,34 +167,136 @@
     }
     return f;
   }
-  const evaluate = (expr, locals) => { try { return compile(expr, false)(scope(locals)); } catch (e) { return undefined; } };
+  const evaluate = (expr, locals) => { recording = true; try { return compile(expr, false)(scope(locals)); } catch (e) { return undefined; } finally { recording = false; } };
+  // an async action (AI call, fetch, python) shows a spinner in its button until it settles
+  const busyWhile = (el, r) => {
+    const p = Promise.resolve(r);
+    const btn = el && el.closest && el.closest("button");
+    if (btn && r && typeof r.then === "function") { btn.classList.add("busy"); btn.setAttribute("aria-busy", "true"); p.finally(() => { btn.classList.remove("busy"); btn.removeAttribute("aria-busy"); }).catch(() => {}); }
+    return p;
+  };
   const runStmt = (code, locals, event, el) => {
-    try { return Promise.resolve(compile(code, true)(scope(Object.assign(Object.create(locals || null), { event, $event: event, el })), event, el)).catch(reportErr).finally(schedule); }
+    try {
+      const r = compile(code, true)(scope(Object.assign(Object.create(locals || null), { event, $event: event, el, $el: el })), event, el);
+      return busyWhile(el, r).catch(reportErr).finally(schedule);
+    }
     catch (e) { reportErr(e); }
   };
-  const interp = (tpl, locals) => tpl.replace(/\{\{([\s\S]+?)\}\}/g, (_, e) => { const v = evaluate(e, locals); return v === undefined || v === null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); });
-  function reportErr(e) { const t = String(e && e.message ? e.message : e).slice(0, 200); post("error", { text: t }); if (standalone) console.warn("[blocks]", e); }
+  // `clicks++` / `total += x` / `items.push(…)` on a name nobody declared starts from 0 / [] instead of NaN / TypeError
+  function autoInit(code, locals) {
+    const declared = (k) => new RegExp(`\\b(?:let|const|var|function)\\s+${k.replace(/\$/g, "\\$")}\\b|(?:=>|\\bfor\\s*\\()[^;]*\\b${k.replace(/\$/g, "\\$")}\\b\\s*(?:=[^=]|of|in)`).test(code);
+    const init = (k, v) => { if (!/^[A-Za-z_$][\w$]*$/.test(k) || known(k, locals) || k in MAGIC || declared(k)) return; setStore(k, v); };
+    for (const m of code.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)\s*(?:\+\+|--|[-+*/%]=)|(?:\+\+|--)\s*([A-Za-z_$][\w$]*)/g)) init(m[1] || m[2], 0);
+    for (const m of code.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)\.(?:push|unshift|splice)\(/g)) init(m[1], []);
+  }
+  const interp = (tpl, locals) => tpl.replace(/\{\{([\s\S]+?)\}\}/g, (_, e) => show(evaluate(e, locals)));
+  const errs = [];
+  function reportErr(e) { const t = String(e && e.message ? e.message : e).slice(0, 200); if (!errs.includes(t)) errs.push(t); post("error", { text: t }); if (standalone) console.warn("[blocks]", e); }
 
   // ---------------------------------------------------------------- bindings
   const rootBindings = [];
   const PROPS = new Set(["value", "checked", "disabled", "selected", "open"]);
+  // Alpine / Vue spellings models reach for are accepted as-is (they know those libraries by heart):
+  // x-data x-init x-text x-html x-show x-if x-else(-if) x-for x-model x-bind: x-on: x-ref, v-* equivalents, @ev.mods
+  const ALIAS = { "x-text": ":text", "v-text": ":text", "x-html": ":html", "v-html": ":html", "x-show": "show", "v-show": "show" };
+  const KEYS = { enter: "Enter", escape: "Escape", esc: "Escape", space: " ", tab: "Tab", up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", delete: "Delete", backspace: "Backspace" };
+  const SOFT = new Set(["value", "max", "min", "seconds", "data", "total"]); // numeric/data attrs on x-* that may name state without ':'
+  const IDENT = /^[A-Za-z_$][\w$]*(?:\.[\w$]+|\[\d+\])*$/;
+  let lastChain = null;
+  function initData(el, locals) {
+    if (el.__data || !el.hasAttribute || !el.hasAttribute("x-data")) return;
+    el.__data = true;
+    const src = el.getAttribute("x-data"); el.removeAttribute("x-data");
+    if (!src || !src.trim()) return;
+    let obj; try { obj = compile(src, false)(scope(locals)); } catch (e) { reportErr(e); return; }
+    if (!obj || typeof obj !== "object") return;
+    let initFn = null;
+    for (const [k, d] of Object.entries(Object.getOwnPropertyDescriptors(obj))) {
+      if (d.get) { Object.defineProperty(store, k, { configurable: true, enumerable: true, get: () => d.get.call(S), set: d.set ? (v) => { d.set.call(S, v); schedule(); } : undefined }); expose(k); }
+      else if (typeof d.value === "function") { const f = d.value.bind(S); if (k === "init") initFn = f; else { store[k] = f; expose(k); } }
+      else if (!(k in store)) setStore(k, d.value);
+    }
+    if (initFn) queueMicrotask(() => { try { Promise.resolve(initFn()).catch(reportErr).finally(schedule); } catch (e) { reportErr(e); } });
+  }
+  function bindModel(el, expr, locals, mods, list) {
+    const custom = el.tagName.includes("-"), t = el.type; el.__model = true;
+    const isNum = mods.includes("number") || t === "number" || t === "range";
+    const read = () => {
+      if (custom) return el.value;
+      if (t === "checkbox") { const cur = evaluate(expr, locals); if (Array.isArray(cur)) return el.checked ? [...new Set([...cur, el.value])] : cur.filter((x) => x !== el.value); return el.checked; }
+      if (el.tagName === "SELECT" && el.multiple) return [...el.selectedOptions].map((o) => o.value);
+      return isNum ? (el.value === "" ? null : +el.value) : mods.includes("trim") ? el.value.trim() : el.value;
+    };
+    const write = (v) => runStmt(`${expr} = $v`, Object.assign(Object.create(locals || null), { $v: v }));
+    const ev = mods.includes("lazy") || t === "checkbox" || t === "radio" || el.tagName === "SELECT" ? "change" : "input";
+    el.addEventListener(ev, () => { if (t === "radio" && !el.checked) return; write(read()); });
+    if (custom && ev === "input") el.addEventListener("change", () => write(read()));
+    if (!el.getAttribute("name") && /^[\w$]+$/.test(expr) && t !== "radio") el.setAttribute("name", expr);
+    if (evaluate(expr, locals) === undefined && /^[\w$]+$/.test(expr)) { const v0 = t === "radio" ? (el.checked ? el.value : undefined) : read(); if (v0 !== undefined) setStore(expr, v0); }
+    list.push({ type: "model", el, expr, locals });
+  }
+  function listen(el, spec, code, locals) {
+    const [ev, ...mods] = spec.split(".");
+    if (/\bthis\b/.test(code)) code = code.replace(/\bthis\b/g, "el");
+    autoInit(code, locals);
+    const target = mods.includes("window") ? window : mods.includes("document") ? document : el;
+    const key = mods.map((m) => KEYS[m] || (m.length === 1 ? m : null)).find(Boolean);
+    const h = (e) => {
+      if (mods.includes("self") && e.target !== el) return;
+      if (mods.includes("outside") && el.contains(e.target)) return;
+      if (key && e.key !== key) return;
+      if (mods.includes("prevent") || ev === "submit") e.preventDefault();
+      if (mods.includes("stop")) e.stopPropagation();
+      runStmt(code, locals, e, el);
+    };
+    (mods.includes("outside") ? document : target).addEventListener(ev, h, { once: mods.includes("once") });
+  }
   function bindEl(el, list, locals) {
     if (el.__bound) return; el.__bound = true;
+    if (el.nodeType !== 1) return;
+    initData(el, locals);
+    // <template x-for / x-if>: the template's content stands in for it
+    if (el.tagName === "TEMPLATE") {
+      const dir = ["x-for", "v-for", "each", "x-if", "v-if"].find((d) => el.hasAttribute(d));
+      if (!dir) return;
+      const kids = [...el.content.children];
+      let inner = kids.length === 1 ? kids[0] : document.createElement("div");
+      if (kids.length !== 1) { inner.style.display = "contents"; kids.forEach((k) => inner.appendChild(k)); }
+      inner = document.importNode(inner, true);
+      for (const a of [...el.attributes]) if (a.name !== "key" && a.name !== ":key") inner.setAttribute(a.name, a.value);
+      if (el.parentNode) el.replaceWith(inner);
+      el = inner; el.__bound = true;
+    }
+    for (const d of ["x-for", "v-for"]) if (el.hasAttribute(d)) { el.setAttribute("each", el.getAttribute(d)); el.removeAttribute(d); }
+    el.removeAttribute(":key"); el.removeAttribute("x-cloak"); el.removeAttribute("v-cloak");
     // each: turn element into a repeated template
-    if (el.hasAttribute && el.hasAttribute("each")) {
+    if (el.hasAttribute("each")) {
       const m = el.getAttribute("each").match(/^\s*\(?\s*([\w$]+)\s*(?:,\s*([\w$]+))?\s*\)?\s+(?:in|of)\s+([\s\S]+)$/);
       const anchor = document.createComment("each");
       el.parentNode.insertBefore(anchor, el);
-      el.remove(); el.removeAttribute("each");
+      el.remove(); el.removeAttribute("each"); el.__bound = false;
       if (m) list.push({ type: "each", anchor, tpl: el, item: m[1], idx: m[2] || "i", expr: m[3], clones: [], locals });
       return;
     }
+    const comp = el.tagName.startsWith("X-");
+    if (!("__cls0" in el)) el.__cls0 = el.getAttribute("class") || "";
     for (const a of [...el.attributes]) {
-      const n = a.name, v = a.value;
-      if (n[0] === ":") { list.push({ type: "attr", el, attr: n.slice(1), expr: v, locals }); el.removeAttribute(n); }
-      else if (n[0] === "@") { const ev = n.slice(1); el.removeAttribute(n); el.addEventListener(ev, (e) => { if (ev === "submit") e.preventDefault(); runStmt(v, locals, e, el); }); }
+      let n = a.name; const v = a.value;
+      if (n in ALIAS) { el.removeAttribute(n); n = ALIAS[n]; }
+      else if (/^(x|v)-bind:/.test(n)) { el.removeAttribute(n); n = ":" + n.split(":").slice(1).join(":"); }
+      else if (/^(x-on:|v-on:)/.test(n)) { el.removeAttribute(n); n = "@" + n.replace(/^(x-on:|v-on:)/, ""); }
+      if (n === "x-if" || n === "v-if") { el.removeAttribute(n); lastChain = [v]; list.push({ type: "show", el, expr: v, locals }); }
+      else if (n === "x-else-if" || n === "v-else-if") { el.removeAttribute(n); const prev = lastChain || []; list.push({ type: "show", el, expr: prev.map((c) => `!(${c})`).concat(`(${v})`).join("&&"), locals }); lastChain = [...prev, v]; }
+      else if (n === "x-else" || n === "v-else") { el.removeAttribute(n); const prev = lastChain || []; list.push({ type: "show", el, expr: prev.length ? prev.map((c) => `!(${c})`).join("&&") : "true", locals }); lastChain = null; }
+      else if (/^(x|v)-model/.test(n)) { el.removeAttribute(n); bindModel(el, v.trim(), locals, n.split(".").slice(1), list); }
+      else if (n === "x-init") { el.removeAttribute(n); autoInit(v, locals); queueMicrotask(() => runStmt(v, locals, null, el)); }
+      else if (n === "x-ref" || n === "x-data") { /* kept for $refs lookup / handled above */ }
+      else if (n[0] === ":") { list.push({ type: "attr", el, attr: n.slice(1), expr: v, locals }); if (a.name === n) el.removeAttribute(n); }
+      else if (n[0] === "@") { if (a.name === n) el.removeAttribute(n); listen(el, n.slice(1), v, locals); }
+      else if (/^on[a-z]+$/.test(n) && v.trim()) { el.removeAttribute(n); listen(el, n.slice(2), v, locals); } // inline handlers see Blocks state too
       else if (n === "show") list.push({ type: "show", el, expr: v, locals });
       else if (v.includes("{{")) list.push({ type: "tpl", el, attr: n, tpl: v, locals });
+      else if (comp && SOFT.has(n) && IDENT.test(v.trim()) && !/^(true|false|null|auto|none|up|down)$/.test(v.trim())) list.push({ type: "attr", el, attr: n, expr: v.trim(), soft: v, locals });
     }
     if (el.hasAttribute("on")) bindOn(el, locals);
     // children (skip component-owned content)
@@ -188,14 +319,28 @@
       }
       else if (b.type === "tpl") { const v = interp(b.tpl, b.locals); if (b.el.getAttribute(b.attr) !== v) b.el.setAttribute(b.attr, v); }
       else if (b.type === "show") { const v = !!evaluate(b.expr, b.locals); if (b.el.hidden === v) b.el.hidden = !v; }
+      else if (b.type === "model") {
+        if (document.activeElement === b.el && b.el.tagName !== "SELECT") return;
+        const v = evaluate(b.expr, b.locals), el = b.el;
+        if (el.tagName.includes("-")) { if (v !== undefined && JSON.stringify(el.value) !== JSON.stringify(v)) el.value = v; }
+        else if (el.type === "checkbox") el.checked = Array.isArray(v) ? v.includes(el.value) : !!v;
+        else if (el.type === "radio") el.checked = String(v) === el.value;
+        else if (el.value !== String(v ?? "")) el.value = v ?? "";
+      }
       else if (b.type === "attr") {
-        const v = evaluate(b.expr, b.locals), a = b.attr;
+        let v = evaluate(b.expr, b.locals); const a = b.attr;
+        if (b.soft !== undefined && (v === undefined || typeof v === "function" || v instanceof Element)) v = b.soft;
         if (a === "text") {
-          const s = String(v ?? "");
+          const s = show(v);
           if (b.el.__owns) { if (b.el._src !== s) { b.el._src = s; b.el.refresh && b.el.refresh(true); } } // owners re-render from source
           else if (b.el.textContent !== s) b.el.textContent = s;
         }
-        else if (a === "class") b.el.className = typeof v === "object" && v ? Object.keys(v).filter((k) => v[k]).join(" ") : v ?? "";
+        else if (a === "html") { const s = v == null ? "" : String(v); if (b.v !== s) { b.v = s; b.el.innerHTML = s; typeset(b.el); } }
+        else if (a === "class") {
+          const dyn = Array.isArray(v) ? v.filter(Boolean).join(" ") : v && typeof v === "object" ? Object.keys(v).filter((k) => v[k]).join(" ") : v ?? "";
+          const c = [b.el.__cls0, dyn].filter(Boolean).join(" ").trim(); if (b.el.getAttribute("class") !== c) b.el.setAttribute("class", c);
+        }
+        else if (a === "style" && v && typeof v === "object") { for (const k in v) b.el.style.setProperty(k.startsWith("--") ? k : k.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase()), v[k] == null ? "" : String(v[k])); }
         else if (PROPS.has(a) && a in b.el) { if (a === "value" && document.activeElement === b.el) return; if (b.el[a] !== v) b.el[a] = a === "value" ? (v ?? "") : !!v; }
         else if (v === false || v === null || v === undefined) b.el.removeAttribute(a);
         else { const s = v === true ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); if (b.el.getAttribute(a) !== s) b.el.setAttribute(a, s); }
@@ -224,7 +369,21 @@
   }
   let queued = false;
   function schedule() { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; render(); }); }
+  function toInputs() {
+    for (const k in store) {
+      const els = [...inputOf(k)].filter((e) => !e.__model && e !== document.activeElement); if (!els.length) continue;
+      const v = store[k], e0 = els[0]; if (typeof v === "function") continue;
+      if (JSON.stringify(readInput(k)) === JSON.stringify(v)) continue;
+      for (const e of els) {
+        if (e.type === "radio") e.checked = String(e.value) === String(v);
+        else if (e.type === "checkbox") e.checked = Array.isArray(v) ? v.includes(e.value) : !!v;
+        else if ("value" in e) try { e.value = v; } catch {}
+      }
+      void e0;
+    }
+  }
   function render() {
+    toInputs();
     rootBindings.forEach(applyBinding);
     if (root) root.querySelectorAll("[data-reactive]").forEach((el) => el.refresh && el.refresh());
   }
@@ -237,7 +396,7 @@
       el.addEventListener(ev, (e) => {
         if (pyCall && pyCall(fn, e)) return schedule();
         const f = window[fn];
-        if (typeof f === "function") { try { Promise.resolve(f(e, el, locals)).catch(reportErr).finally(schedule); } catch (err) { reportErr(err); } }
+        if (typeof f === "function") { try { busyWhile(el, f(e, el, locals)).catch(reportErr).finally(schedule); } catch (err) { reportErr(err); } }
         else if (!pyReady) pendingOn.push([fn, e]);
       });
     });
@@ -396,7 +555,7 @@
       Returns the node to insert (an anchor comment when the node itself repeats with each=). */
   function prepare(el) {
     const list = []; let node = el;
-    if (el.nodeType === 1 && el.hasAttribute("each") && !el.parentNode) { const f = document.createDocumentFragment(); f.appendChild(el); bindEl(el, list, null); node = f.firstChild; }
+    if (el.nodeType === 1 && !el.parentNode && (el.tagName === "TEMPLATE" || ["each", "x-for", "v-for"].some((d) => el.hasAttribute(d)))) { const f = document.createDocumentFragment(); f.appendChild(el); bindEl(el, list, null); node = f.firstChild; }
     else bindEl(el, list, null);
     list.forEach((b) => b.type !== "each" && applyBinding(b));
     rootBindings.push(...list);
@@ -428,9 +587,9 @@
         if (node === full) { if (!l || !l.__texty) enter(full); settle(full); }
         return;
       }
-      if (s.hasAttribute("each")) { if (!l) { l = live.__kids[i] = skeleton("each"); live.appendChild(l); } return; }
+      if (s.tagName === "TEMPLATE" || ["each", "x-for", "v-for"].some((d) => s.hasAttribute(d))) { if (!l) { l = live.__kids[i] = skeleton("each"); live.appendChild(l); } return; }
       if (isContainer(tag)) {
-        if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__shell = true; live.appendChild(l); enter(l); if (l.parentElement === root) placeUnit(l); }
+        if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__shell = true; initData(l, null); live.appendChild(l); enter(l); if (l.parentElement === root) placeUnit(l); }
         sync(s, l, stack, depth + 1, false);
       } else if (TEXTY.has(tag)) {
         if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__texty = true; live.appendChild(l); enter(l); }
@@ -443,7 +602,10 @@
   let started = false;
   async function startLogic(js, py) {
     if (started) return; started = true;
-    if (js.trim()) { try { (0, eval)(js); } catch (err) { showErr(err); } }
+    // top-level let/const become globals so {{ bindings }} and inline handlers can see them
+    if (js.trim()) { try { (0, eval)(js.replace(/^(let|const)(\s+[\w${[])/gm, "var$2")); } catch (err) { showErr(err); } }
+    setInterval(() => { if (!document.hidden) render(); }, 300); // state changed by plain JS timers still shows up
+    setTimeout(selfCheck, 900);
     if (py.trim()) {
       pyReady = false;
       try { pyCall = await runPython(py); } catch (err) { showErr(err); }
@@ -452,6 +614,22 @@
     }
     schedule();
   }
+  // self-check: what a person would see as broken is reported to the host (and from there, to the model)
+  function selfCheck() {
+    const issues = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n; (n = walker.nextNode());) {
+      if (n.parentElement && n.parentElement.closest("pre,code,x-code,x-md,x-tikz,textarea,script,style")) continue;
+      if (/\{\{[\s\S]*?\}\}/.test(n.textContent)) issues.push(`unrendered binding: ${n.textContent.trim().slice(0, 60)}`);
+      if (/\[object Object\]/.test(n.textContent)) issues.push(`object printed as text near: ${n.textContent.trim().slice(0, 60)}`);
+    }
+    const gone = [...missing].filter((k) => !known(k) && !(k in MAGIC));
+    if (gone.length) issues.push(`undefined name${gone.length > 1 ? "s" : ""}: ${gone.slice(0, 8).join(", ")}`);
+    root.querySelectorAll("x-graph,x-plot,x-chart").forEach((g) => { const d = [...g.querySelectorAll("path,rect,circle")].length; if (!d) issues.push(`${g.tagName.toLowerCase()} drew nothing (check fn/data syntax)`); });
+    errs.forEach((e) => issues.push("error: " + e));
+    if (issues.length) { post("issues", { issues: [...new Set(issues)].slice(0, 12) }); if (standalone) console.warn("[blocks] issues", issues); }
+  }
+  B.selfCheck = selfCheck;
   function showErr(err) { reportErr(err); root && root.insertAdjacentHTML("beforeend", `<div class="err">${esc(err)}</div>`); }
   async function runPython(code) {
     await load("https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js");
@@ -512,7 +690,9 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   });
   window.addEventListener("error", (e) => reportErr(e.message));
   root = document.getElementById("root");
-  root.addEventListener("input", schedule); root.addEventListener("change", schedule);
+  // a named control and a state key with the same name are one value: the control writes it, code writes the control
+  const fromInput = (e) => { const t = e.target, n = t && t.getAttribute && t.getAttribute("name"); if (n && n in store && !t.__model) { const v = readInput(n); if (JSON.stringify(store[n]) !== JSON.stringify(v)) store[n] = v; } schedule(); };
+  root.addEventListener("input", fromInput); root.addEventListener("change", fromInput);
   document.addEventListener("tick", schedule);
 
   // ---------------------------------------------------------------- feed: the only entry point

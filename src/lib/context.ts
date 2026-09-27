@@ -31,13 +31,14 @@ const oneLine = (s: string, n: number) => (s || "").replace(/\s+/g, " ").trim().
 const argLine = (p: ToolPart) => { const a = p.args || {}; const v = a.path ?? a.query ?? a.url ?? a.command ?? a.name ?? a.target ?? ""; return oneLine(Array.isArray(v) ? v.join(" ") : String(v), 90); };
 
 /** How a tool call appears in history. Compacted parts are one line. */
-export function toolText(p: ToolPart) {
+export function toolText(p: ToolPart, short = false) {
   if (p.compact !== undefined) return `[${p.name} ${argLine(p)} → ${p.compact}]`;
+  if (short) return `[${p.name} ${argLine(p)} → ${deterministicSummary(p) || oneLine(p.result || "", 100)}]`;
   return `[${p.name}(${JSON.stringify(p.args).slice(0, 160)}) -> ${oneLine(p.result || "", 600)}]`;
 }
-export function assistantText(m: Msg) {
+export function assistantText(m: Msg, short = false) {
   // reasoning is never re-sent: it is large, and replaying it degrades later answers
-  return m.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool" ? toolText(p) : "")).filter(Boolean).join("\n");
+  return m.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool" ? toolText(p, short) : "")).filter(Boolean).join("\n");
 }
 export function toolTokens(m: Msg) {
   return m.parts.reduce((a, p) => a + (p.type === "tool" ? est(toolText(p)) : 0), 0);

@@ -59,6 +59,11 @@ export async function firecrawlScrape(st: Settings, url: string) {
 }
 
 export async function firecrawlSearch(st: Settings, query: string, limit: number) {
+  // developer mode + offline model: fake results from dev/mock-llm.mjs so search mode is testable without network
+  if (st.dev && st.provider === "mock") {
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/dev/mock/v1/search`, { method: "POST", body: JSON.stringify({ query, limit }) });
+    return { ...(await r.json()), _source: "mock" };
+  }
   // 1. Attempt local Firecrawl search with a quick timeout
   if (st.firecrawlUrl) {
     try {

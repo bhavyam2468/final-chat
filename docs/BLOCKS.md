@@ -9,7 +9,7 @@ BlocksUI is the language the model writes inside `<ui>…</ui>` to produce inter
 
 The runtime owns every visual decision (theme, radius, spacing, typography, motion, responsiveness), so any combination the model writes looks like it belongs to the app. Models never write CSS.
 
-Files: `public/blocks/runtime.js` (streaming parser, bindings, relations, helpers), `public/blocks/elements.js` (components), `public/blocks/runtime.css` (the design system). The model's quick reference is `workspace-template/system/skills/blocks/SKILL.md` (~1.6k tokens), and `ui_search` serves per-component detail from `src/lib/blocks/catalog.ts`.
+Files: `public/blocks/runtime.js` (streaming parser, bindings, relations, helpers), `public/blocks/elements.js` (components), `public/blocks/runtime.css` (the design system). The model's quick reference is `workspace-template/system/skills/blocks/SKILL.md` (~2k tokens; the everyday blocks are also taught directly in SYSTEM.md and those examples are part of the e2e bench), and `ui_search` serves per-component detail from `src/lib/blocks/catalog.ts`.
 
 ## Design principles
 

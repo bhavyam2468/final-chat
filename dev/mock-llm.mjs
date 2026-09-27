@@ -87,6 +87,30 @@ function bySubject() {
 
 Submit when done and press **Analyse my attempt** for per-topic feedback.`;
 
+const TIKZ = String.raw`An Atwood machine: two masses on one rope over a frictionless pulley.
+
+<ui>
+<x-tikz>
+\begin{tikzpicture}[scale=1.1]
+\fill[pattern=north east lines] (-1.6,0.3) rectangle (1.6,0.5);
+\draw[thick] (-1.6,0.3) -- (1.6,0.3);
+\draw (0,0.3) -- (0,-0.4);
+\draw[thick] (0,-0.9) circle (0.5);
+\fill (0,-0.9) circle (0.05);
+\draw[thick] (-0.5,-0.9) -- (-0.5,-3.0);
+\draw[thick] (0.5,-0.9) -- (0.5,-2.2);
+\draw[fill=gray!20] (-0.85,-3.0) rectangle (-0.15,-3.7) node[midway]{$m_1$};
+\draw[fill=gray!20] (0.15,-2.2) rectangle (0.85,-2.9) node[midway]{$m_2$};
+\draw[->,thick] (-1.2,-3.1) -- (-1.2,-3.9) node[left]{$m_1 g$};
+\draw[->,thick] (1.2,-2.3) -- (1.2,-3.1) node[right]{$m_2 g$};
+\draw[->] (-1.2,-2.9) -- (-1.2,-2.2) node[left]{$T$};
+\draw[->] (1.2,-2.1) -- (1.2,-1.4) node[right]{$T$};
+\end{tikzpicture}
+</x-tikz>
+</ui>
+
+With $m_1 > m_2$: $a = \frac{(m_1 - m_2)g}{m_1 + m_2}$ and $T = \frac{2 m_1 m_2 g}{m_1 + m_2}$.`;
+
 const GRAPH = String.raw`Drag the sliders; the curve and its derivative update live.
 
 <ui>
@@ -168,19 +192,30 @@ function guard(name, messages, q) {
 }
 const GUARDS = ["think", "orphan", "reasoning", "filler", "link", "loop", "textcall", "toolcode", "cjk", "cite", "danger", "pkg", "stuck", "slop", "integrity"];
 
+function searchAnswer(q) {
+  const urls = [...q.matchAll(/^(https:\/\/\S+)$/gm)].map((m) => m[1]);
+  const topic = (q.match(/<search_results query="([^"]*)"/) || [])[1] || "that";
+  if (!urls.length) return { text: `I couldn't reach search just now, so this is from memory: ${topic} is covered in most references.` };
+  return { text: `**${topic}** comes down to three facts. The official docs describe the current behaviour [1](${urls[0]}), and the wiki has the background and history [2](${urls[1] || urls[0]}).\n\nRecent coverage adds the newest changes [3](${urls[2] || urls[0]}).` };
+}
+
 function scenario(messages) {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const q = (typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content || "")).toLowerCase();
   const afterTool = messages[messages.length - 1]?.role === "tool";
   const g = [...messages].reverse().filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join(" ").match(/guard:(\w+)/);
   if (g && (q.includes("guard:") || /\[automatic|approved|denied/.test(q) || afterTool)) return guard(g[1], messages, q);
+  if (q.includes("<search_results") && !afterTool) return searchAnswer(q);
   if (q.includes("ui_event")) return { text: "You scored well on mechanics; kinetics and function graphs need work. Next: 10 targeted questions on first-order kinetics and cubic root counting via turning points." };
   if (/jee|mock test/.test(q)) return afterTool ? { text: JEE } : { text: "Checking recent paper patterns.", call: { name: "web_search", args: { query: "JEE Main 2026 question paper pattern physics chemistry maths", limit: 3 } } };
   const open = q.match(/open\s+(\S+)/);
   if (open) return afterTool ? { text: "Opened beside the chat." } : { call: { name: "canvas_open", args: { target: open[1], dock: true } } };
   if (/samples|files/.test(q)) return { text: "The example files:\n\n[deck.pptx](uploads/samples/deck.pptx)\n\n[budget.xlsx](uploads/samples/budget.xlsx)\n\n[project.zip](uploads/samples/project.zip)\n\n[chart.png](uploads/samples/chart.png)\n\nAsk to open any of them." };
   if (/plan|todo/.test(q)) return afterTool ? { text: "Plan set. Starting with the data model." } : { text: "Breaking this into steps.", call: { name: "todo", args: { items: [{ text: "Data model", status: "doing" }, { text: "List view", status: "todo" }, { text: "Persistence", status: "todo" }, { text: "Verify in browser", status: "todo" }] } } };
+  if (/slowpy/.test(q)) return afterTool ? { text: "Done counting." } : { text: "Running it.", call: { name: "run_python", args: { code: "import time\nfor i in range(8):\n    print('step', i, flush=True)\n    time.sleep(0.8)" } } };
+  if (/longtext/.test(q)) return { text: MD, slow: 20 }; // same answer, ~20x slower (~15s): for testing chat switching and Stop
   if (/\bask\b/.test(q)) return { call: { name: "ask_user", args: { question: "Which stack should the app use?", options: ["Plain HTML/JS", "React + TypeScript", "Electron"] } } };
+  if (/atwood|tikz|pulley/.test(q)) return { text: TIKZ };
   if (/graph|plot/.test(q)) return { text: GRAPH };
   if (/chem|molecule|aspirin/.test(q)) return { text: CHEM };
   return { text: MD };
@@ -212,7 +247,7 @@ export async function* stream(j) {
   const send = (delta, finish = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
   const sc = scenario(j.messages || []);
   for (const c of chunks(sc.reasoning || "")) { yield send({ reasoning_content: c }); await sleep(10 + Math.random() * 60); }
-  for (const c of chunks(sc.text || "")) { yield send({ content: c }); await sleep(5 + Math.random() * (Math.random() < 0.1 ? 400 : 160)); }
+  for (const c of chunks(sc.text || "")) { yield send({ content: c }); await sleep((sc.slow || 1) * (5 + Math.random() * (Math.random() < 0.1 ? 400 : 160))); }
   if (sc.call) {
     const id = "call_" + Date.now();
     yield send({ tool_calls: [{ index: 0, id, type: "function", function: { name: sc.call.name, arguments: "" } }] });
@@ -223,6 +258,17 @@ export async function* stream(j) {
 }
 
 export const models = () => ({ data: [{ id: "mock" }] });
+
+/** Fake Firecrawl /v1/search (search mode offline). Domains are .example so nothing real is ever linked. */
+export function search(j) {
+  const q = String(j.query || "").slice(0, 80);
+  const slug = q.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "query";
+  const sites = ["docs", "wiki", "news", "forum", "blog", "guide"];
+  return { success: true, data: sites.slice(0, Math.min(Number(j.limit) || 5, 6)).map((d, i) => ({
+    url: `https://${d}.example/${slug}`, title: `${q} - ${d[0].toUpperCase() + d.slice(1)} ${i + 1}`,
+    description: `What ${d} says about ${q}: a short snippet with the key facts, dates and numbers someone would look for.`,
+  })) };
+}
 
 const direct = process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href;
 if (direct) {

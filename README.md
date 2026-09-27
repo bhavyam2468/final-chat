@@ -133,6 +133,7 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `DATABASE_URL` | unset → PGlite | Postgres connection string |
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | FreeLLMAPI | Any OpenAI-compatible endpoint (Gemini, OpenRouter, OpenAI, Ollama, FreeLLMAPI) |
 | `LLM_CONTEXT_TOKENS` | model preset | Context window; prompts are budgeted to fit (16k works) |
+| `LLM_WORKING_TOKENS` | 64000 | What one request may use even if the window is bigger; trimming, folding and auto-compaction work against it (Settings → Working context) |
 | `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Local-first search/scrape with cloud fallback |
 | `WORKSPACE_DIR` | `./workspace` | Agent root |
 | `ACCESS_MODE` | `sandbox` | Initial file access: `sandbox`, `home`, `full` |

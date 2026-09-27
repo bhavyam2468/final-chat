@@ -5,24 +5,28 @@ description: BlocksUI language for <ui>: components, reactive bindings, JS/Pytho
 # BlocksUI
 `<ui>` = HTML + x-* components + bindings + optional logic + `<style type="rel">` relations. The system owns all visuals (theme, spacing, radius, animation, responsiveness). Never write CSS, inline style, colors or px sizes. It streams: write `<style type="rel">` first, then data, then markup top-down, then `<script>`.
 
-## Restraint
-A component existing is not a reason to use it. Use <ui> only when interaction, visualization or live state beats text. Pick the fewest components that do the job; a sentence beats a card, a table beats a chart for <6 numbers. No decorative badges/icons/stats. Never wrap one element in a card.
+## Restraint and placement
+Use <ui> when interaction, visualization or live state beats text; pick the fewest components that do the job. A sentence beats a card, a table beats a chart for <6 numbers. No decorative badges/icons/stats. Never wrap one element in a card.
+Inline in the reply by default. The same markup works unchanged inside <canvas title="…"><ui>…</ui></canvas>; use canvas only for something the user keeps using outside the conversation.
+Layout is automatic: each block takes a full line, adjacent buttons sit side by side at their own width, forms stack fields and keep buttons compact. Mark the main action button.primary (or type=submit). Async @click handlers show a spinner in their button.
+Every name you use must exist (named input, x-state, data script, element id, or an assignment). Unknown names render as blank and are reported to the user as an issue.
 
 ## Components (attr=default; ui_search for details)
 Layout: x-stack x-row x-col x-grid[cols] x-card[title tone] x-section[title subtitle] x-divider[label] x-spacer
  x-tabs>x-tab[label] · x-deck[nav=numbers|dots|steps|none loop]>x-slide[label tone] (one view at a time; el.next() prev() go(i) .index .count; ←/→ keys; nav marks answered slides)
 Text: native h1-h4 p small ul ol table details code a · x-md (markdown body) · x-code[lang] · x-callout[tone title] · x-kv ("Key: value" lines) · x-badge[tone] x-kbd x-icon[name=lucide]
 Data: x-stat[value label delta unit] (counts up) · x-progress[value max tone] · x-ring[value max label] · x-gauge[value min max label]
- x-chart[type=line|bar|hbar|stacked|area|pie|donut|scatter|radar data labels series title x-label y-label center] data="1,2,3" multi "1,2|3,4" series="A|B"; scatter "x:y,x:y"; JSON ok
+ x-chart[type=line|bar|hbar|stacked|area|pie|donut|scatter|radar data labels series title x-label y-label center] data="1,2,3" multi "1,2|3,4" series="A|B"; scatter "x:y,x:y"; JSON ok ([{label,value}] or {series:[…]}). A series ≥50× smaller than the rest gets its own right axis automatically
  x-sparkline[data] · x-table[csv|data sortable] (or CSV/markdown rows as body) · x-heatmap[data="1,2|3,4" x-labels y-labels] · x-timeline (lines "date | title | detail")
 Science: x-math[tex|body inline] · $..$ / $$..$$ in any text renders KaTeX
- x-graph[fn xmin xmax ymin ymax equal points legend height] interactive plot, pan/zoom/hover. fn lines/`;`: `y=a*sin(b*x)`, `r=1+cos(theta)`, `x=cos(t),y=sin(2t)`. Free letters (a,b,…) bind live to same-named inputs/state → sliders drive the graph. points="1,2,A;3,4"
- x-smiles[smiles label] 2D structure · x-mol3d[name|cid|smiles|pdb still] 3D (PubChem/RCSB) · x-mermaid (body) · x-draw[w h] diagram lines: rect x y w h "l" | circle x y r | dot x y | line/dashed/arrow x1 y1 x2 y2 "l" | mass x y "m" | pulley x y r | spring x1 y1 x2 y2 | incline x y w h | ground y | wall x | angle x y r deg1 deg2 "θ" | polygon x y x y… | curve x1 y1 cx cy x2 y2 | wave x1 y x2 amp cycles | lens x y h | resistor x1 y1 x2 y2 | battery x y | text x y "t"
-Time: x-timer[id seconds mode=down|up autostart] (.start() .stop() .toggle() .reset(s); .left .elapsed .running; events tick, done) · x-stopwatch · x-clock[time|seconds|for=timerId]
-Inputs (all with name= are reactive vars): input(text|number|range|date|color|checkbox|radio) select textarea button[tone=accent|success|danger|ghost]
+ x-graph[fn xmin xmax ymin ymax equal points legend height tmin tmax] interactive plot, pan/zoom/hover; shapes keep their true proportions at any width. fn lines/`;`: `y=a*sin(b*x)`, implicit `x^2+y^2=9`, polar `r=1+cos(theta)`, parametric `x=cos(t),y=sin(2t)`. Free letters (a,b,…) bind live to same-named inputs/state → sliders drive the graph. points="1,2,A;3,4"
+ x-tikz[caption scale] body = TikZ (commands, tikzpicture or full document), server-rendered, theme-aware. circuitikz pgfplots tikz-cd chemfig tikz-feynhand; patterns arrows.meta calc positioning angles quotes. THE choice for physics (free-body, pulleys, inclines, optics), circuits and geometry: place labels with anchors (above/below/left/right=of) so nothing overlaps; draw ropes/strings explicitly
+ x-smiles[smiles label] 2D structure · x-mol3d[name|cid|smiles|pdb still] 3D (PubChem/RCSB) · x-mermaid (body) · x-draw[w h] diagram lines: rect x y w h "l" | circle x y r | dot x y | line/dashed/arrow x1 y1 x2 y2 "l" | mass x y "m" | pulley x y r | spring x1 y1 x2 y2 | incline x y w h | ground y | wall x | angle x y r deg1 deg2 "θ" | polygon x y x y… | curve x1 y1 cx cy x2 y2 | wave x1 y x2 amp cycles | lens x y h | resistor x1 y1 x2 y2 | battery x y | text x y "t" (quick sketches; prefer x-tikz for anything the user studies)
+Time: x-timer[id seconds mode=down|up autostart keep-running] (.start() .stop() .toggle() .reset(s); .left .elapsed .running; events tick, done; :seconds="expr" re-arms on change, keep-running continues if it was running) · x-stopwatch · x-clock[time|seconds|for=timerId]
+Inputs (all with name= are reactive vars): input(text|number|range|date|color|checkbox|radio) select textarea button[.primary tone=success|danger|ghost]
  x-segmented[name options value] · x-toggle[name checked] · x-rating[name max] · x-sortable[name] (body lines) · x-sketch[name] (value = PNG data URL) · x-upload[name accept multiple dir] (value = workspace path)
  x-todo[name title add] body lines "- [ ] task" / "- [x] done" (user ticks; add = user can append); .value [{text,done}] .done .total. For plans/checklists the user works through, not for your own progress (that is the todo tool)
- x-choice[name options="A|B|C" answer multi reveal lock layout=grid] or option lines as body; .value .index .correct .answered; reveal shows right/wrong
+ x-choice[name options="A|B|C" answer multi reveal lock layout=grid other skip] or option lines as body; .value .index .correct .answered; reveal shows right/wrong; other = type-your-own row; skip = Skip link (value "skipped")
 Media: x-image[src caption] x-video[src] x-audio[src] x-youtube[id|url start] x-embed[src height] x-map[lat lng zoom markers="lat,lng,label|…"]. Workspace paths work as src.
 State: <x-state score="0" done="false" picks="{}"> (JSON-parsed initial values)
 

@@ -1,18 +1,21 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2, MessageSquare } from "lucide-react";
 import { TreeNode, useApp, flatFiles } from "./ctx";
 import { upload } from "./Composer";
 import { SourceList } from "./Message";
 
-export type ConvItem = { id: string; title: string; branches: { leafId: string; label: string }[] };
+export type ConvItem = { id: string; title: string; mode?: "chat" | "search"; branches: { leafId: string; label: string }[] };
 
-export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
-  convs: ConvItem[]; current: string | null; onOpen: (id: string, leaf?: string, msg?: string) => void; onDelete: (id: string) => void; onClose: () => void;
+export function ChatsPanel({ convs, current, running = [], onOpen, onDelete, onClose }: {
+  convs: ConvItem[]; current: string | null; running?: string[]; onOpen: (id: string, leaf?: string, msg?: string) => void; onDelete: (id: string) => void; onClose: () => void;
 }) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<{ convId: string; title: string; messageId: string; snippet: string }[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // Chats: full conversations. History: searches (temporary, messages only) until "Open in chat" converts one.
+  const [tab, setTab] = useState<"chat" | "search">(() => (convs.find((c) => c.id === current)?.mode === "search" ? "search" : "chat"));
+  const list = convs.filter((c) => (c.mode || "chat") === tab);
   useEffect(() => {
     if (!q.trim()) return; // results are only shown while there is a query
     const t = setTimeout(() => fetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then(setHits), 160);
@@ -20,20 +23,24 @@ export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
   }, [q]);
   return (
     <div className="panel" style={{ maxHeight: "100%" }}>
-      <div className="panel-head"><span>Chats</span><span className="sp" /><button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
+      <div className="panel-head"><div className="seg" role="tablist">
+        <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}>Chats</button>
+        <button role="tab" aria-selected={tab === "search"} className={tab === "search" ? "on" : ""} onClick={() => setTab("search")}>History</button>
+      </div><span className="sp" /><button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
       <input className="search" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search chats" autoFocus onKeyDown={(e) => e.key === "Escape" && onClose()} />
       <div className="panel-body">
         {q.trim() ? hits.map((h) => (
           <button key={h.messageId} className="li" style={{ flexDirection: "column", alignItems: "stretch" }} onClick={() => onOpen(h.convId, undefined, h.messageId)}>
             <span className="t">{h.title}</span><span className="snip">{h.snippet}</span>
           </button>
-        )) : convs.map((c) => (
+        )) : !list.length ? <div className="empty">{tab === "search" ? "No searches yet" : "No chats yet"}</div> : list.map((c) => (
           <div key={c.id}>
             <div className={"li" + (c.id === current ? " on" : "")} role="button" onClick={() => onOpen(c.id)}>
               {c.branches.length > 0
                 ? <button aria-label="Branches" onClick={(e) => { e.stopPropagation(); setOpen((o) => ({ ...o, [c.id]: !o[c.id] })); }}>{open[c.id] ? <ChevronDown /> : <ChevronRight />}</button>
                 : <span style={{ width: 14 }} />}
               <span className="t">{c.title || "Untitled"}</span>
+              {running.includes(c.id) && <i className="live-dot" title="Responding" />}
               <span className="h">
                 <a className="ib sm" aria-label="Export" href={`/api/conversations/${c.id}/export`} onClick={(e) => e.stopPropagation()}><Download /></a>
                 <button className="ib sm" aria-label="Delete" onClick={(e) => { e.stopPropagation(); onDelete(c.id); }}><Trash2 /></button>
@@ -53,8 +60,12 @@ function TreeItem({ n, depth }: { n: TreeNode; depth: number }) {
   const app = useApp();
   const [open, setOpen] = useState(depth === 0 && ["uploads", "artifacts", "notes"].includes(n.name));
   const pinned = app.context.includes(n.path);
+  const chatId = n.dir && /^chats\/[\w-]+$/.test(n.path) ? n.name : null;
   if (n.dir) return <>
-    <button className="li" style={{ paddingLeft: 8 + depth * 14 }} onClick={() => setOpen(!open)}>{open ? <ChevronDown /> : <ChevronRight />}<Folder /><span className="t">{n.name}</span></button>
+    <div className="li" role="button" style={{ paddingLeft: 8 + depth * 14 }} onClick={() => setOpen(!open)}>{open ? <ChevronDown /> : <ChevronRight />}{chatId ? <MessageSquare /> : <Folder />}
+      <span className="t">{chatId ? app.convTitles[chatId] || chatId : n.name}</span>
+      {chatId && <span className="h"><button className="ib sm" aria-label="Open chat in a window" title="Open in a window" onClick={(e) => { e.stopPropagation(); app.openFile(n.path); }}><AppWindow /></button></span>}
+    </div>
     {open && n.children?.map((c) => <TreeItem key={c.path} n={c} depth={depth + 1} />)}
   </>;
   return (
@@ -147,13 +158,19 @@ export function WorkspacePanel({ onClose, ctx }: { onClose: () => void; ctx?: Ct
 
 export function ArtifactsPanel({ onClose }: { onClose: () => void }) {
   const app = useApp();
-  const items = useMemo(() => flatFiles(app.tree).filter((f) => (f.path.startsWith("artifacts/") && !/\.(css|js|json)$/.test(f.path)) || (f.path.endsWith(".html") && !f.path.startsWith("artifacts/"))), [app.tree]);
+  const [all, setAll] = useState(false);
+  // artifacts = things built: chats/<id>/artifacts/** (per chat) and the older shared artifacts/**
+  const items = useMemo(() => flatFiles(app.tree).filter((f) => !/\.(css|js|json|map)$/.test(f.path) && !f.path.includes("/node_modules/") && (
+    all ? /^(chats\/[\w-]+\/)?artifacts\//.test(f.path) : app.convId ? f.path.startsWith(`chats/${app.convId}/artifacts/`) : false)), [app.tree, app.convId, all]);
+  const label = (p: string) => { const m = p.match(/^chats\/([\w-]+)\/artifacts\/(.*)$/); return m ? (all && m[1] !== app.convId ? `${app.convTitles[m[1]] || m[1]} · ` : "") + m[2] : p.replace(/^artifacts\//, ""); };
   return (
     <div className="panel">
-      <div className="panel-head"><span>Artifacts</span><span className="sp" /><button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
+      <div className="panel-head"><span>Artifacts</span><span className="sp" />
+        <span className="seg"><button className={all ? "" : "on"} onClick={() => setAll(false)}>This chat</button><button className={all ? "on" : ""} onClick={() => setAll(true)}>All</button></span>
+        <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
       <div className="panel-body">{items.map((f) => (
-        <button key={f.path} className="li" onClick={() => app.openFile(f.path)}><AppWindow /><span className="t">{f.path.replace(/^artifacts\//, "")}</span></button>
-      ))}</div>
+        <button key={f.path} className="li" onClick={() => app.openFile(f.path)}><AppWindow /><span className="t">{label(f.path)}</span></button>
+      ))}{!items.length && <div className="empty">{all ? "Nothing built yet" : "Nothing built in this chat"}</div>}</div>
     </div>
   );
 }

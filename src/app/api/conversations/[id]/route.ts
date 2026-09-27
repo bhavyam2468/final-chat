@@ -1,3 +1,7 @@
+import fss from "fs";
+import { WS } from "@/lib/workspace";
+import { chatDir } from "@/lib/shared";
+import { trash } from "@/lib/tools";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { conversations, messages } from "@/db/schema";
@@ -19,6 +23,11 @@ export async function PATCH(req: NextRequest, { params }: P) {
   const set: Record<string, unknown> = {};
   if (typeof b.title === "string") set.title = b.title;
   if (Array.isArray(b.context)) set.context = b.context;
+  // "Open in chat": a search (History) becomes a full chat
+  if (b.mode === "chat" || b.mode === "search") {
+    const [c] = await db.select({ state: conversations.state }).from(conversations).where(eq(conversations.id, id));
+    if (c) set.state = { ...(c.state || {}), mode: b.mode };
+  }
   if (Object.keys(set).length) await db.update(conversations).set(set).where(eq(conversations.id, id));
   return Response.json({ ok: true });
 }
@@ -26,5 +35,8 @@ export async function DELETE(_: NextRequest, { params }: P) {
   const { id } = await params;
   await db.delete(messages).where(eq(messages.conversationId, id));
   await db.delete(conversations).where(eq(conversations.id, id));
+  // the chat's folder (artifacts, uploads) goes to the workspace trash: recoverable
+  const dir = [WS, chatDir(id.replace(/[^\w-]/g, ""))].join("/");
+  if (fss.existsSync(dir)) await trash(dir).catch(() => {});
   return Response.json({ ok: true });
 }
