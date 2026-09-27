@@ -9,7 +9,7 @@ import { toolDefs, execTool, ToolDef, ToolCtx, ConvState, Pack, todoReminder } f
 import { mcpTools, readServers } from "./mcp";
 import { skillsIndex, findSkill, skillMeta, skillAllowed } from "./skills";
 import { varsFor, varsIn } from "./credentials";
-import { lintFiles } from "./harness/check";
+import { lintFiles, lintChat } from "./harness/check";
 import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, urlsIn } from "./harness/stream";
 import { StuckDetector } from "./harness/stuck";
 import { integrityIssues, isCodeFile } from "./harness/integrity";
@@ -251,7 +251,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const stuck = new StuckDetector();
   let opener = new OpenerGate();
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
-  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false;
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, blocksRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
@@ -371,6 +371,21 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
               loopMsgs.push({ role: "user", content: `[Automatic check, not from the user] Issues in files you changed:\n${report}\nFix what is real (fs_edit / run it). If a flag is wrong for this request, ignore it. Then reply with one short line saying what changed.` });
               continue;
             }
+          }
+        }
+        // BlocksUI guard (one round): a broken component must never be the final answer.
+        if (st.quality === "fix" && blocksRounds < 1 && text && !signal.aborted) {
+          const report = lintChat(text, brief);
+          if (report) {
+            blocksRounds++;
+            const id = `blk_${Date.now()}`;
+            const part: Part = { type: "tool", id, name: "blocks_check", args: {}, result: report, ok: false };
+            parts.push(part);
+            emit({ t: "tool", id, name: part.name, args: part.args });
+            emit({ t: "toolResult", id, result: report, ok: false });
+            loopMsgs.push({ role: "assistant", content: text });
+            loopMsgs.push({ role: "user", content: `[Automatic BlocksUI check, not from the user] These components are broken:\n${report}\nReturn the same answer again with every issue fixed and everything else unchanged. Do not call tools.` });
+            continue;
           }
         }
         // Citation guard: links in a web-backed answer that never appeared in any result → verify or drop, once.

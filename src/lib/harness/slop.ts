@@ -158,14 +158,85 @@ export function slopLint(text: string, kind = "html", opts: LintOpts = {}): Issu
   return out;
 }
 
-/** BlocksUI source checks: unknown components, raw CSS, markup the runtime ignores. */
+/** Names the runtime already provides; a binding to one of these is never a mistake. */
+const BUILTINS = new Set(["form", "json", "sendToLm", "py", "lm", "len", "t", "i", "index", "item", "e", "ev", "event", "self", "this", "value",
+  "Math", "JSON", "Number", "String", "Boolean", "Array", "Object", "Date", "parseInt", "parseFloat", "isNaN", "encodeURIComponent", "decodeURIComponent",
+  "console", "window", "document", "localStorage", "true", "false", "null", "undefined", "NaN"]);
+
+/** Every name the block declares: name= inputs/components, <x-state>, data scripts, saveIn, ids. */
+function declared(src: string): Set<string> {
+  const names = new Set<string>();
+  for (const m of src.matchAll(/\bname="([^"]+)"/g)) names.add(m[1]);
+  for (const m of src.matchAll(/<x-state[^>]*\bname="([^"]+)"/g)) names.add(m[1]);
+  for (const m of src.matchAll(/<script[^>]*type="data"[^>]*\bname="([^"]+)"/g)) names.add(m[1]);
+  for (const m of src.matchAll(/\bsaveIn="([^"]+)"/g)) names.add(m[1]);
+  for (const m of src.matchAll(/\bid="([^"]+)"/g)) names.add(m[1]);
+  return names;
+}
+
+const idents = (expr: string) => [...expr.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]);
+
+/** Components that take no children (elements.js registers them with { void: true }). */
+export const VOID_TAGS = new Set(["x-divider", "x-spacer", "x-icon", "x-stat", "x-progress", "x-ring", "x-gauge", "x-sparkline", "x-heatmap", "x-smiles",
+  "x-mol3d", "x-timer", "x-stopwatch", "x-clock", "x-toggle", "x-rating", "x-sketch", "x-upload", "x-image", "x-video", "x-audio", "x-youtube",
+  "x-embed", "x-map", "x-state"]);
+
+/**
+ * BlocksUI source checks. Beyond unknown components and raw CSS these catch the failures that
+ * actually blank a block or print NaN: an unclosed component, two components sharing one name,
+ * an `each` with nothing to iterate, a free letter in x-graph that no input binds, a question
+ * with no options, and a bound attribute pointing at a name nothing declares.
+ */
 export function blocksLint(src: string, known: Set<string>, opts: LintOpts = {}): Issue[] {
   const out: Issue[] = [];
   const tags = new Set([...src.matchAll(/<(x-[a-z0-9-]+)/g)].map((m) => m[1]));
   const unknown = [...tags].filter((t) => !known.has(t));
   if (unknown.length) out.push({ rule: "blocks-unknown", msg: `Unknown components: ${unknown.join(", ")}. ui_search for real ones or use plain HTML.`, severity: "error" });
-  if (/<style(?![^>]*type=["']?rel)/i.test(src)) out.push({ rule: "blocks-css", msg: "Raw <style> in BlocksUI. Use <style type=\"rel\"> relations; the runtime owns visuals.", severity: "warn" });
+  if (/<style(?![^>]*type=["']?rel)/i.test(src)) out.push({ rule: "blocks-css", msg: `Raw <style> in BlocksUI. Use <style type="rel"> relations; the runtime owns visuals.`, severity: "warn" });
   if (/style="[^"]*(color|background|font|border|box-shadow)/i.test(src)) out.push({ rule: "blocks-inline", msg: "Inline visual styles in BlocksUI. Remove them; use tone/variant attributes.", severity: "warn" });
+
+  // unclosed components: a tag that opens more often than it closes and is not void
+  const counts = new Map<string, { open: number; close: number }>();
+  for (const m of src.matchAll(/<(\/?)x-[a-z0-9-]+(?=[\s/>])/g)) {
+    const name = m[0].slice(m[1] ? 2 : 1);
+    const c = counts.get(name) || { open: 0, close: 0 };
+    if (m[1]) c.close++; else c.open++;
+    counts.set(name, c);
+  }
+  for (const [t, c] of counts) {
+    if (VOID_TAGS.has(t) || !c.open || c.open === c.close) continue;
+    out.push({ rule: "blocks-unclosed", msg: `<${t}> opens ${c.open}x and closes ${c.close}x. Close every component.`, severity: "error" });
+  }
+
+  const names = declared(src);
+  const seen = new Map<string, number>();
+  for (const m of src.matchAll(/\bname="([^"]+)"/g)) seen.set(m[1], (seen.get(m[1]) || 0) + 1);
+  for (const [n, c] of seen) if (c > 1) out.push({ rule: "blocks-dup-name", msg: `name="${n}" is used ${c}x. One name per input/component, or the second silently overwrites the first.`, severity: "warn" });
+
+  for (const m of src.matchAll(/\beach="([^"]+)"/g)) {
+    const list = m[1].split(/\s+in\s+/)[1];
+    if (list && !names.has(list.trim()) && !BUILTINS.has(list.trim()))
+      out.push({ rule: "blocks-each", msg: `each="${m[1]}" iterates "${list}", which is never declared. Give the data a name= (or a <script type="data" name="...">) first.`, severity: "error" });
+  }
+
+  const FN_OK = ["x", "y", "t", "theta", "pi", "sin", "cos", "tan", "abs", "sqrt", "log", "exp", "min", "max", "pow", "floor", "ceil", "round", "sign", "atan", "asin", "acos"];
+  for (const m of src.matchAll(/<x-graph\b[^>]*\bfn="([^"]*)"/g)) {
+    // only plain maths: an expression like `q.fn || ''` is data, not a curve
+    if (/\|\||\?|['"`]|\./.test(m[1])) continue;
+    const free = idents(m[1]).filter((n) => !FN_OK.includes(n));
+    const missing = [...new Set(free)].filter((n) => !names.has(n) && !BUILTINS.has(n));
+    if (missing.length) out.push({ rule: "blocks-graph-var", msg: `x-graph fn="${m[1]}" uses ${missing.join(", ")}, which no <input name="..."> or data block declares - the curve renders NaN. Bind it or use a constant.`, severity: "error" });
+  }
+
+  for (const m of src.matchAll(/<x-choice\b([^>]*)>([\s\S]*?)<\/x-choice>/g)) {
+    if (!m[2].trim() && !/\boptions=/.test(m[1])) out.push({ rule: "blocks-empty-choice", msg: `<x-choice> has no options. Put one option per line, or options="A|B|C".`, severity: "error" });
+  }
+
+  for (const m of src.matchAll(/\s(:[\w-]+)="\{\{([^}]*)\}\}"/g)) {
+    const missing = [...new Set(idents(m[2]))].filter((n) => !names.has(n) && !BUILTINS.has(n));
+    if (missing.length) out.push({ rule: "blocks-binding", msg: `${m[1]}="{{${m[2]}}}" reads ${missing.join(", ")}, which nothing declares. Declare it with name= / <x-state> / <script type="data">, or drop the binding.`, severity: "warn" });
+  }
+
   return [...out, ...slopLint(src, "ui", opts).filter((i) => !["font-cdn", "reduced-motion", "focus"].includes(i.rule))];
 }
 
