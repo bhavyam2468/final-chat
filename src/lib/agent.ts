@@ -242,6 +242,15 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     },
   };
 
+  // General/search chats stay light: no big context window. Old tool output is always folded, and
+  // once a search chat passes 30 exchanged messages, everything beyond the last 15 becomes a rolling
+  // summary block instead of raw history.
+  if (state.mode === "search") {
+    const pre = chain(all, parentId);
+    if (pre.length > 30) { await compactHistory(conv, pre, st, 15); await reload(); }
+    else if (pre.length > 8) { const n = await compactTools(pre, { keepLast: 6 }); if (n) await reload(); }
+  }
+
   let sys = await buildSystem(conv, st, mcpNames, budget, parent?.role === "user" ? parent.content : "");
   let hist = await buildHistory(conv, all, parentId, threadOf, st, Number.MAX_SAFE_INTEGER);
   // Auto-compaction: first fold old tool output (free), then the builder trims oldest turns.
@@ -266,11 +275,15 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     }
   }
 
-  // Search mode: search the query right away (no model round trip), show the results, hand them to the model.
-  // Greetings and plain arithmetic skip it; a short follow-up is searched together with the previous question.
+  // Search mode: the FIRST query is searched right away (no model round trip), results shown and handed
+  // to the model. Follow-ups answer from what is already here unless they are clearly a new lookup
+  // (an explicit search verb or a full new question) — re-searching on every prompt was the bug.
+  // The model keeps web_search and can look things up itself when a follow-up truly needs it.
   let presearched = false;
-  if (state.mode === "search" && parent?.role === "user" && !parent.threadOf && needsSearch(parent.content)) {
-    const prevQ = hist.path.filter((m) => m.role === "user" && m.id !== parent.id).slice(-1)[0]?.content || "";
+  const prevUsers = hist.path.filter((m) => m.role === "user" && m.id !== parent?.id);
+  const isNewQuery = (t: string) => /\b(search|find|look ?up|google|check|latest|news|price|today|compare)\b/i.test(t) || t.trim().split(/\s+/).length >= 6;
+  if (state.mode === "search" && parent?.role === "user" && !parent.threadOf && needsSearch(parent.content) && (prevUsers.length === 0 || isNewQuery(parent.content))) {
+    const prevQ = prevUsers.slice(-1)[0]?.content || "";
     const q = (parent.content.trim().split(/\s+/).length < 4 && prevQ ? `${prevQ.slice(0, 120)} ${parent.content}` : parent.content).replace(/\s+/g, " ").trim().slice(0, 300);
     const id = `presearch_${Date.now()}`;
     const part: Part = { type: "tool", id, name: "web_search", args: { query: q } };

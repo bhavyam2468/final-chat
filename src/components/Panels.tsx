@@ -1,9 +1,10 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2, MessageSquare } from "lucide-react";
-import { TreeNode, useApp, flatFiles } from "./ctx";
+import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2, MessageSquare, ArrowUpLeft, Home } from "lucide-react";
+import { TreeNode, CanvasSpec, useApp, flatFiles } from "./ctx";
 import { upload } from "./Composer";
 import { SourceList } from "./Message";
+import { chatDir } from "@/lib/shared";
 
 export type ConvItem = { id: string; title: string; mode?: "chat" | "search"; branches: { leafId: string; label: string }[] };
 
@@ -57,9 +58,14 @@ export function ChatsPanel({ convs, current, running = [], onOpen, onDelete, onC
   );
 }
 
+const findNode = (ns: TreeNode[], path: string): TreeNode | null => {
+  for (const n of ns) { if (n.path === path) return n; if (n.dir && path.startsWith(n.path + "/")) { const f = findNode(n.children || [], path); if (f) return f; } }
+  return null;
+};
+
 function TreeItem({ n, depth }: { n: TreeNode; depth: number }) {
   const app = useApp();
-  const [open, setOpen] = useState(depth === 0 && ["uploads", "artifacts", "notes"].includes(n.name));
+  const [open, setOpen] = useState(false); // compact by default: nothing auto-expands
   const pinned = app.context.includes(n.path);
   const chatId = n.dir && /^chats\/[\w-]+$/.test(n.path) ? n.name : null;
   if (n.dir) return <>
@@ -143,21 +149,35 @@ export function ContextStatus({ c }: { c: CtxRef }) {
   );
 }
 
+/** Folder browser: opens inside the current chat's folder when there is a chat, otherwise at the
+    workspace root; ".." climbs a level (chat → workspace). Nothing auto-expands. */
 export function WorkspacePanel({ onClose, ctx }: { onClose: () => void; ctx?: CtxRef | null }) {
   const app = useApp();
+  // null = "follow the open chat's folder"; any navigation makes it explicit
+  const [cwd, setCwd] = useState<string | null>(null);
+  const dir = cwd === null ? (app.convId ? chatDir(app.convId) : "") : cwd;
+  const node = dir ? findNode(app.tree, dir) : null;
+  const kids = dir === "" ? app.tree : node?.dir ? node.children || [] : [];
+  const up = () => setCwd(dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "");
+  const crumbs = dir ? dir.split("/") : [];
   return (
     <div className="panel">
       <div className="panel-head"><span>Workspace</span><span className="sp" />
-        <label className="ib sm" aria-label="Upload" style={{ cursor: "pointer" }}><Upload /><input type="file" multiple hidden onChange={async (e) => { if (e.target.files) { await upload([...e.target.files]); app.refreshTree(); } e.target.value = ""; }} /></label>
+        <label className="ib sm" aria-label="Upload here" title={`Upload to ${dir || "workspace"}/`} style={{ cursor: "pointer" }}><Upload /><input type="file" multiple hidden onChange={async (e) => { if (e.target.files) { await upload([...e.target.files], dir || undefined); app.refreshTree(); } e.target.value = ""; }} /></label>
         <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button>
       </div>
+      <div className="crumbs-bar">
+        {dir !== "" && <button className="ib sm" aria-label="Up a folder" title="Up a folder" onClick={up}><ArrowUpLeft /></button>}
+        <button className={"crumb" + (dir === "" ? " on" : "")} onClick={() => setCwd("")}><Home />workspace</button>
+        {crumbs.map((c, i) => <button key={i} className={"crumb" + (i === crumbs.length - 1 ? " on" : "")} onClick={() => setCwd(crumbs.slice(0, i + 1).join("/"))}>{app.convId && crumbs[i - 1] === "chats" ? app.convTitles[c] || c : c}</button>)}
+      </div>
       {ctx && <ContextStatus c={ctx} />}
-      <div className="panel-body">{app.tree.map((n) => <TreeItem key={n.path} n={n} depth={0} />)}</div>
+      <div className="panel-body">{kids.map((n) => <TreeItem key={n.path} n={n} depth={0} />)}{!kids.length && <div className="empty">Empty folder</div>}</div>
     </div>
   );
 }
 
-export function ArtifactsPanel({ onClose }: { onClose: () => void }) {
+export function ArtifactsPanel({ onClose, recent }: { onClose: () => void; recent?: CanvasSpec[] }) {
   const app = useApp();
   const [all, setAll] = useState(false);
   // artifacts = things built: chats/<id>/artifacts/** (per chat) and the older shared artifacts/**
@@ -169,9 +189,15 @@ export function ArtifactsPanel({ onClose }: { onClose: () => void }) {
       <div className="panel-head"><span>Artifacts</span><span className="sp" />
         <span className="seg"><button className={all ? "" : "on"} onClick={() => setAll(false)}>This chat</button><button className={all ? "on" : ""} onClick={() => setAll(true)}>All</button></span>
         <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
-      <div className="panel-body">{items.map((f) => (
-        <button key={f.path} className="li" onClick={() => app.openFile(f.path)}><AppWindow /><span className="t">{label(f.path)}</span></button>
-      ))}{!items.length && <div className="empty">{all ? "Nothing built yet" : "Nothing built in this chat"}</div>}</div>
+      <div className="panel-body">
+        {!!recent?.length && <>
+          <div className="panel-sub">Recent canvases</div>
+          {recent.map((s, i) => <button key={i} className="li" onClick={() => app.openCanvas(s)}><AppWindow /><span className="t">{s.title}</span></button>)}
+          <div className="panel-sub">Built</div>
+        </>}
+        {items.map((f) => (
+          <button key={f.path} className="li" onClick={() => app.openFile(f.path)}><AppWindow /><span className="t">{label(f.path)}</span></button>
+        ))}{!items.length && !recent?.length && <div className="empty">{all ? "Nothing built yet" : "Nothing built in this chat"}</div>}</div>
     </div>
   );
 }

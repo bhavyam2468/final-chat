@@ -52,12 +52,15 @@ const TOOL_META: Record<string, Meta> = {
 };
 
 type Src = { url: string; title: string; snippet?: string };
+/** Compact source rail: numbered pills (favicon · host · title) that sit quietly above the answer,
+    in the same order the model cites them as [n]. */
 export function SourceList({ items }: { items: Src[] }) {
-  return <div className="srcs">{items.map((s, i) => { let host = ""; try { host = new URL(s.url).hostname; } catch {}
-    return <a key={i} className="src" href={s.url} target="_blank" rel="noreferrer">
+  return <div className="srcs">{items.map((s, i) => { let host = ""; try { host = new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
+    return <a key={i} className="src" href={s.url} target="_blank" rel="noreferrer" title={s.snippet || s.title}>
+      <span className="n">{i + 1}</span>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" />
-      <div><b>{s.title}</b><small>{host}{s.snippet ? " · " + s.snippet : ""}</small></div></a>; })}</div>;
+      <span className="t"><b>{host}</b><small>{s.title}</small></span></a>; })}</div>;
 }
 
 type Todo = { text: string; status: "todo" | "doing" | "done" };
@@ -279,11 +282,13 @@ export const AssistantBody = memo(function AssistantBody({ parts, streaming, las
   if (!parts.length && streaming) return <div className="thinking" />;
   if (quiet) {
     const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
+    const reasons = parts.filter((p): p is Extract<Part, { type: "reasoning" }> => p.type === "reasoning");
     const searching = streaming && !texts.some((p) => p.text.trim());
     const keep = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && (p.name === "ask_user" || p.name === "remember"));
     return <>
       {sources.length > 0 && <SourceList items={sources} />}
       {searching && <div className="thinking" />}
+      {reasons.map((p, i) => <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && parts[parts.length - 1] === p} />)}
       {texts.map((p, i) => animate ? <LiveText key={i} text={p.text} streaming={streaming && i === texts.length - 1 && !keep.length} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />)}
       {keep.map((p) => <ToolCall key={p.id} p={p} live={!!last && !streaming} mid={mid} />)}
     </>;

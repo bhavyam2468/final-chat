@@ -30,6 +30,8 @@ export type AppApi = {
   decide: (messageId: string, partId: string, decision: "approve" | "deny", cmd: string, password?: string) => Promise<string | null>;
   refreshTree: () => void;
   mention: (path: string) => void;
+  /** put files into the composer as attachments (used by snip-to-input and drops) */
+  addFiles: (files: File[]) => void;
   quote: (text: string) => void;
   tree: TreeNode[];
   context: string[];
