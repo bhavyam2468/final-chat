@@ -395,6 +395,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
         const part: Part = { type: "tool", id: c.id, name: c.function.name, args };
         parts.push(part);
+        ctx.toolId = c.id; // long tools stream raw output against this id
         emit({ t: "tool", id: c.id, name: part.name, args });
         const name = c.function.name;
         if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
@@ -450,7 +451,9 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     for (const p of parts) if (p.type === "text" && urlsIn(p.text).length) { const u = unverifiedUrls(p.text, seen); if (u.length) p.unverified = u; else delete p.unverified; }
   }
   const content = parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
-  await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts });
+  // the live output buffer is a UI affordance; the saved part keeps only the final result
+  const saved = parts.map((p) => { if (p.type !== "tool" || p.out === undefined) return p; const { out: _out, ...rest } = p; return rest; });
+  await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts: saved });
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));
 
   // persist canvases as artifacts (same title = update in place)

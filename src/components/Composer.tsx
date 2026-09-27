@@ -13,6 +13,8 @@ type Props = {
   onSend: (p: SendPayload) => void; streaming?: boolean; onStop?: () => void;
   quote?: string | null; onClearQuote?: () => void; inline?: boolean; capture?: boolean;
   commands?: Command[]; initial?: SendPayload; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean;
+  /** localStorage key the draft is kept under, so an unfinished prompt survives a chat switch or reload. */
+  draftKey?: string;
 };
 
 export async function upload(files: File[]): Promise<Attachment[]> {
@@ -26,12 +28,20 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   const app = useApp();
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileIn = useRef<HTMLInputElement>(null);
-  const [text, setText] = useState(p.initial?.content || "");
+  const [text, setText] = useState(() => p.initial?.content ?? (p.draftKey && typeof localStorage !== "undefined" ? localStorage.getItem("draft:" + p.draftKey) ?? "" : ""));
   const [chips, setChips] = useState<Chip[]>(() => (p.initial?.attachments || []).map((a) => ({ ...a, key: a.path })));
   const [focused, setFocused] = useState(false);
   const [drag, setDrag] = useState(false);
   const [menuIdx, setMenuIdx] = useState(0);
   const [caret, setCaret] = useState(0);
+
+  // draft autosave (per chat) — an unfinished prompt is never lost by switching or reloading
+  useEffect(() => {
+    if (!p.draftKey) return;
+    const k = "draft:" + p.draftKey;
+    const t = setTimeout(() => { if (text) localStorage.setItem(k, text); else localStorage.removeItem(k); }, 250);
+    return () => clearTimeout(t);
+  }, [text, p.draftKey]);
 
   const autosize = useCallback(() => { const t = ta.current; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }, []);
   useLayoutEffect(autosize, [text, autosize]);
@@ -53,18 +63,29 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     addFiles,
   }), [addFiles]);
 
-  // type-anywhere capture
+  // type-anywhere capture: a bare keystroke focuses the input, and so does a paste
   useEffect(() => {
     if (!p.capture) return;
+    const busy = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable=true], iframe") || document.querySelector(".scrim");
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t.closest("input, textarea, select, [contenteditable=true], iframe")) return;
+      if (busy(e.target)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key.length === 1 && !document.querySelector(".scrim")) ta.current?.focus();
+      if (e.key.length === 1) ta.current?.focus();
+    };
+    // Ctrl+V outside any field should open the composer and land the text in it, not vanish
+    const onPaste = (e: ClipboardEvent) => {
+      if (busy(e.target)) return;
+      const files = [...(e.clipboardData?.files || [])];
+      e.preventDefault();
+      ta.current?.focus();
+      if (files.length) { addFiles(files); return; }
+      const t = e.clipboardData?.getData("text/plain") || "";
+      if (t) setText((v) => v + t);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [p.capture]);
+    window.addEventListener("paste", onPaste);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("paste", onPaste); };
+  }, [p.capture, addFiles]);
 
   useEffect(() => { if (p.autoFocus) ta.current?.focus(); }, [p.autoFocus]);
   useEffect(() => { if (p.quote) ta.current?.focus(); }, [p.quote]);
@@ -87,6 +108,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   const canSend = (text.trim() || chips.length) && ready && !p.streaming;
   const send = () => {
     if (!canSend) return;
+    if (p.draftKey) localStorage.removeItem("draft:" + p.draftKey);
     p.onSend({ content: text.trim(), attachments: chips.map(({ path, name, mime, size }) => ({ path, name, mime, size })), quote: p.quote || null });
     setText(""); setChips([]); p.onClearQuote?.();
   };

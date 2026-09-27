@@ -15,14 +15,21 @@ const toXml = (d: unknown): string => typeof d !== "object" || d === null ? Stri
 export default function App() {
   const [convs, setConvs] = useState<ConvItem[]>([]);
   const [conv, setConv] = useState<Conv | null>(null);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
+  // Messages live per conversation: a stream keeps writing to its own conversation even while
+  // another one is on screen, so switching chats never empties or corrupts either side.
+  const [byConv, setByConv] = useState<Record<string, Msg[]>>({});
+  const [viewKey, setViewKey] = useState<string | null>(null); // provisional key while a brand-new chat streams
+  const curKey = conv?.id ?? viewKey;
+  const msgs = useMemo(() => (curKey ? byConv[curKey] || [] : []), [byConv, curKey]);
   const [sel, setSel] = useState<Record<string, string>>({});
-  const [streamId, setStreamId] = useState<string | null>(null);
+  const [stream, setStream] = useState<{ id: string; key: string } | null>(null);
+  const streamRef = useRef<{ id: string; key: string } | null>(null); streamRef.current = stream;
   const [panels, setPanels] = useState({ chats: false, ws: false, art: false, src: false });
   const [thread, setThread] = useState<string | null>(null);
   const [wins, setWins] = useState<Win[]>([]);
   const [dockW, setDockWS] = useState(560);
   const [ctxRev, setCtxRev] = useState(0);
+  const [dockH, setDockH] = useState(0);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
   useEffect(() => { const v = Number(localStorage.getItem("dockW")); setDockWS(v >= 320 ? Math.min(v, innerWidth - 380) : Math.round(Math.min(720, Math.max(380, innerWidth * 0.42)))); }, []);
   const setDockW = useCallback((w: number) => { setDockWS(w); localStorage.setItem("dockW", String(w)); }, []);
@@ -34,9 +41,22 @@ export default function App() {
   const [qpop, setQpop] = useState<{ x: number; y: number; text: string } | null>(null);
   const active = useRef<"main" | "thread">("main");
   const mainRef = useRef<ComposerHandle>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const abort = useRef<AbortController | null>(null);
+  const aborts = useRef(new Map<string, AbortController>());
+  const convCache = useRef(new Map<string, Conv>());
   const convRef = useRef<Conv | null>(null); convRef.current = conv;
+
+  const putMsgs = useCallback((key: string, fn: (ms: Msg[]) => Msg[]) => {
+    setByConv((m) => { const cur = m[key] || []; const next = fn(cur); if (next === cur) return m; return { ...m, [key]: next }; });
+  }, []);
+
+  // the composer grows with its text; keep the thread clear of it
+  useEffect(() => {
+    const el = dockRef.current; if (!el) return;
+    const ro = new ResizeObserver(() => setDockH(el.offsetHeight)); ro.observe(el); setDockH(el.offsetHeight);
+    return () => ro.disconnect();
+  }, []);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
   useEffect(() => { const t = localStorage.getItem("theme") || "dark"; setThemeS(t); }, []);
@@ -96,9 +116,12 @@ export default function App() {
   const nav = useCallback((m: Msg, d: number) => { const { i, ks } = sibOf(m); const t = ks[i + d]; if (t) setSel((s) => ({ ...s, [keyOf(m.parentId, m.threadOf)]: t.id })); }, [sibOf]);
 
   const loadConv = useCallback(async (id: string, leaf?: string, focusMsg?: string) => {
+    // a conversation with a live stream is never refetched: its messages are already in memory
+    if (streamRef.current?.key === id) { const c = convCache.current.get(id); if (c) { setConv(c); setViewKey(null); } return; }
     const j = await fetch(`/api/conversations/${id}`).then((r) => r.json());
     if (j.error) return;
     const ms: Msg[] = j.messages;
+    convCache.current.set(id, j.conversation);
     const by = new Map(ms.map((m) => [m.id, m]));
     const s: Record<string, string> = {};
     const target = leaf || focusMsg;
@@ -106,29 +129,33 @@ export default function App() {
     if (t?.threadOf) setThread(t.threadOf); else if (target) setThread(null);
     while (t) { s[keyOf(t.parentId, t.threadOf)] = t.id; t = t.parentId ? by.get(t.parentId) : undefined; }
     if (t === undefined && target) { const tm = by.get(target); if (tm?.threadOf) { let a = by.get(tm.threadOf); while (a) { s[keyOf(a.parentId, a.threadOf)] = a.id; a = a.parentId ? by.get(a.parentId) : undefined; } } }
-    setConv(j.conversation); setMsgs(ms); setSel(s); setEditing(null);
+    setConv(j.conversation); setByConv((m) => ({ ...m, [id]: ms })); setViewKey(null); setSel(s); setEditing(null);
     if (!target) setThread(null);
     if (focusMsg) setTimeout(() => document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" }), 80);
   }, []);
 
-  const newChat = useCallback(() => { abort.current?.abort(); setConv(null); setMsgs([]); setSel({}); setThread(null); setStreamId(null); setTimeout(() => mainRef.current?.focus(), 0); }, []);
+  const newChat = useCallback(() => { setConv(null); setViewKey(null); setSel({}); setThread(null); setTimeout(() => mainRef.current?.focus(), 0); }, []);
 
-  // ---- streaming
+  // ---- streaming (one stream per conversation; several chats can answer at once)
   const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
-    if (streamId) return;
+    const live = streamRef.current;
+    if (live && live.key === (convRef.current?.id ?? "")) return;
     const tu = rid(); let ta = rid();
     const now = new Date().toISOString();
     const cid = convRef.current?.id || "";
+    const key = cid || `new:${rid()}`;
+    if (!cid) setViewKey(key);
     const aParent = payload ? tu : parentId;
-    setMsgs((ms) => [...ms,
+    putMsgs(key, (ms) => [...ms,
       ...(payload ? [{ id: tu, conversationId: cid, parentId, threadOf, role: "user" as const, content: payload.content, parts: [], attachments: payload.attachments, quote: payload.quote, createdAt: now }] : []),
       { id: ta, conversationId: cid, parentId: aParent, threadOf, role: "assistant" as const, content: "", parts: [], attachments: [], quote: null, createdAt: now, pending: true }]);
     setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
-    setStreamId(ta);
+    setStream({ id: ta, key });
     requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
-    const ctrl = new AbortController(); abort.current = ctrl;
-    const patchA = (fn: (parts: Part[]) => Part[]) => setMsgs((ms) => ms.map((m) => (m.id === ta ? { ...m, parts: fn(m.parts) } : m)));
+    const ctrl = new AbortController(); aborts.current.set(key, ctrl);
+    const patchA = (fn: (parts: Part[]) => Part[]) => putMsgs(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, parts: fn(m.parts) } : m)));
     let convId = cid;
+    let storeKey = key;
     try {
       const res = await fetch("/api/chat", { method: "POST", signal: ctrl.signal, body: JSON.stringify({ conversationId: cid || undefined, parentId: payload ? parentId : parentId, threadOf, user: payload || undefined }) });
       const reader = res.body!.getReader(); const dec = new TextDecoder(); let buf = "";
@@ -141,12 +168,16 @@ export default function App() {
           const e = JSON.parse(line);
           if (e.t === "meta") {
             convId = e.conversationId;
-            if (!convRef.current) { setConv({ id: e.conversationId, title: e.title, context: [], summary: null, summaryUpTo: null }); refreshConvs(); }
+            if (!convRef.current) { const c: Conv = { id: e.conversationId, title: e.title, context: [], summary: null, summaryUpTo: null }; convCache.current.set(c.id, c); setConv(c); setViewKey(null); refreshConvs(); }
             const map: Record<string, string> = { [ta]: e.assistantId, ...(e.userId ? { [tu]: e.userId } : {}) };
             const r = (x: string | null) => (x && map[x]) || x;
-            setMsgs((ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: e.conversationId })));
+            if (storeKey !== e.conversationId) {
+              const real = e.conversationId;
+              setByConv((m) => { const n = { ...m }; n[real] = (n[storeKey] || []).map((x) => ({ ...x, id: r(x.id)!, parentId: r(x.parentId), conversationId: real })); delete n[storeKey]; return n; });
+              storeKey = real;
+            } else putMsgs(storeKey, (ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: e.conversationId })));
             setSel((s) => Object.fromEntries(Object.entries(s).map(([k, v]) => [r(k)!, r(v)!])));
-            ta = e.assistantId; setStreamId(ta);
+            ta = e.assistantId; setStream({ id: ta, key: storeKey });
           } else if (e.t === "reasoning") patchA((p) => { const l = p[p.length - 1]; return l?.type === "reasoning" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "reasoning", text: e.d }]; });
           else if (e.t === "retext") patchA((p) => {
             // the server rewrote the current text part (reasoning retracted, loop cut, printed tool call removed)
@@ -157,6 +188,8 @@ export default function App() {
           else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
           else if (e.t === "toolStart") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p : [...p, { type: "tool", id: e.id, name: e.name, args: {} }]));
           else if (e.t === "tool") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, name: e.name, args: e.args } : x)) : [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]));
+          else if (e.t === "toolOut") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, out: (x.out || "") + e.d } : x)));
+          else if (e.t === "toolMeta") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, meta: { ...(x.meta as object), ...(e.meta as object) } } : x)));
           else if (e.t === "canvas") openCanvasRef.current(e.spec, { dock: e.dock });
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
           else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta } : x))); refreshTree(); }
@@ -165,13 +198,22 @@ export default function App() {
           else if (e.t === "error" || e.t === "notice") patchA((p) => [...p, { type: "text", text: `\n\n> ${e.text}\n` }]);
         }
       }
-    } catch { /* aborted */ }
-    setStreamId(null); abort.current = null;
+    } catch { /* aborted or network error: keep whatever streamed */ }
+    const stopped = ctrl.signal.aborted;
+    aborts.current.delete(storeKey);
+    setStream((s) => (s && s.key === storeKey ? null : s));
     refreshTree(); refreshConvs(); setCtxRev((r) => r + 1);
-    if (convId) setTimeout(() => { fetch(`/api/conversations/${convId}`).then((r) => r.json()).then((j) => { if (j.messages && convRef.current?.id === convId) { setMsgs(j.messages); setConv(j.conversation); } }); }, 300);
-  }, [streamId, refreshConvs, refreshTree]);
+    if (!stopped) {
+      // the server saved the message (and ran end-of-turn cleanups) before closing the stream
+      setTimeout(() => { fetch(`/api/conversations/${convId}`).then((r) => r.json()).then((j) => { if (j.messages && convRef.current?.id === convId) { setByConv((m) => ({ ...m, [convId]: j.messages })); setConv(j.conversation); } }); }, 300);
+    }
+  }, [putMsgs, refreshConvs, refreshTree]);
 
-  const stop = useCallback(() => abort.current?.abort(), []);
+  const stop = useCallback(() => {
+    const s = streamRef.current; if (!s) return;
+    aborts.current.get(s.key)?.abort();
+  }, []);
+
   const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; send(p, last?.id ?? null, null); }, [mainPath, send]);
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
@@ -214,12 +256,18 @@ export default function App() {
       const cid = convRef.current?.id; if (!cid) return;
       const r = await fetch(`/api/conversations/${cid}/approve`, { method: "POST", body: JSON.stringify({ messageId, partId, decision }) });
       if (!r.ok) return;
-      setMsgs((ms) => ms.map((m) => (m.id !== messageId ? m : { ...m, parts: m.parts.map((p) => (p.type === "tool" && p.id === partId ? { ...p, meta: { ...(p.meta as object), approval: { ...((p.meta as { approval?: object }).approval || {}), decision } } } : p)) })));
+      putMsgs(cid, (ms) => ms.map((m) => (m.id !== messageId ? m : { ...m, parts: m.parts.map((p) => (p.type === "tool" && p.id === partId ? { ...p, meta: { ...(p.meta as object), approval: { ...((p.meta as { approval?: object }).approval || {}), decision } } } : p)) })));
       sendMain({ content: decision === "approve" ? `Approved: \`${cmd.length > 200 ? cmd.slice(0, 200) + "…" : cmd}\`. Run it.` : "Denied. Do not run it. Suggest a safer way if there is one.", attachments: [], quote: null });
+    },
+    /** Answer a sudo password prompt: the typed password goes straight to the waiting tool call. */
+    sudoPassword: async (partId: string, password: string, remember: boolean) => {
+      const cid = convRef.current?.id; if (!cid) return;
+      await fetch(`/api/conversations/${cid}/sudo`, { method: "POST", body: JSON.stringify({ partId, password, remember }) });
+      putMsgs(cid, (ms) => ms.map((m) => ({ ...m, parts: m.parts.map((p) => (p.type === "tool" && p.id === partId ? { ...p, meta: { ...(p.meta as object), sudo: { answered: true } } } : p)) })));
     },
     mention: (p: string) => mainRef.current?.insert("@" + p + " "),
     quote: (t: string) => setQuotes((q) => ({ ...q, [active.current]: t })),
-  }), [openFile, openCanvas, refreshTree, tree, conv?.context, toggleContext, sendMain]);
+  }), [openFile, openCanvas, refreshTree, tree, conv?.context, toggleContext, sendMain, putMsgs]);
 
   // ---- quote on selection
   useEffect(() => {
@@ -238,9 +286,9 @@ export default function App() {
 
   // ---- auto-scroll while streaming
   useEffect(() => {
-    const el = scroller.current; if (!el || !streamId) return;
+    const el = scroller.current; if (!el || !stream) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 160) el.scrollTop = el.scrollHeight;
-  }, [msgs, streamId]);
+  }, [msgs, stream]);
 
   // ---- global shortcuts
   useEffect(() => {
@@ -284,9 +332,9 @@ export default function App() {
           onCancel={() => setEditing(null)} onSend={(p) => { setEditing(null); send(p, m.parentId, m.threadOf); }} />
       </div></div>
     );
-    return <Message key={m.id} m={m} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
-      onEdit={streamId ? undefined : () => setEditing(m.id)}
-      onRegenerate={streamId ? undefined : () => send(null, m.parentId, m.threadOf)}
+    return <Message key={m.id} m={m} streaming={m.id === stream?.id} sib={sib} onNav={(d) => nav(m, d)}
+      onEdit={stream ? undefined : () => setEditing(m.id)}
+      onRegenerate={stream ? undefined : () => send(null, m.parentId, m.threadOf)}
       onThread={isThread ? undefined : () => setThread(m.id)}
       threadCount={isThread ? 0 : msgs.filter((x) => x.threadOf === m.id).length} last={last} />;
   };
@@ -297,12 +345,13 @@ export default function App() {
   const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
   const chromeIdle = idle && !hasOpenPanel;
   const docked = wins.some((w) => w.dock);
+  const streaming = !!stream && stream.key === curKey;
   const leaf = (thread ? threadPath : mainPath).filter((m) => !m.id.startsWith("tmp")).slice(-1)[0];
-  const ctxRef: CtxRef | null = useMemo(() => (conv ? { convId: conv.id, leafId: leaf?.id || null, thread, rev: ctxRev + (streamId ? 0 : 1000), reload: () => { const c = convRef.current; if (c) loadConv(c.id, leaf?.id); } } : null), [conv, leaf?.id, thread, ctxRev, streamId, loadConv]);
+  const ctxRef: CtxRef | null = useMemo(() => (conv ? { convId: conv.id, leafId: leaf?.id || null, thread, rev: ctxRev + (streaming ? 0 : 1000), reload: () => { const c = convRef.current; if (c) loadConv(c.id, leaf?.id); } } : null), [conv, leaf?.id, thread, ctxRev, streaming, loadConv]);
 
   return (
     <AppCtx.Provider value={api}>
-      <div className={"shell" + (docked ? " has-dock" : "")} style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px" }}>
+      <div className={"shell" + (docked ? " has-dock" : "")} style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--dockh" as string]: dockH + "px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
           <button className="ib" aria-label="New chat" onClick={newChat}><SquarePen /></button>
@@ -318,8 +367,8 @@ export default function App() {
           <main className="column">{mainPath.map((m, i) => renderTurn(m, false, i === mainPath.length - 1))}</main>
         </div>
 
-        <div className="dock">
-          <Composer ref={mainRef} capture onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
+        <div className="dock" ref={dockRef}>
+          <Composer key={curKey ?? "new"} ref={mainRef} capture draftKey={"main:" + (curKey ?? "new")} onSend={sendMain} streaming={streaming} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
         </div>
 
@@ -332,7 +381,7 @@ export default function App() {
             <div className="panel-head"><span>Thread</span><span className="sp" /><button className="ib sm" aria-label="Close thread" onClick={() => setThread(null)}><X /></button></div>
             <div className="anchor">{anchor.content.replace(/<[^>]+>/g, "").slice(0, 300)}</div>
             <div className="panel-body">{threadPath.map((m, i) => renderTurn(m, true, i === threadPath.length - 1))}</div>
-            <Composer inline onSend={sendThread} streaming={!!streamId && threadPath.some((m) => m.id === streamId)} onStop={stop}
+            <Composer inline onSend={sendThread} streaming={!!stream && threadPath.some((m) => m.id === stream.id)} onStop={stop}
               quote={quotes.thread} onClearQuote={() => setQuotes((q) => ({ ...q, thread: null }))} onFocus={() => (active.current = "thread")} autoFocus />
           </div>}
           {panels.ws && <WorkspacePanel onClose={() => tog("ws")} ctx={ctxRef} />}

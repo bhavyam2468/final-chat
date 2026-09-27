@@ -43,25 +43,25 @@ input, textarea, select { font: inherit; color: inherit; }
   width: 100%;
   max-width: 820px;
   margin: 0 auto;
-  padding: 72px 24px 200px;
+  padding: 72px 24px calc(var(--dockh, 132px) + 48px);
   transition: max-width .2s ease;
 }
 @media (min-width: 1024px) {
   .column {
     max-width: 960px;
-    padding: 72px 32px 200px;
+    padding: 72px 32px calc(var(--dockh, 132px) + 48px);
   }
 }
 @media (min-width: 1400px) {
   .column {
     max-width: 1100px;
-    padding: 72px 40px 200px;
+    padding: 72px 40px calc(var(--dockh, 132px) + 48px);
   }
 }
 @media (min-width: 1800px) {
   .column {
     max-width: 1240px;
-    padding: 72px 48px 200px;
+    padding: 72px 48px calc(var(--dockh, 132px) + 48px);
   }
 }
 .chrome {
@@ -123,7 +123,12 @@ input, textarea, select { font: inherit; color: inherit; }
 .tool-row { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); padding: 3px 8px 3px 4px; margin-left: -4px; border-radius: var(--r); max-width: 100%; }
 .tool-row:hover { background: var(--surface); color: var(--fg); }
 .tool-row svg { width: 14px; height: 14px; flex: none; }
-.tool-row .tgt { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12.5px; }
+.tool-row .tgt { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12.5px; min-width: 0; flex: 0 1 auto; }
+.tool-row > span:not(.tgt) { white-space: nowrap; flex: none; }
+.tool-body .tool-open { display: flex; padding: 6px 10px 0; }
+.tool-body .tool-open svg { width: 13px; height: 13px; }
+.live-out { position: relative; }
+.live-out .caret { display: inline-block; width: 6px; height: 12px; margin-left: 2px; background: var(--fg); opacity: .6; vertical-align: -1px; animation: pulse 1s infinite; }
 .tool-row .spin { width: 10px; height: 10px; border: 1.5px solid var(--line); border-top-color: var(--fg); border-radius: 50%; animation: spin .7s linear infinite; }
 .tool-row .err { color: var(--danger); }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -205,6 +210,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .thread .panel-body { padding: 4px 14px; font-size: 14.5px; }
 .thread .turn { margin-bottom: 20px; }
 .thread .composer { margin: 8px; width: auto; }
+.thread .composer textarea, .composer.inline textarea { max-height: min(26vh, 200px); }
 
 /* ============ Canvas windows ============ */
 .win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; animation: winIn .28s var(--ease); min-width: 240px; min-height: 120px; }
@@ -581,7 +587,11 @@ button.mini:hover:not(:disabled) { border-color: var(--muted); } button.mini:dis
 .approve { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; animation: fadeUp .2s var(--ease); }
 .approve .ap-why { font-size: 13px; color: var(--muted); }
 .approve pre { margin: 0; font: 12.5px/1.55 var(--font-mono); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
-.approve .ap-act { display: flex; gap: 6px; justify-content: flex-end; }
+.approve .ap-act { display: flex; gap: 8px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+.approve .ap-pw { flex: 1; min-width: 160px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r); background: transparent; color: var(--fg); outline: none; font-size: 13.5px; }
+.approve .ap-pw:focus { border-color: color-mix(in srgb, var(--fg) 40%, transparent); }
+.approve .ap-rem { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.approve .ap-rem input { margin: 0; accent-color: var(--fg); }
 .approve small { color: var(--muted); font-size: 12px; }
 
 /* links the model never opened in this chat */

@@ -15,7 +15,7 @@ export const conversations = pgTable("conversations", {
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
   | { type: "reasoning"; text: string; ms?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; out?: string };
 
 export type Attachment = { path: string; name: string; mime: string; size: number };
 

@@ -6,7 +6,7 @@ import { WS, resolvePath, rel, tree, Node, mimeOf, isImage, readText } from "../
 import type { Settings } from "../settings";
 import { searchCatalog } from "../blocks/catalog";
 import { callMcp } from "../mcp";
-import { runShell, runPython as execPython, pipInstall, hostDenied } from "../exec";
+import { runShell, runPython as execPython, pipInstall, hostDenied, usesSudo, sudoNeedsPassword, sudoPassword, sudoWait } from "../exec";
 import { youtubeId } from "../shared";
 import { firecrawlScrape, firecrawlSearch, firecrawlExtract } from "../web";
 import { applyEdits, insertLines, snippet, hasPlaceholder, Edit } from "./edit";
@@ -54,7 +54,7 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("fs_insert", "Insert lines after line N (0 = top, -1 = end) without matching text", { path: s(), line: n(), text: s() }, ["path", "line", "text"]),
     T("fs_move", "Move/rename. Into a folder: end `to` with /. Refuses to replace an existing file unless overwrite=true", { from: s(), to: s(), overwrite: b() }, ["from", "to"]),
     T("fs_delete", "Delete file or dir (goes to trash; recoverable)", { path: s() }, ["path"]),
-    T("run_python", "Run python3 in your sandbox, cwd=workspace", { code: s() }, ["code"]),
+    T("run_python", "Run python3 in your sandbox, cwd=workspace", { code: s(), timeout: n("seconds, default 120, max 600") }, ["code"]),
     T("pip_install", "Install python packages for run_python", { packages: arr({ type: "string" }) }, ["packages"]),
     T("shell", "Run bash in YOUR sandbox (cwd=workspace). Not the user's machine", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
     ...(host ? [T("host_shell", "Run bash on the USER'S machine as the user (their tools, logins, files). State what you run", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
@@ -82,7 +82,11 @@ export type ToolCtx = {
   settings: Settings; conversationId: string; pinned: string[]; emit: (e: Record<string, unknown>) => void;
   setPinned: (p: string[]) => Promise<void>; compact: (scope?: string, keepLast?: number) => Promise<string>;
   state: ConvState; setState: (s: ConvState) => Promise<void>;
+  /** id of the tool call currently running — long tools stream their raw output with it. */
+  toolId?: string;
 };
+/** Live output for the running tool call: raw text the user can watch while the command works. */
+const liveOut = (ctx: ToolCtx) => (d: string) => { if (ctx.toolId) ctx.emit({ t: "toolOut", id: ctx.toolId, d }); };
 export type ToolOut = { result: string; ok: boolean; meta?: unknown; images?: string[]; stop?: boolean };
 
 export const approvalHash = (cmd: string, host: boolean) => createHash("sha1").update(`${host ? "host" : "sandbox"}\0${cmd.trim()}`).digest("hex").slice(0, 16);
@@ -279,7 +283,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         await fs.rename(from, to).catch(async (e) => { if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e; await fs.cp(from, to, { recursive: true }); await fs.rm(from, { recursive: true, force: true }); });
         return { ok: true, result: `Moved ${rel(from)} → ${rel(to)}${clash ? " (replaced file moved to trash)" : ""}` };
       }
-      case "run_python": { const r = await execPython(st, a.code); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
+      case "run_python": { const r = await execPython(st, a.code, Math.min(600, Math.max(5, Number(a.timeout) || 120)) * 1000, liveOut(ctx)); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
       case "pip_install": {
         const pk = ([] as string[]).concat(a.packages).map(String);
         const chk = await checkInstalls(pk, "pypi");
@@ -297,9 +301,21 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const chk = await checkInstalls(cmd);
         if (chk?.block) return { ok: false, result: chk.block };
         if (chk?.approve) { const gate = await approvalGate(ctx, cmd, chk.approve, host); if (gate) return gate; }
+        // sudo: the password is the user's. If we do not have one, ask in the tool row and wait.
+        let pw = sudoPassword(st, ctx.conversationId);
+        if (usesSudo(cmd) && !pw) {
+          const why = sudoNeedsPassword(st, cmd, !host, ctx.conversationId);
+          if (why === "sandbox") return { ok: false, result: "sudo is unavailable in the sandbox shell. Use host_shell (Settings → Access → Host terminal) for anything needing sudo." };
+          ctx.emit({ t: "toolMeta", id: ctx.toolId || "", meta: { sudo: { cmd, reason: danger?.reason || "runs as root on your machine" } } });
+          const typed = await sudoWait(ctx.toolId || "");
+          if (!typed) return { ok: false, result: "Not run: no password was given. Ask the user to run it themselves, or to store SUDO_PASSWORD in Settings → Secrets.", meta: { sudo: { cancelled: true } } };
+          pw = typed;
+        }
         const cwd = a.cwd ? resolvePath(String(a.cwd), host ? st.access : "sandbox") : undefined;
-        const r = await runShell(st, String(a.command), Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd);
-        return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}`) };
+        const r = await runShell(st, cmd, Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd, liveOut(ctx), pw);
+        // a wrong password shows up as "Sorry, try again" — say so plainly instead of letting the model retry blindly
+        const wrong = /Sorry, try again|incorrect password|not in the sudoers file|sudo: a password is required/.test(r.out);
+        return { ok: r.code === 0 && !wrong, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}`) + (wrong ? "\n(The password was rejected — ask the user to check it.)" : ""), meta: { sudo: pw ? { used: true } : undefined } };
       }
       case "canvas_open": {
         const t = String(a.target || "").trim();

@@ -90,6 +90,25 @@ function ApproveBar({ ap, live, mid, pid }: { ap: Approval; live: boolean; mid?:
   </div>;
 }
 
+/** A host command needs the user's sudo password: type it here and the waiting call runs immediately. */
+function SudoBar({ pid }: { pid: string }) {
+  const app = useApp();
+  const [pw, setPw] = useState("");
+  const [remember, setRemember] = useState(false);
+  const [sent, setSent] = useState(false);
+  const go = () => { if (sent || !pw) return; setSent(true); app.sudoPassword(pid, pw, remember).catch(() => setSent(false)); };
+  if (sent) return <div className="approve"><div className="ap-why">Password sent — running…</div></div>;
+  return <div className="approve">
+    <div className="ap-why">This command needs your password. It is used for this call only.</div>
+    <form className="ap-act" onSubmit={(e) => { e.preventDefault(); go(); }}>
+      {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+      <input className="ap-pw" type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} placeholder="sudo password" aria-label="sudo password" />
+      <label className="ap-rem"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />keep for this chat</label>
+      <button className="txt-btn solid" type="submit" disabled={!pw}>Run</button>
+    </form>
+  </div>;
+}
+
 const fmtMs = (ms: number) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
 /** Model reasoning (<think> blocks or reasoning_content): collapsed, never copied, never re-sent. */
 function Reasoning({ text, ms, live }: { text: string; ms?: number; live: boolean }) {
@@ -108,16 +127,21 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   const Icon = m.icon;
   const argv = m.arg ? p.args[m.arg] : undefined;
   let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
-  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean } | undefined;
-  const ap = (p.meta as { approval?: Approval } | undefined)?.approval;
+  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean; sudo?: { answered?: boolean }; approval?: Approval } | undefined;
+  const ap = meta?.approval;
   if (ap) target = ""; // the approval bar shows the full command
   if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
   if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
   const openable = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name);
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
+  // a running tool that streams output stays open: never let a long run look frozen
+  const streamingOut = pending && !!p.out;
+  const expanded = open || streamingOut;
+  const raw = p.out || "";
   let body: React.ReactNode = null;
-  if (open) {
-    if (meta?.sources && p.name === "web_search") body = <SourceList items={meta.sources} />;
+  if (expanded) {
+    if (pending) body = <pre className="live-out">{raw}<i className="caret" /></pre>;
+    else if (meta?.sources && p.name === "web_search") body = <SourceList items={meta.sources} />;
     else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
     else if (p.name === "run_python") body = <><pre>{String(p.args.code || "")}</pre><pre>{p.result}</pre></>;
     else body = <>{Object.keys(p.args).length > 0 && !["shell", "host_shell", "todo", "quality_check"].includes(p.name) && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
@@ -128,12 +152,15 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
         <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>{target && <span className="tgt">{target}</span>}
         {pending ? <span className="spin" /> : p.ok === false && !ap ? <X className="err" /> : null}
       </button>
-      {openable && !pending && <button className="ib sm" aria-label="Open file" onClick={() => app.openFile(String(p.args.path))}><AppWindow /></button>}
       {p.name === "todo" && lastTodo && meta?.todo && <TodoList items={meta.todo} />}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {meta?.image && !pending && <img className="tool-shot" src={fileUrl(meta.image)} alt="" onClick={() => app.openFile(meta.image!)} />}
-      {open && !pending && <div className="tool-body">{body}</div>}
+      {expanded && <div className="tool-body">
+        {!pending && openable && <div className="tool-open"><button className="txt-btn" onClick={() => app.openFile(String(p.args.path))}><AppWindow /> Open {String(p.args.path).split("/").pop()}</button></div>}
+        {body}
+      </div>}
       {ap && <ApproveBar ap={ap} live={!!live} mid={mid} pid={p.id} />}
+      {meta?.sudo && pending && <SudoBar pid={p.id} />}
     </div>
   );
 });

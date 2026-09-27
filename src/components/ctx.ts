@@ -4,7 +4,7 @@ import { createContext, useContext } from "react";
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
   | { type: "reasoning"; text: string; ms?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; out?: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
 export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
@@ -27,6 +27,8 @@ export type AppApi = {
   sendText: (text: string) => void;
   /** Approve / deny a command the harness held back (tool meta.approval). */
   decide: (messageId: string, partId: string, decision: "approve" | "deny", cmd: string) => Promise<void>;
+  /** Hand a sudo password to the tool call that is waiting for it (never stored). */
+  sudoPassword: (partId: string, password: string, remember: boolean) => Promise<void>;
   refreshTree: () => void;
   mention: (path: string) => void;
   quote: (text: string) => void;
