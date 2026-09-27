@@ -58,7 +58,7 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
   useEffect(() => {
     const onMsg = async (e: MessageEvent) => {
       const m = e.data;
-      if (!m || m.src !== "blocks" || m.frame !== id) return;
+      if (e.source !== ref.current?.contentWindow || !m || m.src !== "blocks" || m.frame !== id) return;
       const reply = (value: unknown) => post({ type: "reply", id: m.id, value });
       switch (m.type) {
         case "ready":

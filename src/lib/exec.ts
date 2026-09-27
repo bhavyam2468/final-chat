@@ -57,18 +57,32 @@ export function baseEnv(sandboxed: boolean): NodeJS.ProcessEnv {
 
 /** live output + cancellation for a run (the chat's Stop kills the process instead of waiting for its timeout) */
 export type IO = { onData?: (chunk: string) => void; signal?: AbortSignal };
-function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; input?: string } & IO): Promise<RunOut> {
+export function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; input?: string } & IO): Promise<RunOut> {
+  if (o.signal?.aborted) return Promise.resolve({ out: "(stopped before execution)", code: 130 });
   return new Promise((res) => {
-    const p = spawn(cmd, args, { cwd: o.cwd, env: o.env });
-    let out = "";
-    const cap = (d: Buffer) => { const s = d.toString(); if (out.length < 400000) out += s; o.onData?.(s); };
-    const t = setTimeout(() => { p.kill("SIGKILL"); out += `\n(timeout after ${Math.round(o.timeout / 1000)}s)`; }, o.timeout);
+    const p = spawn(cmd, args, { cwd: o.cwd, env: o.env, detached: process.platform !== "win32" });
+    let out = "", settled = false, hardKill: ReturnType<typeof setTimeout> | undefined;
+    const cap = (d: Buffer) => { const s = d.toString(); out = (out + s).slice(-400000); o.onData?.(s); };
+    const killGroup = (signal: NodeJS.Signals) => {
+      try { if (process.platform !== "win32" && p.pid) process.kill(-p.pid, signal); else p.kill(signal); }
+      catch { /* Process group may have already exited. */ }
+    };
+    const kill = () => {
+      out += "\n(stopped by the user)"; killGroup("SIGTERM");
+      hardKill = setTimeout(() => killGroup("SIGKILL"), 1500);
+    };
+    const t = setTimeout(() => { out += `\n(timeout after ${Math.round(o.timeout / 1000)}s)`; killGroup("SIGKILL"); }, o.timeout);
+    const finish = (code: number) => {
+      if (settled) return; settled = true; clearTimeout(t); if (hardKill) clearTimeout(hardKill);
+      o.signal?.removeEventListener("abort", kill); res({ out, code });
+    };
     p.stdout.on("data", cap); p.stderr.on("data", cap);
-    const kill = () => { out += "\n(stopped by the user)"; try { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 1500); } catch {} };
-    if (o.signal?.aborted) kill(); else o.signal?.addEventListener("abort", kill, { once: true });
-    p.on("close", (code) => { clearTimeout(t); o.signal?.removeEventListener("abort", kill); res({ out, code: code ?? 1 }); });
-    p.on("error", (e) => { clearTimeout(t); res({ out: String(e), code: 1 }); });
-    if (o.input !== undefined) { p.stdin.write(o.input); p.stdin.end(); } else p.stdin.end();
+    o.signal?.addEventListener("abort", kill, { once: true });
+    p.on("close", (code) => finish(o.signal?.aborted ? 130 : code ?? 1));
+    p.on("error", (e) => { out += String(e); finish(1); });
+    // A command can exit before reading its input; an EPIPE must not crash the app.
+    p.stdin.on("error", (e: NodeJS.ErrnoException) => { if (e.code !== "EPIPE") cap(Buffer.from(String(e))); });
+    p.stdin.end(o.input);
   });
 }
 
@@ -159,7 +173,8 @@ export async function runPython(_st: Settings | null, code: string, timeoutMs = 
 export async function pipInstall(pkgs: string[], io: IO = {}): Promise<RunOut> {
   const safe = pkgs.filter((p) => /^[\w.\-\[\],<>=!~]+$/.test(p));
   if (!safe.length) return { out: "no valid package names", code: 1 };
-  return spawnRun(PY(), ["-m", "pip", "install", ...(VENV() || process.env.PYTHON_BIN ? [] : ["--break-system-packages"]), ...safe], { cwd: WS, env: baseEnv(false), timeout: 300000, ...io });
+  if (!VENV() && !process.env.PYTHON_BIN) return { out: "No app Python environment is configured. Run setup.sh or create the app's .venv and install there; pip_install will not modify system Python. Both pip_install and run_python use PYTHON_BIN or .venv/bin/python.", code: 1 };
+  return spawnRun(PY(), ["-m", "pip", "install", ...safe], { cwd: WS, env: baseEnv(false), timeout: 300000, ...io });
 }
 
 /** Plain helper for trusted internal commands (converters etc.). */

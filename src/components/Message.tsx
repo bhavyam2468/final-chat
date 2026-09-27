@@ -131,9 +131,8 @@ function LiveOut({ text }: { text: string }) {
 }
 function Elapsed() {
   const [t0] = useState(() => Date.now());
-  const [, tick] = useState(0);
-  useEffect(() => { const i = setInterval(() => tick((x) => x + 1), 1000); return () => clearInterval(i); }, []);
-  const s = Math.floor((Date.now() - t0) / 1000);
+  const [s, setSeconds] = useState(0);
+  useEffect(() => { const i = setInterval(() => setSeconds(Math.floor((Date.now() - t0) / 1000)), 1000); return () => clearInterval(i); }, [t0]);
   return s >= 3 ? <span className="elapsed">{fmtMs(s * 1000)}</span> : null;
 }
 
@@ -270,11 +269,11 @@ export function Attachments({ items }: { items: Msg["attachments"] }) {
 }
 
 type Props = {
-  m: Msg; streaming: boolean; sib: { i: number; n: number }; onNav: (d: number) => void;
+  m: Msg; streaming: boolean; searchMode?: boolean; sib: { i: number; n: number }; onNav: (d: number) => void;
   onEdit?: () => void; onRegenerate?: () => void; onThread?: () => void; threadCount?: number; last?: boolean;
 };
 
-export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount, last }: Props) {
+export const Message = memo(function Message({ m, searchMode, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount, last }: Props) {
   if (m.role === "user") return (
     <div className="turn user">
       {m.quote && <div className="quoteline">{m.quote}</div>}
@@ -290,7 +289,9 @@ export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit,
   const text = m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   return (
     <div className="turn ai" data-mid={m.id}>
-      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} /></div>
+      <div className="ai-content">
+        {searchMode && <SourceList items={m.parts.flatMap((p) => p.type === "tool" ? ((p.meta as { sources?: Src[] })?.sources || []) : [])} />}
+        <AssistantBody parts={searchMode && !streaming ? m.parts.filter((p) => p.type === "text") : m.parts} streaming={streaming} last={last} mid={m.id} /></div>
       {!streaming && <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={text} />

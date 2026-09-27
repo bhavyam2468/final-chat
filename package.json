@@ -6,7 +6,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx dev/tests/edit.test.ts && tsx dev/tests/guards.test.ts && tsx --test dev/tests/lifecycle.test.ts",
+    "test:blocks": "node dev/blocks-e2e.mjs",
+    "test:chat": "node dev/chat-e2e.mjs",
+    "test:search": "node dev/search-e2e.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -35,6 +39,7 @@
     "unpdf": "^1.8.1"
   },
   "devDependencies": {
+    "@sparticuz/chromium": "^153.0.0",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
@@ -45,6 +50,7 @@
     "eslint-config-next": "16.2.6",
     "postcss": "8.5.8",
     "tailwindcss": "4.1.17",
+    "tsx": "^4.23.15",
     "typescript": "5.9.3"
   }
 }

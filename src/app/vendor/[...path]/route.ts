@@ -20,7 +20,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ path: stri
   const [lib, ...rest] = (await params).path;
   const root = ROOTS[lib];
   if (!root) return new Response("Not found", { status: 404 });
-  const base = path.resolve(/*turbopackIgnore: true*/ process.cwd(), root);
+  const base = [process.cwd(), root].join("/");
   const file = path.resolve(base, rest.join("/"));
   if (!file.startsWith(base + path.sep)) return new Response("Forbidden", { status: 403 });
   try {

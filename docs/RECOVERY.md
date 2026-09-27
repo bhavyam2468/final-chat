@@ -48,3 +48,26 @@ Update this section at every checkpoint. No real provider keys from the attached
 - Not yet verified: real DeepSeek/FreeLLMAPI/Firecrawl, password sudo on user's host, real Manim rendering, every Blocks vendor under offline networking.
 - Discussion features still need dedicated work: inspectable memory with undo, Android device tools, scheduled morning brief, credential/OAuth connector UX, file-diff viewer.
 - Architectural limit: run registry is process-local. Browser disconnect/reload is supported; server restart/multi-worker durable continuation is not.
+
+## Hardening checkpoint
+
+Implemented after recovery:
+- Search-first centered landing, explicit New chat/New search, result cards, clean finished History presentation and lossless Open in chat.
+- **History caveat:** full traces remain in the database so promotion is lossless. They are hidden in finished search UI, not physically discarded. This differs from the journal's strict storage distinction.
+- Draft components are keyed by conversation; loaded drafts cannot be overwritten by the initial empty save effect. New-chat/search drafts use stable keys; storage failures do not break typing.
+- Full replay resets the assistant before consuming events; dropped connections no longer replace partial messages with stale database data. UI live output is capped.
+- Synchronous per-conversation admission, cross-conversation parent checks, no deletion/promotion during an active run, listener cleanup and process-group cancellation.
+- Built-in tool schema validation; cancelled/blocked subsequent tools are not executed. Web requests inherit Stop. pip_install refuses implicit system-Python mutation when no app environment is configured.
+- Provider reasoning_content retained in in-turn tool continuations (not yet a complete cross-turn provider adapter).
+- Workspace panel defaults to current chat with Global switch. Blocks message bridge checks the originating iframe.
+- Database initialization is lazy: route imports/build workers must not open runtime PGlite. Initial test data became unusable during development/build testing; retained under ignored data/pglite. Re-ran production tests with fresh data/verified. Never test two app processes against the same embedded database directory.
+
+Verification at this checkpoint:
+- `npm test`: 17 editing + 24 guards + 7 lifecycle/schema/process checks passed.
+- `npm run test:blocks`: 52 browser cases passed (TikZ response mocked in this suite).
+- `npm run test:chat`: 17 checks passed, no page errors, against production server.
+- `node dev/search-e2e.mjs`: landing/source cards/clean history/promotion/replay/concurrent POST checks passed against production server.
+- Production build and TypeScript passed. ESLint has no errors, 13 inherited/style warnings remain.
+- Dev server had stale CSS during testing; promotion initially failed because the new CSS was not served. Production rebuild served the correct styles and the real click test passed. Do not replace click assertions with DOM-triggered handlers to mask layout bugs.
+
+Further limitations: run state is process-local; search history retains trace; secondary chat canvases are currently read-only and poll saved messages rather than replaying active streams; fresh unsaved uploads are shared until a chat ID exists; memory/Android/scheduler/OAuth/diff work remains. See HARNESS-RESEARCH.md for source review and remaining provider evals.

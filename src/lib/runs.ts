@@ -13,20 +13,29 @@ const g = globalThis as unknown as { __runs?: Map<string, Run> };
 const runs: Map<string, Run> = (g.__runs ||= new Map());
 
 export function startRun(convId: string, assistantId: string) {
+  if (activeRun(convId)) throw new Error("Conversation already running");
   const run: Run = { convId, assistantId, startedAt: Date.now(), events: [], listeners: new Set(), ctrl: new AbortController(), done: false };
   runs.set(convId, run);
   const emit = (e: RunEvent) => {
+    if (run.done) return;
+    const last = run.events.at(-1);
+    // Reduce token-sized event overhead without changing the replay order.
+    if ((e.t === "text" || e.t === "reasoning") && last?.t === e.t) {
+      last.d = String(last.d || "") + String(e.d || "");
+      run.listeners.forEach((l) => l(e)); return;
+    }
     // live tool output is only useful while it runs: keep the buffer small by folding output chunks per call
     if (e.t === "toolOutput") { const prev = run.events.findLast((x) => x.t === "toolOutput" && x.id === e.id); if (prev) { prev.chunk = (String(prev.chunk) + String(e.chunk)).slice(-6000); run.listeners.forEach((l) => l(e)); return; } }
     run.events.push(e);
     run.listeners.forEach((l) => l(e));
   };
   const finish = () => {
+    if (run.done) return;
     run.done = true;
     run.listeners.forEach((l) => l({ t: "done" }));
     run.listeners.clear();
     // keep the finished run briefly so a viewer that re-attaches right now still gets the tail
-    setTimeout(() => { if (runs.get(convId) === run) runs.delete(convId); }, 15_000);
+    setTimeout(() => { if (runs.get(convId) === run) runs.delete(convId); }, 15_000).unref();
   };
   return { run, emit, finish, signal: run.ctrl.signal };
 }
@@ -48,9 +57,18 @@ export function attach(run: Run, detach: AbortSignal) {
       if (run.done) { send({ t: "done" }); close(); return; }
       const l = (e: RunEvent) => { send(e); if (e.t === "done") close(); };
       run.listeners.add(l);
-      off = () => run.listeners.delete(l);
+      off = () => { run.listeners.delete(l); detach.removeEventListener("abort", close); };
+      if (detach.aborted) { close(); return; }
       detach.addEventListener("abort", close, { once: true });
     },
     cancel() { off(); },
   });
+}
+
+const reservations = ((globalThis as unknown as { __runReservations?: Set<string> }).__runReservations ||= new Set<string>());
+/** Claim synchronously, before database awaits; two tabs must not start two runs in one chat. */
+export function reserveRun(id: string): (() => void) | null {
+  if (reservations.has(id) || activeRun(id)) return null;
+  reservations.add(id);
+  return () => reservations.delete(id);
 }

@@ -1,4 +1,5 @@
 import type { Settings } from "./settings";
+const deadline = (ms: number, signal?: AbortSignal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
 
 /** Firecrawl: local-first (zero credits), cloud fallback for anti-bot pages, search fallback and AI extraction. */
 function isAntiBotProtected(text: string): boolean {
@@ -16,7 +17,7 @@ function isAntiBotProtected(text: string): boolean {
   );
 }
 
-export async function firecrawlScrape(st: Settings, url: string) {
+export async function firecrawlScrape(st: Settings, url: string, signal?: AbortSignal) {
   // 1. Try local Firecrawl first (no API key needed, zero credit cost)
   if (st.firecrawlUrl) {
     try {
@@ -24,7 +25,7 @@ export async function firecrawlScrape(st: Settings, url: string) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true }),
-        signal: AbortSignal.timeout(15000),
+        signal: deadline(15000, signal),
       });
       if (r.ok) {
         const j = await r.json();
@@ -38,6 +39,7 @@ export async function firecrawlScrape(st: Settings, url: string) {
     }
   }
 
+  signal?.throwIfAborted();
   // 2. Fallback to Cloud Firecrawl using API key (bypasses Cloudflare / anti-bot)
   if (st.firecrawlKey) {
     const cloudEndpoint = (st.firecrawlCloudUrl || "https://api.firecrawl.dev").replace(/\/$/, "") + "/v1/scrape";
@@ -48,7 +50,7 @@ export async function firecrawlScrape(st: Settings, url: string) {
         Authorization: `Bearer ${st.firecrawlKey}`,
       },
       body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true }),
-      signal: AbortSignal.timeout(30000),
+      signal: deadline(30000, signal),
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok) return { ...j, _source: "cloud" };
@@ -58,10 +60,10 @@ export async function firecrawlScrape(st: Settings, url: string) {
   throw new Error("Scrape failed: Local Firecrawl was blocked by anti-bot protection or failed, and no online Firecrawl API key is set for cloud bypass.");
 }
 
-export async function firecrawlSearch(st: Settings, query: string, limit: number) {
+export async function firecrawlSearch(st: Settings, query: string, limit: number, signal?: AbortSignal) {
   // developer mode + offline model: fake results from dev/mock-llm.mjs so search mode is testable without network
   if (st.dev && st.provider === "mock") {
-    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/dev/mock/v1/search`, { method: "POST", body: JSON.stringify({ query, limit }) });
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/dev/mock/v1/search`, { method: "POST", body: JSON.stringify({ query, limit }), signal: deadline(10000, signal) });
     return { ...(await r.json()), _source: "mock" };
   }
   // 1. Attempt local Firecrawl search with a quick timeout
@@ -71,7 +73,7 @@ export async function firecrawlSearch(st: Settings, query: string, limit: number
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, limit }),
-        signal: AbortSignal.timeout(3000),
+        signal: deadline(3000, signal),
       });
       if (r.ok) {
         const j = await r.json();
@@ -84,6 +86,7 @@ export async function firecrawlSearch(st: Settings, query: string, limit: number
     }
   }
 
+  signal?.throwIfAborted();
   // 2. Fallback to Cloud Firecrawl search using API key
   if (st.firecrawlKey) {
     const cloudEndpoint = (st.firecrawlCloudUrl || "https://api.firecrawl.dev").replace(/\/$/, "") + "/v1/search";
@@ -94,7 +97,7 @@ export async function firecrawlSearch(st: Settings, query: string, limit: number
         Authorization: `Bearer ${st.firecrawlKey}`,
       },
       body: JSON.stringify({ query, limit }),
-      signal: AbortSignal.timeout(15000),
+      signal: deadline(15000, signal),
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok) return { ...j, _source: "cloud" };
@@ -104,7 +107,7 @@ export async function firecrawlSearch(st: Settings, query: string, limit: number
   throw new Error("Search failed: Local search timed out/failed and no online Firecrawl API key is set.");
 }
 
-export async function firecrawlExtract(st: Settings, url: string, prompt: string) {
+export async function firecrawlExtract(st: Settings, url: string, prompt: string, signal?: AbortSignal) {
   // Local Firecrawl does not support AI extraction (requires LLM). Always routes to Cloud with API key.
   if (!st.firecrawlKey) {
     throw new Error("Online Firecrawl API key is required for AI structured extraction (local Firecrawl lacks an AI extraction engine).");
@@ -122,7 +125,7 @@ export async function firecrawlExtract(st: Settings, url: string, prompt: string
       formats: ["extract"],
       extract: { prompt },
     }),
-    signal: AbortSignal.timeout(35000),
+    signal: deadline(35000, signal),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Firecrawl extract ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);

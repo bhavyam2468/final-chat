@@ -50,7 +50,7 @@ export function needsSearch(q: string) {
   if (!t || t.length > 2000) return false;
   if (/^(hi|hello|hey|yo|thanks?|thank you|ok(ay)?|cool|nice|good (morning|afternoon|evening|night))\b[\s!.?]*$/i.test(t)) return false;
   if (/^[\d\s+\-*/^().,=x×÷%]+\??$/.test(t)) return false;
-  return true;
+  return /\b(search|find|look up|google|latest|current|today|news|weather|price|release|version|wikipedia|official|docs|documentation)\b|https?:\/\//i.test(t);
 }
 
 async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number): Promise<Sys> {
@@ -220,7 +220,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const pushReasoning = (d: string) => { const l = parts[parts.length - 1]; if (l?.type === "reasoning") l.text += d; else { thinkStart = Date.now(); parts.push({ type: "reasoning", text: d }); } emit({ t: "reasoning", d }); };
   const reload = async () => { all = await db.select().from(messages).where(eq(messages.conversationId, conv.id)); [conv] = await db.select().from(conversations).where(eq(conversations.id, conv.id)); };
   const ctx: ToolCtx = {
-    settings: st, conversationId: conv.id, pinned: conv.context, emit, state,
+    settings: st, conversationId: conv.id, pinned: conv.context, emit, state, signal,
     setState: async (next: ConvState) => { state = next; ctx.state = next; conv = { ...conv, state: next }; await db.update(conversations).set({ state: next }).where(eq(conversations.id, conv.id)); },
     setPinned: async (p: string[]) => { ctx.pinned = p; conv = { ...conv, context: p }; await db.update(conversations).set({ context: p }).where(eq(conversations.id, conv.id)); emit({ t: "context", context: p }); },
     compact: async (scope = "history", keepLast = 4) => {
@@ -310,7 +310,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       const split = new ReasoningSplitter();
-      let buf = "", text = "", thought = "", checkedAt = 0, thoughtAt = 0, looped = false;
+      let buf = "", text = "", thought = "", providerThought = "", checkedAt = 0, thoughtAt = 0, looped = false;
       const stepStart = Date.now();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const calls: any[] = [];
@@ -339,7 +339,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
           const d = j.choices?.[0]?.delta;
           if (!d) continue;
           const rc = d.reasoning_content ?? d.reasoning;
-          if (typeof rc === "string" && rc) { thought += rc; pushReasoning(rc); }
+          if (typeof rc === "string" && rc) { providerThought += rc; thought += rc; pushReasoning(rc); }
           if (d.content) onContent(d.content);
           for (const tc of d.tool_calls || []) {
             endThink();
@@ -422,13 +422,13 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         }
         break;
       }
-      loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
+      loopMsgs.push({ role: "assistant", content: text || null, ...(providerThought ? { reasoning_content: providerThought } : {}), tool_calls: valid });
       const images: string[] = [];
       let stop = false, nudge = "";
       for (const c of valid) {
         let args: Record<string, unknown> = {};
         let bad = "";
-        try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
+        try { const parsed = JSON.parse(c.function.arguments || "{}"); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected an object"); args = parsed; } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
         const part: Part = { type: "tool", id: c.id, name: c.function.name, args };
         parts.push(part);
         emit({ t: "tool", id: c.id, name: part.name, args });
@@ -438,7 +438,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         let buf = "", timer: ReturnType<typeof setTimeout> | null = null;
         const flush = () => { timer = null; if (buf) { emit({ t: "toolOutput", id: c.id, chunk: buf }); buf = ""; } };
         const output = (chunk: string) => { buf = (buf + chunk).slice(-6000); if (!timer) timer = setTimeout(flush, 120); };
-        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, signal });
+        const out = (bad || signal.aborted || stop) ? { ok: false, result: bad || "Not executed: the run was stopped or is waiting for user input." } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, signal });
         if (timer) { clearTimeout(timer); flush(); }
         callNo++;
         if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }
@@ -491,7 +491,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     for (const p of parts) if (p.type === "text" && urlsIn(p.text).length) { const u = unverifiedUrls(p.text, seen); if (u.length) p.unverified = u; else delete p.unverified; }
   }
   // stopped mid-call: no spinner forever on reload; the partial answer itself is kept as-is
-  if (signal.aborted) for (const p of parts) if (p.type === "tool" && p.result === undefined) Object.assign(p, { result: "(stopped by the user)", ok: false });
+  for (const p of parts) if (p.type === "tool" && p.result === undefined) Object.assign(p, { result: signal.aborted ? "(stopped by the user)" : "(interrupted before completion)", ok: false });
   const content = parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
   await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts });
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));
@@ -505,9 +505,10 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     emit({ t: "artifact", path: rel });
   }
   // mirror chat into workspace
+  const [currentConv] = await db.select().from(conversations).where(eq(conversations.id, conv.id));
   const fresh = await db.select().from(messages).where(eq(messages.conversationId, conv.id));
   const dir = path.join(WS, chatDir(conv.id));
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, "chat.json"), JSON.stringify({ conversation: conv, messages: fresh }, null, 1)).catch(() => {});
+  await fs.writeFile(path.join(dir, "chat.json"), JSON.stringify({ conversation: currentConv || conv, messages: fresh }, null, 1)).catch(() => {});
   await fs.rm(path.join(WS, "chats", `${conv.id}.json`), { force: true }).catch(() => {}); // old flat layout
 }

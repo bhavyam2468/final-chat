@@ -1,4 +1,5 @@
 import fss from "fs";
+import { activeRun } from "@/lib/runs";
 import { WS } from "@/lib/workspace";
 import { chatDir } from "@/lib/shared";
 import { trash } from "@/lib/tools";
@@ -25,6 +26,7 @@ export async function PATCH(req: NextRequest, { params }: P) {
   if (Array.isArray(b.context)) set.context = b.context;
   // "Open in chat": a search (History) becomes a full chat
   if (b.mode === "chat" || b.mode === "search") {
+    if (activeRun(id)) return Response.json({ error: "Wait for this response before changing its mode" }, { status: 409 });
     const [c] = await db.select({ state: conversations.state }).from(conversations).where(eq(conversations.id, id));
     if (c) set.state = { ...(c.state || {}), mode: b.mode };
   }
@@ -33,6 +35,7 @@ export async function PATCH(req: NextRequest, { params }: P) {
 }
 export async function DELETE(_: NextRequest, { params }: P) {
   const { id } = await params;
+  if (activeRun(id)) return Response.json({ error: "Stop this conversation before deleting it" }, { status: 409 });
   await db.delete(messages).where(eq(messages.conversationId, id));
   await db.delete(conversations).where(eq(conversations.id, id));
   // the chat's folder (artifacts, uploads) goes to the workspace trash: recoverable

@@ -15,7 +15,7 @@ type Props = {
   quote?: string | null; onClearQuote?: () => void; inline?: boolean; capture?: boolean;
   commands?: Command[]; initial?: SendPayload; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean;
   /** per-chat draft: text + attachments survive chat switches and reloads (localStorage "draft:<key>") */
-  draftKey?: string;
+  draftKey?: string; disabled?: boolean;
 };
 type Draft = { text: string; chips: Attachment[] };
 const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
@@ -25,10 +25,14 @@ export async function upload(files: File[], dir?: string): Promise<Attachment[]>
   if (dir) fd.append("dir", dir);
   files.forEach((f) => fd.append("files", f));
   const r = await fetch("/api/workspace/upload", { method: "POST", body: fd });
+  if (!r.ok) throw new Error("Upload failed");
   return r.json();
 }
 
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, ref) {
+  return <DraftComposer key={p.draftKey || "edit"} {...p} ref={ref} />;
+});
+const DraftComposer = forwardRef<ComposerHandle, Props>(function DraftComposer(p, ref) {
   const app = useApp();
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileIn = useRef<HTMLInputElement>(null);
@@ -40,19 +44,21 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   const [caret, setCaret] = useState(0);
 
   // drafts: save on every change (cheap), load when the chat changes
+  const [draftLoaded, setDraftLoaded] = useState(false);
   const keyRef = useRef(p.draftKey);
   useEffect(() => {
     if (!p.draftKey) return;
+    setDraftLoaded(true);
     keyRef.current = p.draftKey;
     const d = readDraft(p.draftKey);
     setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path })));
   }, [p.draftKey]);
   useEffect(() => {
-    const k = keyRef.current; if (!k) return;
+    const k = keyRef.current; if (!k || !draftLoaded) return;
     const done = chips.filter((c) => !c.loading).map(({ path, name, mime, size }) => ({ path, name, mime, size }));
-    if (!text && !done.length) localStorage.removeItem("draft:" + k);
-    else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done }));
-  }, [text, chips]);
+    try { if (!text && !done.length) localStorage.removeItem("draft:" + k);
+    else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done })); } catch { /* Storage may be disabled or full; typing must remain usable. */ }
+  }, [text, chips, draftLoaded]);
 
   const autosize = useCallback(() => { const t = ta.current; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }, []);
   useLayoutEffect(autosize, [text, autosize]);
@@ -121,7 +127,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   useEffect(() => setMenuIdx(0), [items.length]);
 
   const ready = chips.every((c) => !c.loading);
-  const canSend = (text.trim() || chips.length) && ready && !p.streaming;
+  const canSend = (text.trim() || chips.length) && ready && !p.streaming && !p.disabled;
   const send = () => {
     if (!canSend) return;
     p.onSend({ content: text.trim(), attachments: chips.map(({ path, name, mime, size }) => ({ path, name, mime, size })), quote: p.quote || null });

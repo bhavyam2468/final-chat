@@ -18,6 +18,7 @@ import { findSkill, skillMeta, skillFiles } from "../skills";
 import { destructive, checkInstalls } from "../harness/guard";
 import { createHash } from "crypto";
 import os from "os";
+import { validateArgs, type Schema } from "./validate";
 
 export type ToolDef = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
 const T = (name: string, description: string, props: Record<string, unknown> = {}, required: string[] = []): ToolDef => ({
@@ -174,6 +175,12 @@ async function guardAndWrite(f: string, before: string, after: string, spans: [n
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function execTool(name: string, a: Record<string, any>, ctx: ToolCtx): Promise<ToolOut> {
   const st = ctx.settings;
+  if (ctx.signal?.aborted) return { ok: false, result: "Stopped by the user; tool not executed." };
+  const def = toolDefs(st, ["dev"]).find((t) => t.function.name === name);
+  if (def) {
+    const error = validateArgs(def.function.parameters as Schema, a);
+    if (error) return { ok: false, result: `Invalid ${name} call: ${error}. Nothing was executed. Correct the arguments instead of repeating this call.` };
+  }
   const P = (p: string) => resolvePath(String(p ?? "."), st.access);
   try {
     switch (name) {
@@ -336,17 +343,17 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
       }
       case "web_search": {
-        const j = await firecrawlSearch(st, a.query, Math.min(Number(a.limit) || 5, 8));
+        const j = await firecrawlSearch(st, a.query, Math.max(1, Math.min(Number(a.limit) || 5, 8)), ctx.signal);
         const items = ((j.data as { url: string; title?: string; description?: string }[]) || []).map((d) => ({ url: d.url, title: d.title || d.url, snippet: (d.description || "").slice(0, 240) }));
         return { ok: true, result: items.map((d, i) => `[${i + 1}] ${d.title}\n${d.url}\n${d.snippet}`).join("\n\n") || "no results", meta: { sources: items, source: j._source } };
       }
       case "web_fetch": {
-        const j = await firecrawlScrape(st, a.url);
+        const j = await firecrawlScrape(st, a.url, ctx.signal);
         const md = (j.data?.markdown as string) || "";
         return { ok: true, result: cut(md, 12000), meta: { sources: [{ url: a.url, title: j.data?.metadata?.title || a.url, snippet: md.slice(0, 200) }], source: j._source } };
       }
       case "web_extract": {
-        const x = await firecrawlExtract(st, a.url, String(a.prompt));
+        const x = await firecrawlExtract(st, a.url, String(a.prompt), ctx.signal);
         return { ok: true, result: cut(typeof x === "string" ? x : JSON.stringify(x, null, 2), 12000), meta: { sources: [{ url: a.url, title: a.url, snippet: "Structured extraction" }], source: "cloud" } };
       }
       case "view_image": {

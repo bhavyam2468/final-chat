@@ -144,14 +144,18 @@ export function ContextStatus({ c }: { c: CtxRef }) {
 
 export function WorkspacePanel({ onClose, ctx }: { onClose: () => void; ctx?: CtxRef | null }) {
   const app = useApp();
+  const [all, setAll] = useState(false);
+  const chats = app.tree.find((n) => n.path === "chats");
+  const current = chats?.children?.find((n) => n.path === `chats/${app.convId}`);
+  const nodes = all ? app.tree : current?.children || [];
   return (
     <div className="panel">
-      <div className="panel-head"><span>Workspace</span><span className="sp" />
-        <label className="ib sm" aria-label="Upload" style={{ cursor: "pointer" }}><Upload /><input type="file" multiple hidden onChange={async (e) => { if (e.target.files) { await upload([...e.target.files]); app.refreshTree(); } e.target.value = ""; }} /></label>
+      <div className="panel-head"><span>Workspace</span><span className="seg"><button className={all ? "" : "on"} onClick={() => setAll(false)}>Chat</button><button className={all ? "on" : ""} onClick={() => setAll(true)}>Global</button></span><span className="sp" />
+        <label className="ib sm" aria-label="Upload" style={{ cursor: "pointer" }}><Upload /><input type="file" multiple hidden onChange={async (e) => { if (e.target.files) { await upload([...e.target.files], !all && app.convId ? `chats/${app.convId}/uploads` : undefined); app.refreshTree(); } e.target.value = ""; }} /></label>
         <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button>
       </div>
       {ctx && <ContextStatus c={ctx} />}
-      <div className="panel-body">{app.tree.map((n) => <TreeItem key={n.path} n={n} depth={0} />)}</div>
+      <div className="panel-body">{nodes.map((n) => <TreeItem key={n.path} n={n} depth={0} />)}{!nodes.length && <div className="empty">No files in this chat</div>}</div>
     </div>
   );
 }

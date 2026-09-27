@@ -1,11 +1,11 @@
 import type { Settings } from "./settings";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type OAMsg = { role: string; content: any; tool_calls?: any[]; tool_call_id?: string };
+export type OAMsg = { role: string; content: any; tool_calls?: any[]; tool_call_id?: string; reasoning_content?: string };
 
 /** ~3.6 chars/token is a decent cross-model estimate for mixed prose/code. */
 export const est = (s: string) => Math.ceil((s || "").length / 3.6);
-export const estMsg = (m: OAMsg) => est(typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "").slice(0, 6000)) + (m.tool_calls ? est(JSON.stringify(m.tool_calls)) : 0) + 4;
+export const estMsg = (m: OAMsg) => est(typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "").slice(0, 6000)) + est(m.reasoning_content || "") + (m.tool_calls ? est(JSON.stringify(m.tool_calls)) : 0) + 4;
 
 export const endpoint = (st: Settings) => st.baseUrl.replace(/\/$/, "") + "/chat/completions";
 export const headers = (st: Settings) => ({ "Content-Type": "application/json", Authorization: `Bearer ${st.apiKey}` });

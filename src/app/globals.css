@@ -633,3 +633,13 @@ button.busy:not(.solid)::after { border-color: var(--fg) var(--fg) transparent t
 .chatview .cv-user { align-self: flex-end; max-width: 80%; background: var(--bubble); padding: 8px 12px; border-radius: var(--r); white-space: pre-wrap; font-size: 14px; }
 .chatview .cv-ai { font-size: 14.5px; }
 .chatview .cv-tool { color: var(--faint); font: 12px var(--font-mono); margin: 4px 0; }
+
+/* Search is a temporary session; its composer moves to the bottom after the first turn. */
+.dock.centered { bottom: 50%; transform: translateY(50%); }
+.search-mode { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 12px 8px; color: var(--muted); font-size: 12px; }
+.search-mode button:disabled { opacity: .45; cursor: wait; }
+@media (prefers-reduced-motion: reduce) { .dock { transition: none; } }
+
+.dock { flex-direction: column; align-items: center; }
+.search-mode { position: relative; pointer-events: auto; width: 100%; max-width: 480px; }
+.dock.centered::before { display: none; }

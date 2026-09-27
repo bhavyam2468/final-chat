@@ -45,5 +45,14 @@ function make(): NodePgDatabase {
   return drizzleLite(client) as NodePgDatabase;
 }
 
-export const db: NodePgDatabase = (g.__wsDb ??= make());
-export const schemaReady = () => g.__wsSchema ?? Promise.resolve();
+// Do not open an embedded database during next build / route discovery. Build workers are
+// short-lived and must never share a data directory with the running application.
+const instance = () => (g.__wsDb ??= make());
+export const db = new Proxy({} as NodePgDatabase, {
+  get(_target, key) {
+    const client = instance();
+    const value = Reflect.get(client, key, client);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});
+export const schemaReady = () => { instance(); return g.__wsSchema ?? Promise.resolve(); };
