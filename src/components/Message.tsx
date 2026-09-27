@@ -174,9 +174,16 @@ function CanvasCard({ title, body, done, attrs }: { title: string; body: string;
   const open = useCallback(() => {
     const t = body.trim();
     const yt = youtubeId(t);
-    const onlyUi = /^<ui[\s>]/.test(t) && /<\/ui>$/.test(t) && t.indexOf("<ui", 1) < 0;
+    // a canvas body that carries a <ui> block (or bare x-* components) is a block window, not markdown:
+    // anything renderable inline must render here too, or the canvas silently loses it
+    const ui = t.match(/<ui[^>]*>[\s\S]*?<\/ui>/);
+    const blocks = /<x-[a-z0-9-]+[\s>]/i.test(t);
     if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, { dock });
-    else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, { dock });
+    else if (ui || blocks) {
+      const source = ui ? ui[0].replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") : t;
+      const note = (ui ? t.slice(0, ui.index) + t.slice(ui.index! + ui[0].length) : "").replace(/\n{3,}/g, "\n\n").trim();
+      app.openCanvas({ kind: "ui", title, source, ...(note ? { note } : {}) }, { dock });
+    }
     else if (/^https?:\/\/\S+$/i.test(t) && /\.(mp4|webm|mov|m4v|ogv)(\?\S*)?$/i.test(t)) app.openCanvas({ kind: "media", title, url: t, video: true }, { dock });
     else if (/^https?:\/\/\S+$/i.test(t) && /\.(mp3|wav|ogg|m4a|flac|aac|opus)(\?\S*)?$/i.test(t)) app.openCanvas({ kind: "media", title, url: t, video: false }, { dock });
     else app.openCanvas({ kind: "md", title, body }, { dock });

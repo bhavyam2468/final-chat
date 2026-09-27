@@ -13,7 +13,7 @@ export type Msg = {
 export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null };
 export type TreeNode = { name: string; path: string; dir: boolean; size?: number; children?: TreeNode[] };
 export type CanvasSpec =
-  | { kind: "ui"; title: string; source: string; path?: string }
+  | { kind: "ui"; title: string; source: string; path?: string; note?: string }
   | { kind: "file"; title: string; path: string }
   | { kind: "youtube"; title: string; id: string }
   | { kind: "md"; title: string; body: string }

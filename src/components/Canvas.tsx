@@ -163,7 +163,9 @@ const Viewer = memo(function Viewer({ spec, winId }: { spec: CanvasSpec; winId: 
   else if (spec.kind === "media") body = spec.video
     ? <div className="mediaview"><video src={spec.url} controls autoPlay playsInline title={spec.title} /></div>
     : <div className="mediaview audio"><audio src={spec.url} controls autoPlay title={spec.title} /></div>;
-  else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
+  else if (k === "ui") body = mode === "a"
+    ? <><Block key={rev + ":" + src.length} source={src} done fill />{spec.kind === "ui" && spec.note && <div className="ui-note"><StreamMarkdown text={spec.note} {...md} /></div>}</>
+    : editor;
   else if (k === "image") body = <div className="imgview" style={{ position: "relative" }}>{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
   else if (k === "pdf") body = <PdfView path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} />;
   else if (k === "html") body = mode === "a" ? <div style={{ position: "relative", height: "100%" }}><iframe key={rev} className="full" src={fileUrl(path!)} sandbox="allow-scripts allow-forms allow-popups allow-modals" title={path} /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div> : editor;

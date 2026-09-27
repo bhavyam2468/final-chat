@@ -252,6 +252,8 @@ input, textarea, select { font: inherit; color: inherit; }
 /* ============ Blocks host ============ */
 .blk-frame { width: 100%; border: 0; display: block; margin: 12px 0; background: transparent; transition: height .25s var(--ease); color-scheme: normal; }
 .blk-frame.fill { height: 100%; margin: 0; }
+.ui-note { padding: 14px 20px 20px; font-size: 14px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.ui-note .sm p:last-child { margin-bottom: 0; }
 
 /* ============ Canvas: integrated (docked) mode ============ */
 body.dragging iframe { pointer-events: none; } body.dragging { user-select: none; cursor: ew-resize; }

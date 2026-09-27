@@ -132,7 +132,12 @@ export function sudoSetup(st: Settings, command: string, sandboxed: boolean, env
     const helper = path.join(os.tmpdir(), `ws-askpass-${process.pid}.sh`);
     if (!fs.existsSync(helper)) fs.writeFileSync(helper, '#!/bin/sh\nprintf "%s\\n" "$WS_SUDO_PW"\n', { mode: 0o700 });
     env.SUDO_ASKPASS = helper; env.WS_SUDO_PW = secret;
-    return { prelude: 'sudo() { command sudo -A "$@"; }; export -f sudo; ' };
+    // The wrapper rewrites `sudo` so the password never has to appear in the command. It also drops
+    // -S/-p, which real sudo refuses to combine with -A — that is what broke `echo pw | sudo -S …`.
+    const fn = 'sudo() { local a=() skip=0 x; for x in "$@"; do if [ "$skip" = 1 ]; then skip=0; continue; fi; '
+      + 'case "$x" in -S|-n|-A) continue;; -p) skip=1; continue;; -p*) continue;; *) a+=("$x");; esac; done; '
+      + 'command sudo -A "${a[@]}"; }; export -f sudo; ';
+    return { prelude: fn };
   }
   return { prelude: 'sudo() { command sudo -n "$@"; }; export -f sudo; ' };
 }
@@ -144,7 +149,10 @@ export function shellSpawn(st: Settings, command: string, host: boolean, cwd?: s
   const s = sudoSetup(st, command, m.sandboxed, env, sudoPw);
   if ("error" in s) return { error: s.error };
   const dir = cwd ? cwd : m.cwd;
-  const [cmd, ...args] = wrap(["bash", "-lc", s.prelude + command], m.sandboxed, dir);
+  // `bash -l` re-runs the login profile, which resets PATH (nvm, ~/.local/bin, cargo, …) — put the
+  // inherited PATH back in front before anything else runs.
+  const pathFix = `export PATH='${(env.PATH || "").replace(/'/g, "'\\''")}'; `;
+  const [cmd, ...args] = wrap(["bash", "-lc", pathFix + s.prelude + command], m.sandboxed, dir);
   return { cmd, args, env, cwd: dir };
 }
 

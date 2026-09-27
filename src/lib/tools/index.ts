@@ -321,7 +321,9 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const r = await runShell(st, cmd, Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd, liveOut(ctx), pw);
         // a wrong password shows up as "Sorry, try again" — say so plainly instead of letting the model retry blindly
         const wrong = /Sorry, try again|incorrect password|not in the sudoers file|sudo: a password is required/.test(r.out);
-        return { ok: r.code === 0 && !wrong, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}`) + (wrong ? "\n(The password was rejected — ask the user to check it.)" : ""), meta: { sudo: pw ? { used: true } : undefined } };
+        const piped = pw && /(?:\|\||\||;|\n)\s*sudo\b|sudo\s+-S\b/.test(cmd) && /echo|printf|\$SUDO|<<</.test(cmd);
+        const hint = piped ? "\n(The password is supplied for you — never put it in the command or pipe it in.)" : "";
+        return { ok: r.code === 0 && !wrong, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}`) + (wrong ? "\n(The password was rejected — ask the user to check it.)" : "") + hint, meta: { sudo: pw ? { used: true } : undefined } };
       }
       case "canvas_open": {
         const t = String(a.target || "").trim();
