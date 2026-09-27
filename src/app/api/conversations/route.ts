@@ -5,7 +5,7 @@ import { desc, isNull } from "drizzle-orm";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const convs = await db.select({ id: conversations.id, title: conversations.title, updatedAt: conversations.updatedAt }).from(conversations).orderBy(desc(conversations.updatedAt)).limit(200);
+  const convs = await db.select({ id: conversations.id, title: conversations.title, kind: conversations.kind, updatedAt: conversations.updatedAt }).from(conversations).orderBy(desc(conversations.updatedAt)).limit(200);
   const msgs = await db.select({ id: messages.id, c: messages.conversationId, p: messages.parentId, role: messages.role, content: messages.content }).from(messages).where(isNull(messages.threadOf));
   const byConv = new Map<string, typeof msgs>();
   for (const m of msgs) { if (!byConv.has(m.c)) byConv.set(m.c, []); byConv.get(m.c)!.push(m); }

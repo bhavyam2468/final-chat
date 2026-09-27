@@ -18,6 +18,7 @@ export async function PATCH(req: NextRequest, { params }: P) {
   const b = await req.json();
   const set: Record<string, unknown> = {};
   if (typeof b.title === "string") set.title = b.title;
+  if (b.kind === "chat" || b.kind === "search") set.kind = b.kind;
   if (Array.isArray(b.context)) set.context = b.context;
   if (Object.keys(set).length) await db.update(conversations).set(set).where(eq(conversations.id, id));
   return Response.json({ ok: true });

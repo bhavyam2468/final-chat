@@ -4,6 +4,7 @@ import { PanelLeft, SquarePen, Folder, AppWindow, Link2, Settings2, X } from "lu
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command } from "./Composer";
+import { SearchHome } from "./SearchHome";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win } from "./Canvas";
 import { Settings } from "./Settings";
@@ -137,7 +138,7 @@ export default function App() {
   const newChat = useCallback(() => { setConv(null); setViewKey(null); setSel({}); setThread(null); setTimeout(() => mainRef.current?.focus(), 0); }, []);
 
   // ---- streaming (one stream per conversation; several chats can answer at once)
-  const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
+  const runStream = useCallback(async (url: string, body: Record<string, unknown>, payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
     const live = streamRef.current;
     if (live && live.key === (convRef.current?.id ?? "")) return;
     const tu = rid(); let ta = rid();
@@ -157,7 +158,7 @@ export default function App() {
     let convId = cid;
     let storeKey = key;
     try {
-      const res = await fetch("/api/chat", { method: "POST", signal: ctrl.signal, body: JSON.stringify({ conversationId: cid || undefined, parentId: payload ? parentId : parentId, threadOf, user: payload || undefined }) });
+      const res = await fetch(url, { method: "POST", signal: ctrl.signal, body: JSON.stringify({ conversationId: cid || undefined, ...body }) });
       const reader = res.body!.getReader(); const dec = new TextDecoder(); let buf = "";
       for (;;) {
         const { value, done } = await reader.read(); if (done) break;
@@ -168,7 +169,8 @@ export default function App() {
           const e = JSON.parse(line);
           if (e.t === "meta") {
             convId = e.conversationId;
-            if (!convRef.current) { const c: Conv = { id: e.conversationId, title: e.title, context: [], summary: null, summaryUpTo: null }; convCache.current.set(c.id, c); setConv(c); setViewKey(null); refreshConvs(); }
+            if (!convRef.current) { const c: Conv = { id: e.conversationId, title: e.title, context: [], summary: null, summaryUpTo: null, kind: e.kind || "chat" }; convCache.current.set(c.id, c); setConv(c); setViewKey(null); refreshConvs(); }
+            else if (e.kind) setConv((c) => (c && c.id === e.conversationId ? { ...c, kind: e.kind } : c));
             const map: Record<string, string> = { [ta]: e.assistantId, ...(e.userId ? { [tu]: e.userId } : {}) };
             const r = (x: string | null) => (x && map[x]) || x;
             if (storeKey !== e.conversationId) {
@@ -209,12 +211,27 @@ export default function App() {
     }
   }, [putMsgs, refreshConvs, refreshTree]);
 
+  const send = useCallback((payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
+    runStream("/api/chat", { parentId: payload ? parentId : parentId, threadOf, user: payload || undefined }, payload, parentId, threadOf);
+  }, [runStream]);
+
+  /** Search mode: one temporary answer. The backend may promote it to a real chat mid-stream. */
+  const askSearch = useCallback((q: string, parentId: string | null, cid?: string) => {
+    runStream("/api/search", cid ? { conversationId: cid } : {}, { content: q, attachments: [], quote: null }, parentId, null);
+  }, [runStream]);
+
   const stop = useCallback(() => {
     const s = streamRef.current; if (!s) return;
     aborts.current.get(s.key)?.abort();
   }, []);
 
-  const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; send(p, last?.id ?? null, null); }, [mainPath, send]);
+  const sendMain = useCallback((p: SendPayload) => {
+    const last = mainPath[mainPath.length - 1];
+    const c = convRef.current;
+    // a temporary conversation stays temporary: follow-ups go through search, not the agent
+    if (c?.kind === "search") { askSearch(p.content, last?.id ?? null, c.id); return; }
+    send(p, last?.id ?? null, null);
+  }, [mainPath, send, askSearch]);
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
   // ---- canvases
@@ -364,16 +381,21 @@ export default function App() {
         </div>
 
         <div className="scroll" ref={scroller}>
-          <main className="column">{mainPath.map((m, i) => renderTurn(m, false, i === mainPath.length - 1))}</main>
+          <main className="column">
+            {!conv && mainPath.length === 0
+              ? <SearchHome onAsk={(q) => askSearch(q, null)} busy={!!stream} />
+              : mainPath.map((m, i) => renderTurn(m, false, i === mainPath.length - 1))}
+          </main>
         </div>
 
-        <div className="dock" ref={dockRef}>
+        {conv && <div className="dock" ref={dockRef}>
           <Composer key={curKey ?? "new"} ref={mainRef} capture draftKey={"main:" + (curKey ?? "new")} onSend={sendMain} streaming={streaming} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
-        </div>
+        </div>}
 
         {panels.chats && <div className="lstack"><ChatsPanel convs={convs} current={conv?.id || null}
           onOpen={(id, leaf, msg) => { loadConv(id, leaf, msg); }} onClose={() => setPanels((p) => ({ ...p, chats: false }))}
+          onPromote={async (id) => { await fetch(`/api/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ kind: "chat" }) }); refreshConvs(); }}
           onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) newChat(); refreshConvs(); }} /></div>}
 
         {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}>

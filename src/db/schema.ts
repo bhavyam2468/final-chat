@@ -8,6 +8,8 @@ export const conversations = pgTable("conversations", {
   summaryUpTo: text("summary_up_to"),
   /** Harness state: loaded tool packs (kept so the tool list stays stable across turns) and the task checklist. */
   state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[]; approved?: string[] }>().notNull().default({}),
+  /** "chat" = conversation + tool calls (a real chat). "search" = a temporary answer kept in history only. */
+  kind: text("kind").notNull().default("chat"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

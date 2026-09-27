@@ -206,6 +206,29 @@ input, textarea, select { font: inherit; color: inherit; }
 .li .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 .branch { padding-left: 26px; font-size: 13px; color: var(--muted); }
 .snip { color: var(--muted); font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp { display: flex; align-items: baseline; gap: 6px; padding: 12px 12px 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.grp .n { font-weight: 500; opacity: .7; }
+.grp .hint { font-weight: 400; letter-spacing: 0; text-transform: none; opacity: .7; font-size: 11px; }
+.li.empty { color: var(--muted); font-size: 12px; cursor: default; }
+
+/* ---- search home: the app opens on one centred question box, not a chat */
+.home { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 40px 20px 80px; }
+.home-mark { text-align: center; display: flex; flex-direction: column; gap: 8px; }
+.home-word { font-size: 34px; font-weight: 600; letter-spacing: -.02em; }
+.home-sub { color: var(--muted); font-size: 13.5px; max-width: 46ch; }
+.home-box { width: min(680px, 100%); display: flex; align-items: flex-end; gap: 10px; padding: 12px 12px 12px 14px; border: 1px solid var(--line); border-radius: 26px; background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / .04), 0 12px 32px -18px rgb(0 0 0 / .35); transition: border-color .15s, box-shadow .15s; }
+.home-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.home-ico { width: 18px; height: 18px; color: var(--muted); flex: none; margin-bottom: 6px; }
+.home-box textarea { flex: 1; border: 0; background: none; resize: none; font: inherit; font-size: 15px; line-height: 1.5; max-height: 160px; outline: none; color: var(--fg); }
+.home-go { flex: none; width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-fg, #fff); display: grid; place-items: center; cursor: pointer; }
+.home-go:disabled { opacity: .35; cursor: default; }
+.home-go svg { width: 16px; height: 16px; }
+.home-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 680px; }
+.home-chips .chip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.home-chips .chip:hover, .home-chips .chip.on { color: var(--fg); border-color: var(--accent); }
+.home-chips .chip svg { width: 13px; height: 13px; }
+.home-foot { color: var(--muted); font-size: 11.5px; max-width: 60ch; text-align: center; line-height: 1.6; }
+.home-foot kbd { font: inherit; font-size: 11px; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; background: var(--surface); }
 .anchor { margin: 0 14px 8px; font-size: 12.5px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 10px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .thread .panel-body { padding: 4px 14px; font-size: 14.5px; }
 .thread .turn { margin-bottom: 20px; }

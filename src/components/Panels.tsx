@@ -1,14 +1,39 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2 } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, FileText, X, Upload, Trash2, Layers, AppWindow, GitBranch, Download, Shrink, Undo2, Sparkles } from "lucide-react";
 import { TreeNode, useApp, flatFiles } from "./ctx";
 import { upload } from "./Composer";
 import { SourceList } from "./Message";
 
-export type ConvItem = { id: string; title: string; branches: { leafId: string; label: string }[] };
+export type ConvItem = { id: string; title: string; kind?: string; branches: { leafId: string; label: string }[] };
 
-export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
-  convs: ConvItem[]; current: string | null; onOpen: (id: string, leaf?: string, msg?: string) => void; onDelete: (id: string) => void; onClose: () => void;
+function Row({ c, current, onOpen, onDelete, onPromote, open, setOpen }: {
+  c: ConvItem; current: string | null; onOpen: (id: string) => void; onDelete: (id: string) => void;
+  onPromote?: (id: string) => void; open: boolean; setOpen: (v: boolean) => void;
+}) {
+  return (
+    <div>
+      <div className={"li" + (c.id === current ? " on" : "")} role="button" onClick={() => onOpen(c.id)}>
+        {c.branches.length > 1
+          ? <button aria-label="Branches" onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>{open ? <ChevronDown /> : <ChevronRight />}</button>
+          : <span style={{ width: 14 }} />}
+        <span className="t">{c.title || "Untitled"}</span>
+        <span className="h">
+          {onPromote && <button className="ib sm" aria-label="Keep as chat" title="Keep as chat" onClick={(e) => { e.stopPropagation(); onPromote(c.id); }}><Sparkles /></button>}
+          <a className="ib sm" aria-label="Export" href={`/api/conversations/${c.id}/export`} onClick={(e) => e.stopPropagation()}><Download /></a>
+          <button className="ib sm" aria-label="Delete" onClick={(e) => { e.stopPropagation(); onDelete(c.id); }}><Trash2 /></button>
+        </span>
+      </div>
+      {open && c.branches.map((b) => (
+        <button key={b.leafId} className="li branch" onClick={() => onOpen(c.id)}><GitBranch /><span className="t">{b.label}</span></button>
+      ))}
+    </div>
+  );
+}
+
+export function ChatsPanel({ convs, current, onOpen, onDelete, onPromote, onClose }: {
+  convs: ConvItem[]; current: string | null; onOpen: (id: string, leaf?: string, msg?: string) => void; onDelete: (id: string) => void;
+  onPromote?: (id: string) => void; onClose: () => void;
 }) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<{ convId: string; title: string; messageId: string; snippet: string }[]>([]);
@@ -18,6 +43,13 @@ export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
     const t = setTimeout(() => fetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then(setHits), 160);
     return () => clearTimeout(t);
   }, [q]);
+  // temporary answers live in History; anything that ran a tool is a real chat
+  const chats = convs.filter((c) => (c.kind || "chat") !== "search");
+  const history = convs.filter((c) => (c.kind || "chat") === "search");
+  const list = (items: ConvItem[], promote?: boolean) => items.length ? items.map((c) => (
+    <Row key={c.id} c={c} current={current} onOpen={(id) => onOpen(id)} onDelete={onDelete}
+      onPromote={promote ? onPromote : undefined} open={!!open[c.id]} setOpen={(v) => setOpen((o) => ({ ...o, [c.id]: v }))} />
+  )) : <div className="li empty">Nothing yet</div>;
   return (
     <div className="panel" style={{ maxHeight: "100%" }}>
       <div className="panel-head"><span>Chats</span><span className="sp" /><button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
@@ -27,23 +59,12 @@ export function ChatsPanel({ convs, current, onOpen, onDelete, onClose }: {
           <button key={h.messageId} className="li" style={{ flexDirection: "column", alignItems: "stretch" }} onClick={() => onOpen(h.convId, undefined, h.messageId)}>
             <span className="t">{h.title}</span><span className="snip">{h.snippet}</span>
           </button>
-        )) : convs.map((c) => (
-          <div key={c.id}>
-            <div className={"li" + (c.id === current ? " on" : "")} role="button" onClick={() => onOpen(c.id)}>
-              {c.branches.length > 0
-                ? <button aria-label="Branches" onClick={(e) => { e.stopPropagation(); setOpen((o) => ({ ...o, [c.id]: !o[c.id] })); }}>{open[c.id] ? <ChevronDown /> : <ChevronRight />}</button>
-                : <span style={{ width: 14 }} />}
-              <span className="t">{c.title || "Untitled"}</span>
-              <span className="h">
-                <a className="ib sm" aria-label="Export" href={`/api/conversations/${c.id}/export`} onClick={(e) => e.stopPropagation()}><Download /></a>
-                <button className="ib sm" aria-label="Delete" onClick={(e) => { e.stopPropagation(); onDelete(c.id); }}><Trash2 /></button>
-              </span>
-            </div>
-            {open[c.id] && c.branches.map((b) => (
-              <button key={b.leafId} className="li branch" onClick={() => onOpen(c.id, b.leafId)}><GitBranch /><span className="t">{b.label}</span></button>
-            ))}
-          </div>
-        ))}
+        )) : (<>
+          <div className="grp">Chats <span className="n">{chats.length}</span></div>
+          {list(chats)}
+          <div className="grp">History <span className="n">{history.length}</span> <span className="hint">temporary answers</span></div>
+          {list(history, true)}
+        </>)}
       </div>
     </div>
   );
