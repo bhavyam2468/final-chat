@@ -6,7 +6,7 @@ import { chatDir } from "@/lib/shared";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
 export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
-export type Command = { name: string; hint: string; run: () => void };
+export type Command = { name: string; hint: string; run: (arg?: string) => void };
 
 type Chip = Attachment & { loading?: boolean; key: string; preview?: string };
 
@@ -109,15 +109,17 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   // menus
   const before = text.slice(0, caret);
   const mentionQ = before.match(/(?:^|\s)@([\w./~-]*)$/)?.[1];
-  const cmdQ = /^\/\w*$/.test(text) ? text.slice(1) : undefined;
+  const slash = text.match(/^\/([a-z][\w-]*)(?:\s+([\s\S]*))?$/i);
+  const cmdQ = slash && !text.includes("\n") ? slash[1] : undefined;
+  const cmdArg = slash?.[2]?.trim();
   const items = useMemo(() => {
-    if (cmdQ !== undefined && p.commands) return p.commands.filter((c) => c.name.startsWith(cmdQ.toLowerCase())).map((c) => ({ key: c.name, label: "/" + c.name, hint: c.hint, run: () => { setText(""); c.run(); }, icon: Hash }));
+    if (cmdQ !== undefined && p.commands) return p.commands.filter((c) => c.name.startsWith(cmdQ.toLowerCase())).map((c) => ({ key: c.name, label: "/" + c.name, hint: c.hint, run: () => { setText(""); c.run(cmdArg); }, icon: Hash }));
     if (mentionQ !== undefined) return flatFiles(app.tree).filter((f) => f.path.toLowerCase().includes(mentionQ.toLowerCase()) && !f.path.startsWith("chats/")).slice(0, 8).map((f) => ({
       key: f.path, label: f.name, hint: f.path, icon: FileIcon,
       run: () => { const start = before.lastIndexOf("@"); const nt = text.slice(0, start) + "@" + f.path + " " + text.slice(caret); setText(nt); setTimeout(() => { const c = start + f.path.length + 2; ta.current?.setSelectionRange(c, c); setCaret(c); }, 0); },
     }));
     return [];
-  }, [cmdQ, mentionQ, p.commands, app.tree, before, text, caret]);
+  }, [cmdQ, cmdArg, mentionQ, p.commands, app.tree, before, text, caret]);
   useEffect(() => setMenuIdx(0), [items.length]);
 
   const ready = chips.every((c) => !c.loading);

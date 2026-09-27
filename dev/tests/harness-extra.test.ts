@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { decodeHref, parseDdgHtml, htmlToText } from "../../src/lib/search-fast.ts";
 import { liftFences, uiIssues } from "../../src/lib/ui-check.ts";
+import { shellPreflight, noteMissing, banPackages, unseenCommandFlags } from "../../src/lib/harness/shell-preflight.ts";
 
 assert.equal(decodeHref("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&rut=1"), "https://example.com/a");
 assert.equal(decodeHref("//example.com/x"), "https://example.com/x");
@@ -38,5 +39,18 @@ assert.ok(uiIssues("```\n<ui><x-chart></x-chart></ui>\n```").some((s) => /fence/
 assert.equal(uiIssues("<ui><x-chart type=\"bar\" data=\"1,2\"></x-chart></ui>").length, 0);
 assert.equal(uiIssues("```ts\nconst x = 1;\n```\n<ui><x-chart type=\"bar\" data=\"1,2\"></x-chart></ui>").length, 0);
 assert.equal(uiIssues("<ui><x-choice options=\"a|b\" /></ui>").length, 0);
+
+assert.match(shellPreflight("cd /home/thatguy/Projects/the chat application && python3 x.py") || "", /Quote/);
+assert.equal(shellPreflight("cd \"/home/thatguy/Projects/the chat application\" && python3 x.py"), null);
+assert.match(shellPreflight("grep -n foo src") || "", /fs_search/);
+assert.match(shellPreflight("cat notes.txt") || "", /fs_read/);
+noteMissing("c1", "bash: manim: command not found");
+assert.match(shellPreflight("manim -ql scene.py", "c1") || "", /already came back/);
+assert.match(shellPreflight("cd /tmp && manim -ql scene.py", "c1") || "", /already came back/);
+assert.equal(shellPreflight("manim -ql scene.py", "c2"), null);
+banPackages("c1", ["manim"]);
+assert.match(shellPreflight("pip3 install --user manim", "c1") || "", /already refused/);
+assert.match(unseenCommandFlags("```bash\nsudo pacman -S --noconfirm foo\n```", "pacman install docs") || "", /--noconfirm/);
+assert.equal(unseenCommandFlags("```bash\nsudo pacman -S --noconfirm foo\n```", "use --noconfirm"), null);
 
 console.log("harness-extra: ok");

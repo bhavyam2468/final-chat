@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { X, Plus } from "lucide-react";
 import { Mcp, Skills } from "./Extensions";
 
-type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
+type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; phone?: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
 type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
@@ -156,9 +156,11 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
             <div className={"srv" + (s.access === "sandbox" ? " off" : "")}><div className="t">Entire disk<small>Absolute paths outside your home folder.</small></div>
               <button className={"sw" + (s.access === "full" ? " on" : "")} disabled={caps?.locked || s.access === "sandbox"} aria-label="Entire disk access" onClick={() => saveS({ access: s.access === "full" ? "home" : "full" })} /></div>
             <div className="srv"><div className="t">Host terminal<small>{s.terminal === "host" ? `On: shell and Python run as you, starting in ${s.access === "sandbox" ? "the workspace" : caps?.home || "~"}.` : caps?.bwrap ? "Off: commands run isolated with bubblewrap, only the workspace is writable." : "Off: commands run in the workspace with secrets stripped. Install bubblewrap for full isolation."}</small></div>
-              <button className={"sw" + (s.terminal === "host" ? " on" : "")} disabled={caps?.locked} aria-label="Host terminal" onClick={() => saveS({ terminal: s.terminal === "host" ? "sandbox" : "host", ...(s.terminal === "host" ? { sudo: false } : {}) })} /></div>
+              <button className={"sw" + (s.terminal === "host" ? " on" : "")} disabled={caps?.locked} aria-label="Host terminal" onClick={() => saveS({ terminal: s.terminal === "host" ? "sandbox" : "host", ...(s.terminal === "host" ? { sudo: false, phone: false } : {}) })} /></div>
             <div className={"srv" + (s.terminal !== "host" ? " off" : "")}><div className="t">Allow sudo<small>{s.terminal !== "host" ? "Requires the host terminal." : s.secrets.SUDO_PASSWORD ? "Uses the SUDO_PASSWORD secret." : "Passwordless sudo only (sudo -n). Add a SUDO_PASSWORD secret under Tools to allow password prompts."}</small></div>
               <button className={"sw" + (s.sudo ? " on" : "")} disabled={s.terminal !== "host"} aria-label="Allow sudo" onClick={() => { if (!s.sudo && !confirm("Let the agent run commands as root?")) return; saveS({ sudo: !s.sudo }); }} /></div>
+            <div className={"srv" + (s.terminal !== "host" ? " off" : "")}><div className="t">Phone testing<small>{s.terminal !== "host" ? "Requires the host terminal." : "adb on a device you plugged in: install, launch, screenshot, tap, logcat. Every call shows in the chat."}</small></div>
+              <button className={"sw" + (s.phone ? " on" : "")} disabled={s.terminal !== "host"} aria-label="Phone testing" onClick={() => saveS({ phone: !s.phone })} /></div>
             {caps && <small className="note">{caps.soffice ? "LibreOffice found: office files preview as pages." : "Install LibreOffice for page-accurate .doc/.ppt/.odp previews."}</small>}
           </>}
           {tab === "mcp" && <Mcp servers={servers} saveSrv={saveSrv} reload={reloadSrv} saveSecret={(k, v) => saveS({ secrets: { [k]: v } })} flash={flash} />}

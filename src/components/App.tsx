@@ -9,6 +9,21 @@ import { CanvasLayer, Win } from "./Canvas";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
+function DockStatus({ conv, offerBrief, streamId, msgs, onBrief, onPromote, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; msgs: Msg[]; onBrief: () => void; onPromote: () => void; onUnlink: () => void }) {
+  const live = streamId ? msgs.find((m) => m.id === streamId) : undefined;
+  const tool = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.result === undefined);
+  const todo = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.name === "todo" && p.meta && typeof p.meta === "object" && "todo" in (p.meta as object));
+  const items = (todo && todo.type === "tool" ? (todo.meta as { todo?: { text: string; status: string }[] }).todo : []) || [];
+  const doing = items.find((t) => t.status === "doing") || items.find((t) => t.status === "todo");
+  const showSearch = conv?.mode === "search" && msgs.some((m) => m.role === "user");
+  if (!showSearch && !offerBrief && !conv?.state?.project && !tool && !doing) return null;
+  return <div className="dock-extra">
+    {conv?.state?.project && <button className="promote" onClick={onUnlink} title="Unlink project">Project {conv.state.project}</button>}
+    {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
+    {showSearch && <button className="promote" onClick={onPromote}>Open in chat</button>}
+    {(tool && tool.type === "tool" || doing) && <span className="queue-now">{doing ? doing.text : tool && tool.type === "tool" ? tool.name.replaceAll("_", " ") : ""}</span>}
+  </div>;
+}
 const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
 const NONE: Msg[] = [];
 const keyOf = (parentId: string | null, threadOf: string | null) => parentId ?? `root:${threadOf ?? ""}`;
@@ -25,6 +40,8 @@ export default function App() {
   const viewRef = useRef(view);
   const [surface, setSurface] = useState<"search" | "chat">("search");
   const modeRef = useRef<"chat" | "search">("search");
+  const pendingProject = useRef<string | null>(null);
+  const [offerBrief, setOfferBrief] = useState(false);
   const setView = useCallback((k: string) => { viewRef.current = k; setViewS(k); }, []);
   const msgs = store[view] || NONE;
   const setMsgsFor = useCallback((k: string, fn: (m: Msg[]) => Msg[]) => setStore((st) => ({ ...st, [k]: fn(st[k] || NONE) })), []);
@@ -66,7 +83,7 @@ export default function App() {
   const convRef = useRef<Conv | null>(null); convRef.current = conv;
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
-  useEffect(() => { const t = localStorage.getItem("theme") || "dark"; setThemeS(t); }, []);
+  useEffect(() => { const t = localStorage.getItem("theme") || "dark"; setThemeS(t); const h = new Date().getHours(); const day = new Date().toISOString().slice(0, 10); setOfferBrief(h >= 5 && h < 11 && localStorage.getItem("briefDay") !== day); }, []);
   // Copying a rendered formula copies the LaTeX, not the glyph soup.
   useEffect(() => {
     const onCopy = (e: ClipboardEvent) => {
@@ -197,7 +214,13 @@ export default function App() {
               const old = key; key = cid; attached.current.delete(old); attached.current.add(cid);
               setStore((st) => { const n = { ...st, [cid]: st[old] || [] }; delete n[old]; return n; });
               setRunning((x) => { const n = { ...x, [cid]: x[old] }; delete n[old]; return n; });
-              if (viewRef.current === old) { setView(cid); setConv({ id: cid, title: e.title, context: [], summary: null, summaryUpTo: null, mode: modeRef.current }); }
+              if (viewRef.current === old) {
+                setView(cid);
+                const project = pendingProject.current || undefined;
+                pendingProject.current = null;
+                if (project) fetch(`/api/conversations/${cid}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }) });
+                setConv({ id: cid, title: e.title, context: [], summary: null, summaryUpTo: null, mode: modeRef.current, state: project ? { project } : undefined });
+              }
               refreshConvs();
             }
             setMsgsFor(key, (ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: cid })));
@@ -367,8 +390,36 @@ export default function App() {
     return out;
   }, [mainPath, threadPath]);
 
+  const chipNew = useCallback((mode: "chat" | "search", text: string) => {
+    const id = "new:" + rid();
+    try { localStorage.setItem("draft:" + id, JSON.stringify({ text, chips: [] })); } catch { /* ignore quota */ }
+    setMode(mode); setView(id); setConv(null); setThread(null); setEditing(null);
+    setTimeout(() => mainRef.current?.focus(), 0);
+  }, [setMode, setView]);
+  const linkProject = useCallback(async (name?: string) => {
+    const clean = (name || "").trim();
+    if (!clean) { mainRef.current?.insert("/project "); return; }
+    const r = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: clean }) });
+    const j = await r.json().catch(() => ({}));
+    if (!j.id) return;
+    const c = convRef.current;
+    if (!c) { pendingProject.current = j.id; setMode("chat"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); return; }
+    await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: j.id }) });
+    setConv({ ...c, state: { ...(c.state || {}), project: j.id } });
+  }, [setMode, setView]);
+  const runBrief = useCallback(() => {
+    localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10));
+    setOfferBrief(false);
+    chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
+  }, [chipNew]);
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
+    { name: "search", hint: "New search", run: goSearch },
+    { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
+    { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
+    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
+    { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
+    { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
     { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
     { name: "fold", hint: "Fold old tool output", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "tools", keepLast: 2 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
     { name: "chats", hint: "Chats", run: () => setPanels((p) => ({ ...p, chats: true })) },
@@ -379,7 +430,7 @@ export default function App() {
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
     { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
-  ], [newChat, mainPath, loadConv, setTheme, theme]);
+  ], [newChat, goSearch, runBrief, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -427,7 +478,7 @@ export default function App() {
 
         <div className="dock">
           <div className="dock-stack">
-          {conv?.mode === "search" && mainPath.length > 0 && <div className="dock-extra"><button className="promote" onClick={promote}>Open in chat</button></div>}
+          <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} msgs={msgs} onBrief={runBrief} onPromote={promote} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
           <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
           </div>

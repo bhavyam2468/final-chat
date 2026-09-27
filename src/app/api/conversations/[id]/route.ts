@@ -24,9 +24,15 @@ export async function PATCH(req: NextRequest, { params }: P) {
   if (typeof b.title === "string") set.title = b.title;
   if (Array.isArray(b.context)) set.context = b.context;
   // "Open in chat": a search (History) becomes a full chat
-  if (b.mode === "chat" || b.mode === "search") {
+  if (b.mode === "chat" || b.mode === "search" || typeof b.project === "string" || b.project === null) {
     const [c] = await db.select({ state: conversations.state }).from(conversations).where(eq(conversations.id, id));
-    if (c) set.state = { ...(c.state || {}), mode: b.mode };
+    if (c) {
+      const state = { ...(c.state || {}), ...(set.state as object || {}) };
+      if (b.mode === "chat" || b.mode === "search") state.mode = b.mode;
+      if (b.project === null || b.project === "") delete state.project;
+      else if (typeof b.project === "string") state.project = b.project.replace(/[^\w-]/g, "").slice(0, 40);
+      set.state = state;
+    }
   }
   if (Object.keys(set).length) await db.update(conversations).set(set).where(eq(conversations.id, id));
   return Response.json({ ok: true });

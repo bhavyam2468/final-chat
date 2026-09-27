@@ -158,7 +158,15 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .dock-stack { width: 100%; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
 .dock-stack > * { pointer-events: auto; }
-.dock-extra { width: 100%; max-width: min(820px, 100%); display: flex; justify-content: flex-end; margin: 0 auto 8px; }
+.dock-extra { width: 100%; max-width: min(820px, 100%); display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin: 0 auto 8px; flex-wrap: wrap; }
+.queue-now { margin-right: auto; font-size: 12.5px; color: var(--muted); max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-line { display: flex; align-items: flex-start; gap: 2px; }
+.tool-line .tool-row { flex: 1; min-width: 0; }
+.tool-copy { margin-top: 3px; opacity: 0; }
+.tool:hover .tool-copy, .tool-copy:focus-visible { opacity: 1; }
+.changes { margin-top: 12px; }
+.changes summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.changes .diff { margin-top: 8px; }
 .promote { width: auto; font-size: 12.5px; color: var(--muted); padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--float); }
 .promote:hover { color: var(--fg); }
 .shell.home .scroll { visibility: hidden; }

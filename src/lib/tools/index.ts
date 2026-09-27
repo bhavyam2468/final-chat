@@ -7,7 +7,7 @@ import type { Settings } from "../settings";
 import { searchCatalog } from "../blocks/catalog";
 import { callMcp } from "../mcp";
 import { runShell, runPython as execPython, pipInstall, hostDenied, usesSudo, sudoReady } from "../exec";
-import { youtubeId } from "../shared";
+import { youtubeId, chatDir } from "../shared";
 import { firecrawlScrape, firecrawlSearch, firecrawlExtract } from "../web";
 import { applyEdits, insertLines, snippet, hasPlaceholder, Edit } from "./edit";
 import { syntaxError } from "./syntax";
@@ -17,6 +17,9 @@ import { runChecks, lintFiles } from "../harness/check";
 import { findSkill, skillMeta, skillFiles } from "../skills";
 import { destructive, checkInstalls } from "../harness/guard";
 import { forget, remember } from "../memory";
+import { banPackages, installNames, noteMissing, shellPreflight } from "../harness/shell-preflight";
+import { ensureProject, projectSlug } from "../projects";
+import { adb, adbShot, phoneOff } from "../phone";
 import { createHash } from "crypto";
 import os from "os";
 
@@ -31,7 +34,7 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "search" };
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "search"; project?: string };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in
@@ -48,28 +51,39 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("context_remove", "Unpin a file from context", { path: s() }, ["path"]),
     T("compact_context", "Free context. tools=fold old tool outputs; web=old web results to key facts; history=summarise all but last keep_last messages", { scope: { type: "string", enum: ["tools", "web", "history"] }, keep_last: n() }),
     T("fs_list", "List a directory", { path: s(), depth: n("1-3, default 1") }),
-    T("fs_read", "Read a file with line numbers (250 lines per call; pdf/docx/xlsx/pptx as text). Long file: outline=true lists headings/definitions with line numbers; around=\"text\" shows the lines around its first match (nth=2 for the next)", { path: s(), start: n(), end: n(), around: s(), nth: n(), outline: b() }, ["path"]),
-    T("fs_search", "Search file contents (regex; ripgrep). Returns path:line: text", { pattern: s(), path: s("dir or file, default workspace"), glob: s("e.g. *.ts"), literal: b() }, ["pattern"]),
-    T("fs_write", "Create a file or replace it entirely. Existing files: fs_read first; prefer fs_edit for changes", { path: s(), content: s(), mode: { type: "string", enum: ["overwrite", "append"] } }, ["path", "content"]),
+    T("fs_read", "Read a file with line numbers (250 lines per call). Do not cat or head it in the shell. Long file: outline=true, or around=\"text\". Do not re-read a file already in context", { path: s(), start: n(), end: n(), around: s(), nth: n(), outline: b() }, ["path"]),
+    T("fs_search", "Search file contents. Use this instead of grep, rg, or find in the shell. Returns path:line: text", { pattern: s(), path: s("dir or file, default workspace"), glob: s("e.g. *.ts"), literal: b() }, ["pattern"]),
+    T("fs_write", "New file or full rewrite only. Refuses a directory. Prefer fs_edit. Do not create a README or docs unless asked", { path: s(), content: s(), mode: { type: "string", enum: ["overwrite", "append"] } }, ["path", "content"]),
     T("fs_edit", "Replace exact text. find must match the file (copy from fs_read without line numbers) and be unique unless all=true. Several edits apply atomically", { path: s(), find: s(), replace: s(), all: b(), edits: arr({ type: "object", properties: { find: s(), replace: s(), all: b() }, required: ["find", "replace"] }, "multiple edits in one call") }, ["path"]),
     T("fs_insert", "Insert lines after line N (0 = top, -1 = end) without matching text", { path: s(), line: n(), text: s() }, ["path", "line", "text"]),
     T("fs_move", "Move/rename. Into a folder: end `to` with /. Refuses to replace an existing file unless overwrite=true", { from: s(), to: s(), overwrite: b() }, ["from", "to"]),
     T("fs_delete", "Delete file or dir (goes to trash; recoverable)", { path: s() }, ["path"]),
     T("run_python", "Run Python in the app venv (created on first use; same interpreter as pip_install). Charts the user should see are <x-chart> or <x-graph>, not matplotlib", { code: s() }, ["code"]),
     T("pip_install", "Install packages into the same venv run_python uses. Not system pip", { packages: arr({ type: "string" }) }, ["packages"]),
-    T("shell", "Run bash in YOUR sandbox (cwd=workspace). Not the user's machine. If it fails, read the error; do not guess another binary", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
-    ...(host ? [T("host_shell", "Run bash on the USER'S machine as the user (their tools, logins, files). State what you run. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
-    T("web_search", "Search the web. Cite only pages you then open", { query: s(), limit: n() }, ["query"]),
+    T("shell", "Run bash in YOUR sandbox. Not for reading or searching files (fs_read, fs_search, fs_list). Quote paths that contain spaces. A missing binary is not retried", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
+    ...(host ? [T("host_shell", "Run bash on the USER'S machine. Quote paths with spaces. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password. Not for adb (use the phone tools)", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
+    T("web_search", "Current or niche facts only. Do not search for stable knowledge you already have. Open a page with web_fetch before citing it", { query: s(), limit: n() }, ["query"]),
     T("web_fetch", "Fetch a URL as markdown", { url: s() }, ["url"]),
     ...(st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (Firecrawl AI)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
     T("view_image", "Look at an image (workspace path or URL)", { path: s() }, ["path"]),
     T("todo", "Set the task checklist shown to the user (full list each call). Use for tasks with 3+ steps", { items: arr({ type: "object", properties: { text: s(), status: { type: "string", enum: ["todo", "doing", "done"] } }, required: ["text", "status"] }) }, ["items"]),
     T("ask_user", "Ask the user to choose (2-5 short options; they can also type their own answer or skip). Only when a real decision blocks you. Ends your turn", { question: s(), options: arr({ type: "string" }), multi: b() }, ["question", "options"]),
-    T("remember", "Save a durable fact the user asked to remember (profile) or a decision that will matter in a later chat (episode). Not for the current task. They can undo it", { text: s(), scope: { type: "string", enum: ["profile", "episode"] } }, ["text"]),
+    T("remember", "Save a fact the user asked to remember. profile = always loaded. episode = retrieved when relevant. project = notes on the linked project. They can edit or undo it", { text: s(), scope: { type: "string", enum: ["profile", "episode", "project"] } }, ["text"]),
     T("forget", "Delete a remembered note by the id shown in Memory", { id: s() }, ["id"]),
+    T("project_open", "Create or link a project. Its PROJECT.md is loaded in every later turn of this chat. Pass the project name", { name: s() }, ["name"]),
+    T("diff_since", "Files changed in this chat's folder (and the linked project) in the last N hours", { hours: n("default 24") }),
     T("canvas_open", "Show a workspace file, web page or YouTube URL in a canvas window", { target: s("path or URL"), title: s(), dock: b("dock beside chat") }, ["target"]),
-    T("ui_search", "Find BlocksUI components", { query: s() }, ["query"]),
+    T("ui_search", "Find BlocksUI components. Do not invent a tag; if it is not in the system prompt, search here", { query: s() }, ["query"]),
   ];
+  const phone: ToolDef[] = st.phone ? [
+    T("adb_devices", "List Android devices. Phone testing must already be on", {}, []),
+    T("adb_install", "Install an apk from the workspace onto the connected device", { path: s("apk path") }, ["path"]),
+    T("adb_launch", "Start an activity. package and activity come from the manifest, not a guess", { package: s(), activity: s("activity class, or .MainActivity") }, ["package"]),
+    T("adb_shot", "Screenshot the device into this chat's artifacts and show it", {}, []),
+    T("adb_tap", "Tap the screen at pixel x, y. Read a screenshot first", { x: n(), y: n() }, ["x", "y"]),
+    T("adb_logcat", "Recent device logs", { lines: n("default 120") }),
+    T("adb_shell", "One command on the device shell, not the computer. No installers, no rm -rf", { command: s() }, ["command"]),
+  ] : [];
   const dev: ToolDef[] = [
     T("proc_start", "Start a long-running process (dev server, watcher) in the background", { name: s(), command: s(), cwd: s(), wait: n("seconds to wait for a port, default 4"), ...hostArg }, ["name", "command"]),
     T("proc_logs", "Process output/status. No name = list. wait_for blocks until port/pattern/exit", { name: s(), tail: n(), grep: s(), wait_for: { type: "string", enum: ["port", "pattern", "exit"] }, pattern: s(), timeout: n() }),
@@ -78,7 +92,7 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("browser", "Open URL or workspace page (.html/.ui/dir) headless; returns screenshot + console errors + text", { target: s(), steps: arr({ type: "object", properties: { click: s(), type: s(), text: s(), press: s(), wait: { type: ["number", "string"] }, eval: s(), scroll: n(), hover: s(), select: s(), value: s() } }, "actions in order"), width: n(), height: n(), full: b("full page"), theme: { type: "string", enum: ["light", "dark"] } }, ["target"]),
     T("check", "Verify work: project dir → types/lint/tests/build; UI file or dir → design lint + screenshot", { path: s(), run: { type: "string", enum: ["all", "types", "lint", "test", "build", "ui"] }, ...hostArg }, ["path"]),
   ];
-  return [...core, ...(packs.includes("dev") ? dev : [])];
+  return [...core, ...phone, ...(packs.includes("dev") ? dev : [])];
 }
 
 export type ToolCtx = {
@@ -320,7 +334,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       case "pip_install": {
         const pk = ([] as string[]).concat(a.packages).map(String);
         const chk = await checkInstalls(pk, "pypi");
-        if (chk?.block) return { ok: false, result: chk.block };
+        if (chk?.block) { banPackages(ctx.conversationId, pk); return { ok: false, result: chk.block + "\n\n[harness] Do not retry this name." }; }
         if (chk?.approve) { const gate = await approvalGate(ctx, `pip install ${pk.join(" ")}`, chk.approve, false); if (gate) return gate; }
         const r = await pipInstall(pk, { onData: ctx.output, signal: ctx.signal }); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
       }
@@ -329,16 +343,65 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const host = name === "host_shell";
         if (host && hostDenied(st)) return { ok: false, result: hostDenied(st)! };
         const cmd = String(a.command);
+        const pre = shellPreflight(cmd, ctx.conversationId);
+        if (pre) return { ok: false, result: pre };
         const danger = destructive(cmd, host ? "host" : "sandbox");
         // sudo with no known password: one in-app prompt (masked field) that also covers any risk approval
         if (host && st.sudo && usesSudo(cmd) && !sudoReady(st)) { const gate = await approvalGate(ctx, cmd, danger?.reason || "Needs your sudo password", true, true); if (gate) return gate; }
         else if (danger) { const gate = await approvalGate(ctx, cmd, danger.reason, host); if (gate) return gate; }
         const chk = await checkInstalls(cmd);
-        if (chk?.block) return { ok: false, result: chk.block };
+        if (chk?.block) { banPackages(ctx.conversationId, installNames(cmd)); return { ok: false, result: chk.block + "\n\n[harness] Do not retry this name. Search for the real package, or stop." }; }
         if (chk?.approve) { const gate = await approvalGate(ctx, cmd, chk.approve, host); if (gate) return gate; }
         const cwd = a.cwd ? resolvePath(String(a.cwd), host ? st.access : "sandbox") : undefined;
         const r = await runShell(st, String(a.command), Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd, { onData: ctx.output, signal: ctx.signal });
+        noteMissing(ctx.conversationId, r.out);
         return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}` + shellNote(r.out)) };
+      }
+      case "adb_devices":
+      case "adb_install":
+      case "adb_launch":
+      case "adb_shot":
+      case "adb_tap":
+      case "adb_logcat":
+      case "adb_shell": {
+        const off = phoneOff(st);
+        if (off) return { ok: false, result: off };
+        if (name === "adb_devices") { const r = await adb(st, ["devices", "-l"], { onData: ctx.output, signal: ctx.signal }); return { ok: r.code === 0, result: cut(r.out || "no devices") }; }
+        if (name === "adb_install") {
+          const apk = P(String(a.path || ""));
+          if (!apk.endsWith(".apk")) return { ok: false, result: "path must be an .apk in the workspace" };
+          const r = await adb(st, ["install", "-r", apk], { onData: ctx.output, signal: ctx.signal }, 180000);
+          return { ok: r.code === 0, result: cut(r.out || "installed") };
+        }
+        if (name === "adb_launch") {
+          const pkg = String(a.package || "");
+          const act = String(a.activity || "");
+          if (!/^[\w.]+$/.test(pkg)) return { ok: false, result: "package must come from the manifest" };
+          const comp = act ? (act.startsWith(".") ? pkg + act : act.includes("/") ? act : `${pkg}/${act}`) : pkg;
+          const r = await adb(st, ["shell", "am", "start", "-n", comp], { onData: ctx.output, signal: ctx.signal });
+          return { ok: r.code === 0, result: cut(r.out || "launched") };
+        }
+        if (name === "adb_shot") {
+          const relp = `${chatDir(ctx.conversationId)}/artifacts/device-${Date.now()}.png`;
+          const dest = path.join(WS, relp);
+          const r = await adbShot(st, dest);
+          return { ok: r.code === 0, result: r.code === 0 ? `Screenshot ${relp}` : r.out, images: r.code === 0 ? [relp] : undefined, meta: r.code === 0 ? { image: relp } : undefined };
+        }
+        if (name === "adb_tap") {
+          const x = Math.round(Number(a.x)), y = Math.round(Number(a.y));
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false, result: "x and y must be pixels from a screenshot" };
+          const r = await adb(st, ["shell", "input", "tap", String(x), String(y)], { onData: ctx.output, signal: ctx.signal });
+          return { ok: r.code === 0, result: r.code === 0 ? `tapped ${x},${y}` : r.out };
+        }
+        if (name === "adb_logcat") {
+          const n = Math.min(400, Math.max(20, Number(a.lines) || 120));
+          const r = await adb(st, ["logcat", "-d", "-t", String(n)], { onData: ctx.output, signal: ctx.signal });
+          return { ok: r.code === 0, result: cut(r.out || "(no logs)") };
+        }
+        const shcmd = String(a.command || "");
+        if (/\brm\s+-rf\b|\bpm\s+uninstall\b|\bsettings\s+put\b/i.test(shcmd)) return { ok: false, result: "Refusing that device command. Ask the user." };
+        const r = await adb(st, ["shell", shcmd], { onData: ctx.output, signal: ctx.signal });
+        return { ok: r.code === 0, result: cut(r.out || "(no output)") };
       }
       case "canvas_open": {
         const t = String(a.target || "").trim();
@@ -358,9 +421,33 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         return { ok: items.length > 0, result: items.map((d, i) => `[${i + 1}] ${d.title}\n${d.url}\n${d.snippet}`).join("\n\n") || empty, meta: { sources: items, source: j._source } };
       }
       case "remember": {
-        const scope = a.scope === "profile" ? "profile" : "episode";
-        const row = await remember(String(a.text || ""), scope);
-        return { ok: true, result: `Remembered [${row.id}] ${row.text}. The user can undo this.`, meta: { memory: row } };
+        const scope = a.scope === "profile" ? "profile" : a.scope === "project" ? "project" : "episode";
+        const row = await remember(String(a.text || ""), scope, ctx.state.project);
+        return { ok: true, result: `Remembered [${row.id}] ${row.text}. The user can edit or undo this.`, meta: { memory: row } };
+      }
+      case "project_open": {
+        const p = await ensureProject(String(a.name || ""));
+        await ctx.setState({ ...ctx.state, project: p.id });
+        return { ok: true, result: `Linked this chat to project ${p.id} (${p.path}).\n${p.text}`, meta: { project: p.id } };
+      }
+      case "diff_since": {
+        const hours = Math.min(168, Math.max(1, Number(a.hours) || 24));
+        const since = Date.now() - hours * 3600e3;
+        const roots = [path.join(WS, chatDir(ctx.conversationId)), ctx.state.project ? path.join(WS, "projects", projectSlug(ctx.state.project)) : ""].filter(Boolean);
+        const found: string[] = [];
+        const walk = async (dir: string, depth: number) => {
+          if (depth > 4 || found.length > 40) return;
+          for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+            if (name === "node_modules" || name === ".git" || name === ".venv") continue;
+            const abs = path.join(dir, name);
+            const stt = await fs.stat(abs).catch(() => null);
+            if (!stt) continue;
+            if (stt.isDirectory()) await walk(abs, depth + 1);
+            else if (stt.mtimeMs >= since) found.push(`${rel(abs)} · ${new Date(stt.mtimeMs).toISOString().slice(0, 16)}`);
+          }
+        };
+        for (const r of roots) await walk(r, 0);
+        return { ok: true, result: found.length ? `Changed in the last ${hours}h:\n` + found.join("\n") : `No files changed in the last ${hours}h.` };
       }
       case "forget": {
         const ok = await forget(String(a.id || ""));

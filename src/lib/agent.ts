@@ -20,6 +20,8 @@ import { chain, assistantText, compactTools, compactWeb, compactHistory, turnRep
 import { canvasPath, chatDir } from "./shared";
 import { liftFences, uiIssues } from "./ui-check";
 import { memoryPrompt } from "./memory";
+import { projectSlug, projectText } from "./projects";
+import { unseenCommandFlags } from "./harness/shell-preflight";
 
 export type Emit = (e: Record<string, unknown>) => void;
 
@@ -29,7 +31,7 @@ function envText(st: Settings) {
   const term = st.terminal === "host"
     ? `shell = your sandbox${sb.isolated ? " (isolated)" : ""}, cwd=workspace. host_shell = the user's own machine as the user, cwd=${host.cwd === WS ? "workspace" : "~"} (their installed toolchains and logins, e.g. gh, git, docker, SDKs).`
     : `shell = your sandbox${sb.isolated ? " (isolated)" : ""}, cwd=workspace. The user's own terminal is off.`;
-  return `# Access\nFiles: ${files}. Terminal: ${term} sudo: ${st.terminal === "host" && st.sudo ? "allowed in host_shell (only when required, say why)" : "disabled"}. OS: ${process.platform}.`;
+  return `# Access\nFiles: ${files}. Terminal: ${term} sudo: ${st.terminal === "host" && st.sudo ? "allowed in host_shell (only when required, say why)" : "disabled"}. Phone testing: ${st.phone ? "on" : "off"}. OS: ${process.platform}.`;
 }
 /** Tool packs active for a conversation (auto: large windows get everything up front, small ones load on demand). */
 export function packsFor(st: Settings, state: ConvState | null | undefined): Pack[] {
@@ -59,6 +61,9 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
   const memory = (await fs.readFile(path.join(WS, "system/AGENTS.md"), "utf8").catch(() => "")).trim();
   const recall = query ? await memoryPrompt(query).catch(() => "") : "";
+  const slug = conv.state?.project ? projectSlug(conv.state.project) : "";
+  const proj = slug ? await projectText(slug).catch(() => "") : "";
+  const notes = slug ? await fs.readFile(path.join(WS, "projects", slug, "NOTES.md"), "utf8").catch(() => "") : "";
   const skills = `# Skills (skill_open to load)\n${await skillsIndex(st)}`;
   const tree = `# Workspace tree\n${await treeText(160, conv.id)}`;
   const items: { path: string; tokens: number }[] = [];
@@ -75,7 +80,7 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
   }
   const parts: [string, string, string][] = [
     ["system", "System prompt", base],
-    ["memory", "Memory", [memory && `# ${memory}`, recall && `# Remembered\n${recall}\nremember only when the user asks, or a decision that will matter in a later chat. forget(id) undoes one.`].filter(Boolean).join("\n\n")],
+    ["memory", "Memory", [memory && `# ${memory}`, recall && `# Remembered\n${recall}\nremember only when the user asks, or a decision that will matter in a later chat. forget(id) undoes one.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
     ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, conv.state?.mode === "search" ? SEARCH_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
     ["tree", "Workspace tree", tree],
@@ -290,7 +295,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const stuck = new StuckDetector();
   let opener = new OpenerGate();
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
-  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched;
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
@@ -420,6 +425,16 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             rewriteStep(text, "");
             loopMsgs.push({ role: "assistant", content: text });
             loopMsgs.push({ role: "user", content: `[Automatic citation check, not from the user] These links did not appear in any search result or page you opened: ${bad.slice(0, 8).join(" ")}. web_fetch the ones you need to confirm them, or remove them. Cite only pages you actually saw. Then give the complete answer again.` });
+            continue;
+          }
+        }
+        if (state.mode === "search" && st.quality === "fix" && cmdRounds < 1 && text && !signal.aborted) {
+          const bad = unseenCommandFlags(text, seenText());
+          if (bad) {
+            cmdRounds++;
+            rewriteStep(text, "");
+            loopMsgs.push({ role: "assistant", content: text });
+            loopMsgs.push({ role: "user", content: `[Automatic command check, not from the user] A command in the answer uses flags that did not appear in any page you opened:\n${bad}\nweb_fetch the current docs and keep only flags you saw, or remove the command. Do not guess.` });
             continue;
           }
         }

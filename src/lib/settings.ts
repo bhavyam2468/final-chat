@@ -20,6 +20,8 @@ export type Settings = {
   terminal: "sandbox" | "host";
   /** Allow sudo/su/doas in host terminal. Uses SUDO_PASSWORD secret via `sudo -S` if set, else `sudo -n`. */
   sudo: boolean;
+  /** Drive a USB-connected Android device with adb. Off until the user turns it on. */
+  phone: boolean;
   secrets: Record<string, string>;
   /** Model accepts images (view_image, browser screenshots, attachments). */
   vision: boolean;
@@ -55,6 +57,7 @@ export function defaults(): Settings {
     access: (process.env.ACCESS_MODE as Access) || "sandbox",
     terminal: (process.env.TERMINAL_MODE as "host") || "sandbox",
     sudo: process.env.ALLOW_SUDO === "1",
+    phone: process.env.ALLOW_PHONE === "1",
     secrets: {},
     vision: process.env.LLM_VISION !== "0",
     quality: (process.env.QUALITY_GUARD as Settings["quality"]) || "fix",
@@ -71,7 +74,8 @@ export function clampAccess(s: Settings): Settings {
   if (!["sandbox", "home", "full"].includes(s.access)) s.access = "sandbox";
   if (s.terminal !== "host") s.terminal = "sandbox";
   s.sudo = s.sudo === true && s.terminal === "host";
-  if (hostLocked()) { s.access = "sandbox"; s.terminal = "sandbox"; s.sudo = false; }
+  s.phone = s.phone === true && s.terminal === "host";
+  if (hostLocked()) { s.access = "sandbox"; s.terminal = "sandbox"; s.sudo = false; s.phone = false; }
   if (!["off", "warn", "fix"].includes(s.quality)) s.quality = "fix";
   if (!["auto", "all", "lean"].includes(s.toolLoading)) s.toolLoading = "auto";
   s.vision = s.vision !== false;
