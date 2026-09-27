@@ -307,3 +307,23 @@ npm start
 | `⌘.` / `Ctrl+.` | Toggle workspace panel |
 | `⌘⇧O` / `Ctrl+Shift+O` | New chat |
 | `Esc` | Close modal/overlay |
+
+## Recovery and regression work
+
+For the September 2026 stress-test recovery, start with
+[`docs/RECOVERY.md`](docs/RECOVERY.md), then the
+[requirements/evidence tracker](docs/STRESS-TEST-TRACKER.md) and
+[independent first-pass research](docs/HARNESS-RESEARCH.md).
+These documents distinguish inspected code from reproduced defects and completed fixes.
+
+With Node 22.6+ (type stripping support) and dependencies installed:
+
+```bash
+npm test          # existing editing and harness helper tests
+npm run check     # tests, TypeScript, ESLint
+npm run build     # production build, separately
+```
+
+The current helper tests do not cover browser interactions or live model behavior.
+Keep private stress-test exports and screenshots out of Git; commit redacted regression
+fixtures only after reviewing their contents.

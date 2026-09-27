@@ -2,6 +2,7 @@
 /workspace
 /.next
 /node_modules
+/.cache
 
 # Secrets
 .env

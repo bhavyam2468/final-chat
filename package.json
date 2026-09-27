@@ -6,7 +6,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --no-warnings --test dev/tests/*.test.ts",
+    "check": "npm test && npm run typecheck && npm run lint"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
