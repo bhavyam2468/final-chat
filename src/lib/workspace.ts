@@ -38,6 +38,13 @@ export async function ensureWorkspace() {
     await fs.mkdir(path.dirname(mp), { recursive: true });
     await fs.writeFile(mp, JSON.stringify(man));
   }
+  // older layout kept every chat as chats/<id>.json: move each into its own folder (chats/<id>/chat.json)
+  const cd = [WS, "chats"].join("/");
+  for (const f of await fs.readdir(cd).catch(() => [] as string[])) {
+    const m = f.match(/^([\w-]+)\.json$/); if (!m) continue;
+    await fs.mkdir([cd, m[1]].join("/"), { recursive: true });
+    await fs.rename([cd, f].join("/"), [cd, m[1], "chat.json"].join("/")).catch(() => {});
+  }
   seeded = true;
 }
 
@@ -98,12 +105,19 @@ export async function tree(dir = WS, depth = 4): Promise<Node[]> {
 }
 
 /** Compact tree text for the prompt. Skills internals collapsed. */
-export async function treeText(limit = 160): Promise<string> {
+export async function treeText(limit = 160, chat?: string): Promise<string> {
   const lines: string[] = [];
   const walk = (nodes: Node[], ind: string) => {
     for (const n of nodes) {
       if (lines.length >= limit) return;
       if (n.dir && (n.path === "system/skills" || n.path === "system/mcp")) { lines.push(`${ind}${n.name}/ (…)`); continue; }
+      // other chats' folders stay out of the prompt (one line); this chat's folder is listed
+      if (n.dir && n.path === "chats") {
+        const mine = n.children?.find((c) => c.name === chat);
+        lines.push(`${ind}chats/ (${n.children?.length || 0} chat folders)`);
+        if (mine) { lines.push(`${ind} ${mine.name}/ (this chat)`); if (mine.children) walk(mine.children, ind + "  "); }
+        continue;
+      }
       lines.push(`${ind}${n.name}${n.dir ? "/" : ""}`);
       if (n.children) walk(n.children, ind + " ");
     }

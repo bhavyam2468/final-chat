@@ -10,7 +10,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 | Capability | Description |
 |---|---|
-| **Chat** | Streaming multi-turn AI chat with branching, threading, and side-threads |
+| **Search home** | The app opens on a centered search box, not a chat. A search is an answer with sources (History). New chat starts a real chat, which keeps its tool calls. "Open in chat" promotes a search |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
@@ -133,6 +133,7 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `DATABASE_URL` | unset → PGlite | Postgres connection string |
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | FreeLLMAPI | Any OpenAI-compatible endpoint (Gemini, OpenRouter, OpenAI, Ollama, FreeLLMAPI) |
 | `LLM_CONTEXT_TOKENS` | model preset | Context window; prompts are budgeted to fit (16k works) |
+| `LLM_WORKING_TOKENS` | 64000 | What one request may use even if the window is bigger; trimming, folding and auto-compaction work against it (Settings → Working context) |
 | `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Local-first search/scrape with cloud fallback |
 | `WORKSPACE_DIR` | `./workspace` | Agent root |
 | `ACCESS_MODE` | `sandbox` | Initial file access: `sandbox`, `home`, `full` |

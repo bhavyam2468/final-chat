@@ -1,6 +1,9 @@
 import type { Settings } from "./settings";
+import { fastSearch, plainFetch } from "./search-fast";
 
-/** Firecrawl: local-first (zero credits), cloud fallback for anti-bot pages, search fallback and AI extraction. */
+/** Firecrawl: local-first (zero credits), cloud fallback for anti-bot pages, search fallback and AI extraction.
+ *  A keyless fast path runs first so search mode never waits on a scraper that isn't up. */
+
 function isAntiBotProtected(text: string): boolean {
   if (!text) return false;
   const lower = text.toLowerCase();
@@ -17,28 +20,35 @@ function isAntiBotProtected(text: string): boolean {
 }
 
 export async function firecrawlScrape(st: Settings, url: string) {
-  // 1. Try local Firecrawl first (no API key needed, zero credit cost)
+  const direct = plainFetch(url);
+  // 1. Try local Firecrawl first (no API key needed, zero credit cost). Short timeout — the direct fetch races it.
   if (st.firecrawlUrl) {
     try {
       const r = await fetch(st.firecrawlUrl.replace(/\/$/, "") + "/v1/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(6000),
       });
       if (r.ok) {
         const j = await r.json();
         const md = (j.data?.markdown as string) || "";
-        if (!isAntiBotProtected(md) && md.trim().length > 0) {
+        if (!isAntiBotProtected(md) && md.trim().length > 80) {
           return { ...j, _source: "local" };
         }
       }
     } catch {
-      // Local failed or timed out, fall back to cloud
+      // Local failed or timed out, fall back
     }
   }
 
-  // 2. Fallback to Cloud Firecrawl using API key (bypasses Cloudflare / anti-bot)
+  // 2. Direct fetch, already in flight. Good enough for docs, wikis, and most public pages.
+  const plain = await direct.catch(() => null);
+  if (plain && plain.markdown.trim().length > 80 && !isAntiBotProtected(plain.markdown)) {
+    return { data: { markdown: plain.markdown, metadata: { title: plain.title } }, _source: "fetch" };
+  }
+
+  // 3. Cloud Firecrawl for anti-bot pages.
   if (st.firecrawlKey) {
     const cloudEndpoint = (st.firecrawlCloudUrl || "https://api.firecrawl.dev").replace(/\/$/, "") + "/v1/scrape";
     const r = await fetch(cloudEndpoint, {
@@ -48,24 +58,36 @@ export async function firecrawlScrape(st: Settings, url: string) {
         Authorization: `Bearer ${st.firecrawlKey}`,
       },
       body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(20000),
     });
     const j = await r.json().catch(() => ({}));
     if (r.ok) return { ...j, _source: "cloud" };
     throw new Error(`Cloud Firecrawl scrape ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);
   }
 
-  throw new Error("Scrape failed: Local Firecrawl was blocked by anti-bot protection or failed, and no online Firecrawl API key is set for cloud bypass.");
+  if (plain && plain.markdown.trim()) return { data: { markdown: plain.markdown, metadata: { title: plain.title } }, _source: "fetch" };
+  throw new Error("Scrape failed: the page didn't answer, local Firecrawl isn't up, and no online Firecrawl API key is set.");
 }
 
 export async function firecrawlSearch(st: Settings, query: string, limit: number) {
-  // 1. Attempt local Firecrawl search with a quick timeout
+  // developer mode + offline model: fake results from dev/mock-llm.mjs so search mode is testable without network
+  if (st.dev && st.provider === "mock") {
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/dev/mock/v1/search`, { method: "POST", body: JSON.stringify({ query, limit }) });
+    return { ...(await r.json()), _source: "mock" };
+  }
+  const n = Math.min(10, Math.max(1, limit || 5));
+  // Keyless results in ~2.5s. Return them immediately when we have a real set, so a downed local scraper can't stall search mode.
+  const fast = await fastSearch(query, n).catch(() => []);
+  if (fast.length >= 2) {
+    return { data: fast.map((h) => ({ url: h.url, title: h.title, description: h.snippet || "" })), _source: "fast" };
+  }
+  // Local Firecrawl, quick timeout.
   if (st.firecrawlUrl) {
     try {
       const r = await fetch(st.firecrawlUrl.replace(/\/$/, "") + "/v1/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, limit }),
+        body: JSON.stringify({ query, limit: n }),
         signal: AbortSignal.timeout(3000),
       });
       if (r.ok) {
@@ -79,7 +101,6 @@ export async function firecrawlSearch(st: Settings, query: string, limit: number
     }
   }
 
-  // 2. Fallback to Cloud Firecrawl search using API key
   if (st.firecrawlKey) {
     const cloudEndpoint = (st.firecrawlCloudUrl || "https://api.firecrawl.dev").replace(/\/$/, "") + "/v1/search";
     const r = await fetch(cloudEndpoint, {
@@ -88,15 +109,15 @@ export async function firecrawlSearch(st: Settings, query: string, limit: number
         "Content-Type": "application/json",
         Authorization: `Bearer ${st.firecrawlKey}`,
       },
-      body: JSON.stringify({ query, limit }),
+      body: JSON.stringify({ query, limit: n }),
       signal: AbortSignal.timeout(15000),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) return { ...j, _source: "cloud" };
-    throw new Error(`Cloud Firecrawl search ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);
+    if (r.ok && Array.isArray(j.data) && j.data.length) return { ...j, _source: "cloud" };
   }
 
-  throw new Error("Search failed: Local search timed out/failed and no online Firecrawl API key is set.");
+  if (fast.length) return { data: fast.map((h) => ({ url: h.url, title: h.title, description: h.snippet || "" })), _source: "fast" };
+  return { data: [], _source: "none" };
 }
 
 export async function firecrawlExtract(st: Settings, url: string, prompt: string) {

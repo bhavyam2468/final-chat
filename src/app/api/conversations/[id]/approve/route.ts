@@ -2,10 +2,11 @@ import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { conversations, messages, Part } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
+import { setSessionSudo, sudoCheck } from "@/lib/exec";
 
 export const dynamic = "force-dynamic";
 type P = { params: Promise<{ id: string }> };
-type Approval = { cmd: string; hash: string; reason: string; host: boolean; decision?: "approve" | "deny" };
+type Approval = { cmd: string; hash: string; reason: string; host: boolean; sudo?: boolean; decision?: "approve" | "deny" };
 
 /**
  * body: { messageId, partId, decision: "approve" | "deny" }. The hash comes from the stored tool result, never
@@ -13,7 +14,7 @@ type Approval = { cmd: string; hash: string; reason: string; host: boolean; deci
  */
 export async function POST(req: NextRequest, { params }: P) {
   const { id } = await params;
-  const { messageId, partId, decision } = await req.json();
+  const { messageId, partId, decision, password } = await req.json();
   if (decision !== "approve" && decision !== "deny") return Response.json({ error: "bad decision" }, { status: 400 });
   const [m] = await db.select().from(messages).where(and(eq(messages.id, messageId), eq(messages.conversationId, id)));
   const [conv] = await db.select().from(conversations).where(eq(conversations.id, id));
@@ -22,6 +23,12 @@ export async function POST(req: NextRequest, { params }: P) {
   const ap = (part?.meta as { approval?: Approval } | undefined)?.approval;
   if (!part || !ap) return Response.json({ error: "no pending approval" }, { status: 404 });
   if (ap.decision) return Response.json({ error: "already decided", decision: ap.decision }, { status: 409 });
+  // sudo prompts: the password is verified, then held in server memory only (not stored in the message or DB)
+  if (ap.sudo && decision === "approve") {
+    if (typeof password !== "string" || !password) return Response.json({ error: "password required" }, { status: 400 });
+    if (!sudoCheck(password)) return Response.json({ error: "Wrong password" }, { status: 403 });
+    setSessionSudo(password);
+  }
   ap.decision = decision;
   await db.update(messages).set({ parts: m.parts }).where(eq(messages.id, m.id));
   if (decision === "approve") {

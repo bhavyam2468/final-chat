@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PanelLeft, SquarePen, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
+import { PanelLeft, SquarePen, Search, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command } from "./Composer";
@@ -9,15 +9,43 @@ import { CanvasLayer, Win } from "./Canvas";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
+const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
+const NONE: Msg[] = [];
 const keyOf = (parentId: string | null, threadOf: string | null) => parentId ?? `root:${threadOf ?? ""}`;
 const toXml = (d: unknown): string => typeof d !== "object" || d === null ? String(d) : Object.entries(d as Record<string, unknown>).map(([k, v]) => `<${k}>${typeof v === "object" ? toXml(v) : String(v)}</${k}>`).join("\n");
 
 export default function App() {
   const [convs, setConvs] = useState<ConvItem[]>([]);
   const [conv, setConv] = useState<Conv | null>(null);
-  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const convsRef = useRef(convs); convsRef.current = convs;
+  const convTitles = useMemo(() => Object.fromEntries(convs.map((c) => [c.id, c.title])), [convs]);
+  // every chat keeps its own messages and its own stream: switching chats never stops or hides a running answer
+  const [store, setStore] = useState<Record<string, Msg[]>>({});
+  const [view, setViewS] = useState(() => "new:" + rid());
+  const viewRef = useRef(view);
+  const [surface, setSurface] = useState<"search" | "chat">("search");
+  const modeRef = useRef<"chat" | "search">("search");
+  const setView = useCallback((k: string) => { viewRef.current = k; setViewS(k); }, []);
+  const msgs = store[view] || NONE;
+  const setMsgsFor = useCallback((k: string, fn: (m: Msg[]) => Msg[]) => setStore((st) => ({ ...st, [k]: fn(st[k] || NONE) })), []);
+  const setMsgs = useCallback((v: Msg[] | ((m: Msg[]) => Msg[])) => setMsgsFor(viewRef.current, typeof v === "function" ? v : () => v), [setMsgsFor]);
   const [sel, setSel] = useState<Record<string, string>>({});
-  const [streamId, setStreamId] = useState<string | null>(null);
+  const [running, setRunningS] = useState<Record<string, string>>({}); // chat key → assistant message id
+  const runningRef = useRef(running);
+  const setRunning = useCallback((fn: (r: Record<string, string>) => Record<string, string>) => setRunningS((r) => { const n = fn(r); runningRef.current = n; return n; }), []);
+  const streamId = running[view] || null;
+  const attached = useRef(new Set<string>()); // chats this page is currently reading a stream for
+  const [serverRunning, setServerRunning] = useState<string[]>([]);
+  // side panel widths (drag the inner edge); persisted
+  const [pw, setPw] = useState<{ l: number; r: number }>({ l: 272, r: 300 });
+  useEffect(() => { try { const v = JSON.parse(localStorage.getItem("panelW") || "null"); if (v?.l && v?.r) setPw(v); } catch {} }, []); // eslint-disable-line react-hooks/set-state-in-effect
+  const resize = (side: "l" | "r") => (e: React.PointerEvent) => {
+    e.preventDefault(); const x0 = e.clientX, w0 = pw[side]; document.body.classList.add("dragging");
+    let last = pw;
+    const mv = (ev: PointerEvent) => { const w = Math.max(220, Math.min(Math.round(window.innerWidth * 0.45), w0 + (side === "l" ? ev.clientX - x0 : x0 - ev.clientX))); last = { ...last, [side]: w }; setPw(last); };
+    const up = () => { document.body.classList.remove("dragging"); window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); localStorage.setItem("panelW", JSON.stringify(last)); };
+    window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+  };
   const [panels, setPanels] = useState({ chats: false, ws: false, art: false, src: false });
   const [thread, setThread] = useState<string | null>(null);
   const [wins, setWins] = useState<Win[]>([]);
@@ -35,14 +63,27 @@ export default function App() {
   const active = useRef<"main" | "thread">("main");
   const mainRef = useRef<ComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const abort = useRef<AbortController | null>(null);
   const convRef = useRef<Conv | null>(null); convRef.current = conv;
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
   useEffect(() => { const t = localStorage.getItem("theme") || "dark"; setThemeS(t); }, []);
+  // Copying a rendered formula copies the LaTeX, not the glyph soup.
+  useEffect(() => {
+    const onCopy = (e: ClipboardEvent) => {
+      const node = window.getSelection()?.anchorNode;
+      const el = node instanceof Element ? node : node?.parentElement;
+      const ann = el?.closest(".katex")?.querySelector("annotation");
+      if (ann?.textContent && e.clipboardData) { e.clipboardData.setData("text/plain", ann.textContent); e.preventDefault(); }
+    };
+    document.addEventListener("copy", onCopy);
+    return () => document.removeEventListener("copy", onCopy);
+  }, []);
   const setTheme = useCallback((t: string) => { setThemeS(t); localStorage.setItem("theme", t); document.documentElement.dataset.theme = t; }, []);
   const refreshTree = useCallback(() => { fetch("/api/workspace").then((r) => r.json()).then(setTree).catch(() => {}); }, []);
-  const refreshConvs = useCallback(() => { fetch("/api/conversations").then((r) => r.json()).then(setConvs).catch(() => {}); }, []);
+  const refreshConvs = useCallback(() => {
+    fetch("/api/conversations").then((r) => r.json()).then(setConvs).catch(() => {});
+    fetch("/api/chat").then((r) => r.json()).then((j) => setServerRunning(j.running || [])).catch(() => {});
+  }, []);
   useEffect(() => { refreshTree(); refreshConvs(); }, [refreshTree, refreshConvs]);
   // Developer mode lives in the console only: window.__dev.enable() | disable() | mock() | samples()
   useEffect(() => {
@@ -96,9 +137,12 @@ export default function App() {
   const nav = useCallback((m: Msg, d: number) => { const { i, ks } = sibOf(m); const t = ks[i + d]; if (t) setSel((s) => ({ ...s, [keyOf(m.parentId, m.threadOf)]: t.id })); }, [sibOf]);
 
   const loadConv = useCallback(async (id: string, leaf?: string, focusMsg?: string) => {
+    setView(id); setEditing(null);
     const j = await fetch(`/api/conversations/${id}`).then((r) => r.json());
-    if (j.error) return;
-    const ms: Msg[] = j.messages;
+    if (j.error || viewRef.current !== id) return;
+    // a chat streaming in this page: its live messages are ahead of the server copy
+    const live = !!runningRef.current[id];
+    const ms: Msg[] = live ? (storeRef.current[id] || j.messages) : j.messages;
     const by = new Map(ms.map((m) => [m.id, m]));
     const s: Record<string, string> = {};
     const target = leaf || focusMsg;
@@ -106,31 +150,29 @@ export default function App() {
     if (t?.threadOf) setThread(t.threadOf); else if (target) setThread(null);
     while (t) { s[keyOf(t.parentId, t.threadOf)] = t.id; t = t.parentId ? by.get(t.parentId) : undefined; }
     if (t === undefined && target) { const tm = by.get(target); if (tm?.threadOf) { let a = by.get(tm.threadOf); while (a) { s[keyOf(a.parentId, a.threadOf)] = a.id; a = a.parentId ? by.get(a.parentId) : undefined; } } }
-    setConv(j.conversation); setMsgs(ms); setSel(s); setEditing(null);
+    const loaded = withMode(j.conversation); modeRef.current = loaded.mode || "chat"; setSurface(loaded.mode || "chat"); setConv(loaded); setMsgsFor(id, () => ms); setSel((x) => ({ ...x, ...s }));
     if (!target) setThread(null);
+    if (!live) attachRef.current(id); // re-attach if the server is still answering (e.g. after a reload)
     if (focusMsg) setTimeout(() => document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" }), 80);
-  }, []);
+  }, [setView, setMsgsFor]);
 
-  const newChat = useCallback(() => { abort.current?.abort(); setConv(null); setMsgs([]); setSel({}); setThread(null); setStreamId(null); setTimeout(() => mainRef.current?.focus(), 0); }, []);
+  const setMode = useCallback((m: "search" | "chat") => { modeRef.current = m; setSurface(m); }, []);
+  const goSearch = useCallback(() => { setMode("search"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
+  const newChat = useCallback(() => { setMode("chat"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
+  const promote = useCallback(async () => {
+    const c = convRef.current; if (!c) return;
+    await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "chat" }) });
+    setMode("chat"); setConv({ ...c, mode: "chat", state: { ...(c.state || {}), mode: "chat" } }); refreshConvs();
+  }, [setMode, refreshConvs]);
 
-  // ---- streaming
-  const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
-    if (streamId) return;
-    const tu = rid(); let ta = rid();
-    const now = new Date().toISOString();
-    const cid = convRef.current?.id || "";
-    const aParent = payload ? tu : parentId;
-    setMsgs((ms) => [...ms,
-      ...(payload ? [{ id: tu, conversationId: cid, parentId, threadOf, role: "user" as const, content: payload.content, parts: [], attachments: payload.attachments, quote: payload.quote, createdAt: now }] : []),
-      { id: ta, conversationId: cid, parentId: aParent, threadOf, role: "assistant" as const, content: "", parts: [], attachments: [], quote: null, createdAt: now, pending: true }]);
-    setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
-    setStreamId(ta);
-    requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
-    const ctrl = new AbortController(); abort.current = ctrl;
-    const patchA = (fn: (parts: Part[]) => Part[]) => setMsgs((ms) => ms.map((m) => (m.id === ta ? { ...m, parts: fn(m.parts) } : m)));
-    let convId = cid;
+  // ---- streaming (one reader per chat; events patch that chat's messages wherever the user is)
+  const storeRef = useRef(store); storeRef.current = store;
+  const stopAsked = useRef(new Set<string>()); // Stop pressed before a new chat got its id
+  const consume = useCallback(async (res: Response, key0: string, ids: { ta: string; tu?: string }, attach = false) => {
+    let key = key0, ta = ids.ta; const tu = ids.tu;
+    const patchA = (fn: (parts: Part[]) => Part[]) => setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, parts: fn(m.parts) } : m)));
+    attached.current.add(key);
     try {
-      const res = await fetch("/api/chat", { method: "POST", signal: ctrl.signal, body: JSON.stringify({ conversationId: cid || undefined, parentId: payload ? parentId : parentId, threadOf, user: payload || undefined }) });
       const reader = res.body!.getReader(); const dec = new TextDecoder(); let buf = "";
       for (;;) {
         const { value, done } = await reader.read(); if (done) break;
@@ -140,13 +182,28 @@ export default function App() {
           if (!line.trim()) continue;
           const e = JSON.parse(line);
           if (e.t === "meta") {
-            convId = e.conversationId;
-            if (!convRef.current) { setConv({ id: e.conversationId, title: e.title, context: [], summary: null, summaryUpTo: null }); refreshConvs(); }
-            const map: Record<string, string> = { [ta]: e.assistantId, ...(e.userId ? { [tu]: e.userId } : {}) };
+            const cid = e.conversationId as string;
+            if (attach) {
+              // re-attached to a run started elsewhere: the user message is saved, the answer is not yet
+              ta = e.assistantId;
+              setMsgsFor(key, (ms) => ms.some((m) => m.id === ta) ? ms : [...ms, { id: ta, conversationId: cid, parentId: e.parentId, threadOf: e.threadOf ?? null, role: "assistant", content: "", parts: [], attachments: [], quote: null, createdAt: new Date().toISOString(), pending: true }]);
+              setSel((x) => ({ ...x, [keyOf(e.parentId, e.threadOf ?? null)]: ta }));
+              setRunning((r) => ({ ...r, [key]: ta }));
+              continue;
+            }
+            const map: Record<string, string> = { [ta]: e.assistantId, ...(e.userId && tu ? { [tu]: e.userId } : {}) };
             const r = (x: string | null) => (x && map[x]) || x;
-            setMsgs((ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: e.conversationId })));
-            setSel((s) => Object.fromEntries(Object.entries(s).map(([k, v]) => [r(k)!, r(v)!])));
-            ta = e.assistantId; setStreamId(ta);
+            if (key !== cid) { // a new chat got its id: move its messages, stream and view over
+              const old = key; key = cid; attached.current.delete(old); attached.current.add(cid);
+              setStore((st) => { const n = { ...st, [cid]: st[old] || [] }; delete n[old]; return n; });
+              setRunning((x) => { const n = { ...x, [cid]: x[old] }; delete n[old]; return n; });
+              if (viewRef.current === old) { setView(cid); setConv({ id: cid, title: e.title, context: [], summary: null, summaryUpTo: null, mode: modeRef.current }); }
+              refreshConvs();
+            }
+            setMsgsFor(key, (ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: cid })));
+            setSel((x) => Object.fromEntries(Object.entries(x).map(([k, v]) => [r(k)!, r(v)!])));
+            ta = e.assistantId; setRunning((x) => ({ ...x, [key]: ta }));
+            if (stopAsked.current.has(key0)) { stopAsked.current.delete(key0); fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: cid }) }); }
           } else if (e.t === "reasoning") patchA((p) => { const l = p[p.length - 1]; return l?.type === "reasoning" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "reasoning", text: e.d }]; });
           else if (e.t === "retext") patchA((p) => {
             // the server rewrote the current text part (reasoning retracted, loop cut, printed tool call removed)
@@ -157,21 +214,60 @@ export default function App() {
           else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
           else if (e.t === "toolStart") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p : [...p, { type: "tool", id: e.id, name: e.name, args: {} }]));
           else if (e.t === "tool") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, name: e.name, args: e.args } : x)) : [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]));
-          else if (e.t === "canvas") openCanvasRef.current(e.spec, { dock: e.dock });
+          else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: ((x as { live?: string }).live || "") + e.chunk } as Part : x)));
+          else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, { dock: e.dock }); }
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
-          else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta } : x))); refreshTree(); }
-          else if (e.t === "context") setConv((c) => (c ? { ...c, context: e.context } : c));
+          else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, live: undefined } as Part : x))); refreshTree(); }
+          else if (e.t === "context") { if (viewRef.current === key) setConv((c) => (c ? { ...c, context: e.context } : c)); }
           else if (e.t === "artifact") refreshTree(); // canvas cards open themselves
           else if (e.t === "error" || e.t === "notice") patchA((p) => [...p, { type: "text", text: `\n\n> ${e.text}\n` }]);
         }
       }
-    } catch { /* aborted */ }
-    setStreamId(null); abort.current = null;
+    } catch { /* connection dropped: the run continues on the server; loadConv re-attaches */ }
+    attached.current.delete(key);
+    setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
     refreshTree(); refreshConvs(); setCtxRev((r) => r + 1);
-    if (convId) setTimeout(() => { fetch(`/api/conversations/${convId}`).then((r) => r.json()).then((j) => { if (j.messages && convRef.current?.id === convId) { setMsgs(j.messages); setConv(j.conversation); } }); }, 300);
-  }, [streamId, refreshConvs, refreshTree]);
+    // the server saved the final message (partial if stopped) before it reported done: take the saved copy
+    if (!key.startsWith("new:")) fetch(`/api/conversations/${key}`).then((r) => r.json()).then((j) => { if (!j.messages || runningRef.current[key]) return; setMsgsFor(key, () => j.messages); if (viewRef.current === key) { const c = withMode(j.conversation); setConv(c); if (c.mode) { modeRef.current = c.mode; setSurface(c.mode); } } }).catch(() => {});
+  }, [setMsgsFor, setRunning, setView, refreshConvs, refreshTree]);
 
-  const stop = useCallback(() => abort.current?.abort(), []);
+  const attachTo = useCallback(async (id: string) => {
+    if (attached.current.has(id) || runningRef.current[id]) return;
+    const res = await fetch(`/api/chat?conversationId=${encodeURIComponent(id)}`).catch(() => null);
+    if (!res || res.status !== 200 || attached.current.has(id)) return;
+    consume(res, id, { ta: "" }, true);
+  }, [consume]);
+  const attachRef = useRef(attachTo); attachRef.current = attachTo;
+
+  const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
+    const key = viewRef.current;
+    if (runningRef.current[key]) return;
+    const tu = rid(); const ta = rid();
+    const now = new Date().toISOString();
+    const cid = convRef.current?.id || "";
+    const aParent = payload ? tu : parentId;
+    setMsgsFor(key, (ms) => [...ms,
+      ...(payload ? [{ id: tu, conversationId: cid, parentId, threadOf, role: "user" as const, content: payload.content, parts: [], attachments: payload.attachments, quote: payload.quote, createdAt: now }] : []),
+      { id: ta, conversationId: cid, parentId: aParent, threadOf, role: "assistant" as const, content: "", parts: [], attachments: [], quote: null, createdAt: now, pending: true }]);
+    setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
+    setRunning((r) => ({ ...r, [key]: ta }));
+    requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
+    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: modeRef.current }) }).catch(() => null);
+    if (!res || !res.ok) {
+      const err = res ? ((await res.json().catch(() => ({}))) as { error?: string }).error : "Network error";
+      setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, pending: false, parts: [{ type: "text", text: `> ${err || "Request failed"}` }] } : m)));
+      setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
+      return;
+    }
+    consume(res, key, { ta, tu: payload ? tu : undefined });
+  }, [consume, setMsgsFor, setRunning]);
+
+  // Stop: the server stops the run, saves what was written so far, then ends the stream
+  const stop = useCallback(() => {
+    const key = viewRef.current;
+    if (key.startsWith("new:")) { stopAsked.current.add(key); return; }
+    fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: key }) });
+  }, []);
   const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; send(p, last?.id ?? null, null); }, [mainPath, send]);
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
@@ -189,9 +285,14 @@ export default function App() {
     });
   }, []);
   const openCanvasRef = useRef(openCanvas); openCanvasRef.current = openCanvas;
+  // while something runs in the background, keep the Chats dots current
+  useEffect(() => { if (!serverRunning.length) return; const t = setInterval(refreshConvs, 4000); return () => clearInterval(t); }, [serverRunning.length, refreshConvs]);
+  const runningIds = useMemo(() => [...new Set([...serverRunning, ...Object.keys(running)])], [serverRunning, running]);
   const openFile = useCallback((p: string) => {
     if (isExternal(p)) { window.open(p, "_blank"); return; }
     const clean = p.replace(/^\/?files\//, "").replace(/^\.\//, "");
+    const chat = clean.match(/^chats\/([\w-]+)(?:\/(?:chat\.json)?)?$/);
+    if (chat) { openCanvas({ kind: "chat", id: chat[1], title: convsRef.current.find((c) => c.id === chat[1])?.title || "Chat" }); return; }
     openCanvas({ kind: "file", path: clean, title: clean.split("/").pop() || clean });
   }, [openCanvas]);
 
@@ -210,16 +311,20 @@ export default function App() {
       sendMain({ content: `<ui_event${attr}>\n${o?.prompt ? `<instruction>${o.prompt}</instruction>\n` : ""}${toXml(d)}\n</ui_event>`, attachments: [], quote: null });
     },
     sendText: (t: string) => sendMain({ content: t, attachments: [], quote: null }),
-    decide: async (messageId: string, partId: string, decision: "approve" | "deny", cmd: string) => {
-      const cid = convRef.current?.id; if (!cid) return;
-      const r = await fetch(`/api/conversations/${cid}/approve`, { method: "POST", body: JSON.stringify({ messageId, partId, decision }) });
-      if (!r.ok) return;
+    decide: async (messageId: string, partId: string, decision: "approve" | "deny", cmd: string, password?: string) => {
+      const cid = convRef.current?.id; if (!cid) return "No conversation";
+      const r = await fetch(`/api/conversations/${cid}/approve`, { method: "POST", body: JSON.stringify({ messageId, partId, decision, password }) });
+      if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }).error || "Failed";
       setMsgs((ms) => ms.map((m) => (m.id !== messageId ? m : { ...m, parts: m.parts.map((p) => (p.type === "tool" && p.id === partId ? { ...p, meta: { ...(p.meta as object), approval: { ...((p.meta as { approval?: object }).approval || {}), decision } } } : p)) })));
       sendMain({ content: decision === "approve" ? `Approved: \`${cmd.length > 200 ? cmd.slice(0, 200) + "…" : cmd}\`. Run it.` : "Denied. Do not run it. Suggest a safer way if there is one.", attachments: [], quote: null });
+      return null;
     },
     mention: (p: string) => mainRef.current?.insert("@" + p + " "),
     quote: (t: string) => setQuotes((q) => ({ ...q, [active.current]: t })),
-  }), [openFile, openCanvas, refreshTree, tree, conv?.context, toggleContext, sendMain]);
+    convId: conv?.id || null,
+    convTitles,
+    openChat: (id: string) => { loadConv(id); },
+  }), [openFile, openCanvas, refreshTree, tree, conv?.context, conv?.id, convTitles, loadConv, toggleContext, sendMain, setMsgs]);
 
   // ---- quote on selection
   useEffect(() => {
@@ -284,7 +389,7 @@ export default function App() {
           onCancel={() => setEditing(null)} onSend={(p) => { setEditing(null); send(p, m.parentId, m.threadOf); }} />
       </div></div>
     );
-    return <Message key={m.id} m={m} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
+    return <Message key={m.id} m={m} quiet={!isThread && (conv?.mode === "search" || (surface === "search" && !conv))} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
       onEdit={streamId ? undefined : () => setEditing(m.id)}
       onRegenerate={streamId ? undefined : () => send(null, m.parentId, m.threadOf)}
       onThread={isThread ? undefined : () => setThread(m.id)}
@@ -302,10 +407,12 @@ export default function App() {
 
   return (
     <AppCtx.Provider value={api}>
-      <div className={"shell" + (docked ? " has-dock" : "")} style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px" }}>
+      <div className={"shell" + (mainPath.length === 0 && !thread ? " home" : "") + (docked ? " has-dock" : "") + (panels.chats ? " has-l" : "") + (rightCount > 0 ? " has-r" : "")}
+        style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--lw" as string]: pw.l + "px", ["--rw" as string]: pw.r + "px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
-          <button className="ib" aria-label="New chat" onClick={newChat}><SquarePen /></button>
+          <button className={"ib" + (surface === "search" && !conv ? " on" : "")} aria-label="Search" title="Search" onClick={goSearch}><Search /></button>
+          <button className={"ib" + (surface === "chat" && !conv ? " on" : "")} aria-label="New chat" title="New chat" onClick={newChat}><SquarePen /></button>
         </div>
         <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
@@ -319,20 +426,23 @@ export default function App() {
         </div>
 
         <div className="dock">
-          <Composer ref={mainRef} capture onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
+          <div className="dock-stack">
+          {conv?.mode === "search" && mainPath.length > 0 && <div className="dock-extra"><button className="promote" onClick={promote}>Open in chat</button></div>}
+          <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
+          </div>
         </div>
 
-        {panels.chats && <div className="lstack"><ChatsPanel convs={convs} current={conv?.id || null}
+        {panels.chats && <div className="lstack"><div className="rsz" onPointerDown={resize("l")} aria-hidden /><ChatsPanel convs={convs} current={conv?.id || null} running={runningIds}
           onOpen={(id, leaf, msg) => { loadConv(id, leaf, msg); }} onClose={() => setPanels((p) => ({ ...p, chats: false }))}
-          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) newChat(); refreshConvs(); }} /></div>}
+          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) (conv.mode === "search" ? goSearch() : newChat()); refreshConvs(); }} /></div>}
 
-        {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}>
+        {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}><div className="rsz" onPointerDown={resize("r")} aria-hidden />
           {thread && anchor && <div className="panel thread">
             <div className="panel-head"><span>Thread</span><span className="sp" /><button className="ib sm" aria-label="Close thread" onClick={() => setThread(null)}><X /></button></div>
             <div className="anchor">{anchor.content.replace(/<[^>]+>/g, "").slice(0, 300)}</div>
             <div className="panel-body">{threadPath.map((m, i) => renderTurn(m, true, i === threadPath.length - 1))}</div>
-            <Composer inline onSend={sendThread} streaming={!!streamId && threadPath.some((m) => m.id === streamId)} onStop={stop}
+            <Composer inline draftKey={view + ":t:" + thread} onSend={sendThread} streaming={!!streamId && threadPath.some((m) => m.id === streamId)} onStop={stop}
               quote={quotes.thread} onClearQuote={() => setQuotes((q) => ({ ...q, thread: null }))} onFocus={() => (active.current = "thread")} autoFocus />
           </div>}
           {panels.ws && <WorkspacePanel onClose={() => tog("ws")} ctx={ctxRef} />}

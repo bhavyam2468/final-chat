@@ -1,7 +1,7 @@
 "use client";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { youtubeId } from "@/lib/shared";
-import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send } from "lucide-react";
+import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send, Bookmark } from "lucide-react";
 import { StreamMarkdown, SMComponents } from "@/lib/streammark/StreamMarkdown";
 import { Block } from "./Block";
 import { useSmoothText } from "@/lib/streammark/useSmoothText";
@@ -48,6 +48,7 @@ const TOOL_META: Record<string, Meta> = {
   proc_start: M(Play, "Starting", "Started", "name"), proc_logs: M(ScrollText, "Reading logs of", "Read logs of", "name"), proc_restart: M(RotateCw, "Restarting", "Restarted", "name"),
   proc_stop: M(Square, "Stopping", "Stopped", "name"), browser: M(Globe, "Opening in browser", "Viewed in browser", "target"), check: M(ShieldCheck, "Checking", "Checked", "path"),
   quality_check: M(ShieldCheck, "Checking design", "Design check"),
+  remember: M(Bookmark, "Remembering", "Remembered", "text"), forget: M(Bookmark, "Forgetting", "Forgot", "id"),
 };
 
 type Src = { url: string; title: string; snippet?: string };
@@ -67,72 +68,119 @@ function TodoList({ items }: { items: Todo[] }) {
 function AskCard({ q, options, multi, live }: { q: string; options: string[]; multi: boolean; live: boolean }) {
   const app = useApp();
   const [picked, setPicked] = useState<string[]>([]);
-  const [sent, setSent] = useState(false);
-  const send = (v: string[]) => { if (!live || sent || !v.length) return; setSent(true); app.sendText(v.join(", ")); };
+  const [sent, setSent] = useState<string | null>(null);
+  const [other, setOther] = useState<string | null>(null); // free-text answer, open when not null
+  const send = (v: string) => { if (!live || sent || !v.trim()) return; setSent(v); app.sendText(v); };
+  const done = !live || !!sent;
   return <div className="ask">
     <div className="ask-q">{q}</div>
-    <div className="ask-o">{options.map((o) => <button key={o} disabled={!live || sent} className={picked.includes(o) ? "on" : ""}
-      onClick={() => (multi ? setPicked((p) => (p.includes(o) ? p.filter((x) => x !== o) : [...p, o])) : send([o]))}>{o}</button>)}
-      {multi && live && !sent && <button className="ib" aria-label="Send" disabled={!picked.length} onClick={() => send(picked)}><Send /></button>}</div>
+    <div className="ask-o">{options.map((o) => <button key={o} disabled={done} className={picked.includes(o) || sent === o ? "on" : ""}
+      onClick={() => (multi ? setPicked((p) => (p.includes(o) ? p.filter((x) => x !== o) : [...p, o])) : send(o))}>{o}</button>)}
+      {!done && other === null && <button className="ghost" onClick={() => setOther("")}>Other</button>}
+      {multi && !done && other === null && <button className="ib" aria-label="Send" disabled={!picked.length} onClick={() => send(picked.join(", "))}><Send /></button>}
+    </div>
+    {!done && other !== null && <form className="ask-other" onSubmit={(e) => { e.preventDefault(); send([...picked, other.trim()].filter(Boolean).join(", ")); }}>
+      <input autoFocus aria-label="Your answer" value={other} onChange={(e) => setOther(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setOther(null)} />
+      <button className="ib" aria-label="Send" disabled={!other.trim()}><Send /></button>
+    </form>}
+    {!done && <button className="ask-skip" onClick={() => send("(skipped: decide yourself and say what you assumed)")}>Skip</button>}
   </div>;
 }
 
-type Approval = { cmd: string; reason: string; host: boolean; decision?: "approve" | "deny" };
+type Approval = { cmd: string; reason: string; host: boolean; sudo?: boolean; decision?: "approve" | "deny" };
 function ApproveBar({ ap, live, mid, pid }: { ap: Approval; live: boolean; mid?: string; pid: string }) {
   const app = useApp();
   const [busy, setBusy] = useState(false);
-  const go = (d: "approve" | "deny") => { if (!mid || busy) return; setBusy(true); app.decide(mid, pid, d, ap.cmd).finally(() => setBusy(false)); };
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  const go = (d: "approve" | "deny") => {
+    if (!mid || busy || (d === "approve" && ap.sudo && !pw)) return;
+    setBusy(true); setErr("");
+    app.decide(mid, pid, d, ap.cmd, ap.sudo && d === "approve" ? pw : undefined).then((e) => { if (e) setErr(e); }).finally(() => { setBusy(false); setPw(""); });
+  };
   return <div className="approve">
     <div className="ap-why">{ap.reason}{ap.host ? " · on your machine" : ""}</div>
     <pre>{ap.cmd}</pre>
     {ap.decision ? <small>{ap.decision === "approve" ? "Approved" : "Denied"}</small>
-      : live && mid ? <div className="ap-act"><button className="txt-btn" disabled={busy} onClick={() => go("deny")}>Deny</button><button className="txt-btn solid" disabled={busy} onClick={() => go("approve")}>Run it</button></div> : null}
+      : live && mid ? <form className="ap-act" onSubmit={(e) => { e.preventDefault(); go("approve"); }}>
+        {/* the password goes to sudo only: verified server-side, kept in memory for 30 min, never shown to the model */}
+        {ap.sudo && <input className="ap-pw" type="password" autoFocus autoComplete="current-password" aria-label="Sudo password" value={pw} onChange={(e) => setPw(e.target.value)} />}
+        {err && <span className="ap-err">{err}</span>}
+        <button type="button" className="txt-btn" disabled={busy} onClick={() => go("deny")}>Deny</button>
+        <button type="submit" className={"txt-btn solid" + (busy ? " busy" : "")} disabled={busy || (ap.sudo && !pw)}>{ap.sudo ? "Run with sudo" : "Run it"}</button>
+      </form> : null}
   </div>;
 }
 
 const fmtMs = (ms: number) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
-/** Model reasoning (<think> blocks or reasoning_content): collapsed, never copied, never re-sent. */
+/** Model reasoning (<think> blocks or reasoning_content): open and following along while it streams, folded after; never copied or re-sent. */
 function Reasoning({ text, ms, live }: { text: string; ms?: number; live: boolean }) {
-  return <details className="reason">
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => { const el = body.current; if (live && el) el.scrollTop = el.scrollHeight; }, [text, live]);
+  if (!live && text.trim().length < 60) return null; // a few words of "thinking" is noise
+  return <details className="reason" open={live || undefined}>
     <summary>{live ? <span className="shimmer">Thinking</span> : ms ? `Thought for ${fmtMs(ms)}` : "Thought"}</summary>
-    <div className="reason-body">{text.trim()}</div>
+    <div className="reason-body" ref={body}>{text.trim()}</div>
   </details>;
 }
 
+/** Tool output streaming in while the tool runs, pinned to the bottom. */
+function LiveOut({ text }: { text: string }) {
+  const el = useRef<HTMLPreElement>(null);
+  useEffect(() => { if (el.current) el.current.scrollTop = el.current.scrollHeight; }, [text]);
+  return <pre ref={el} className="live-out">{text}</pre>;
+}
+function Elapsed() {
+  const [t0] = useState(() => Date.now());
+  const [, tick] = useState(0);
+  useEffect(() => { const i = setInterval(() => tick((x) => x + 1), 1000); return () => clearInterval(i); }, []);
+  const s = Math.floor((Date.now() - t0) / 1000);
+  return s >= 3 ? <span className="elapsed">{fmtMs(s * 1000)}</span> : null;
+}
+
 const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean; mid?: string }) {
-  const [open, setOpen] = useState(false);
+  const [openS, setOpen] = useState<boolean | null>(null); // null = automatic: open while running, folded when done
   const app = useApp();
   const mcp = p.name.match(/^mcp__(.+?)__(.+)$/);
   const pending = p.result === undefined;
+  const liveOut = (p as { live?: string }).live;
   const m = TOOL_META[p.name] || { icon: Plug, live: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name, done: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name };
   const Icon = m.icon;
   const argv = m.arg ? p.args[m.arg] : undefined;
   let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
-  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean } | undefined;
+  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean; memory?: { id: string; text: string; scope: string } } | undefined;
   const ap = (p.meta as { approval?: Approval } | undefined)?.approval;
   if (ap) target = ""; // the approval bar shows the full command
   if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
   if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
-  const openable = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name);
+  // file tools: the path itself opens the file (no extra button under the row)
+  const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? String(p.args.path) : null;
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
+  const runs = ["run_python", "shell", "host_shell", "pip_install"].includes(p.name);
+  const open = openS ?? pending;
   let body: React.ReactNode = null;
   if (open) {
-    if (meta?.sources && p.name === "web_search") body = <SourceList items={meta.sources} />;
+    const code = p.name === "run_python" ? String(p.args.code || "") : "";
+    if (pending) body = <>{code && <pre>{code}</pre>}<LiveOut text={liveOut || "working…"} /></>;
+    else if (meta?.sources && p.name === "web_search") body = <SourceList items={meta.sources} />;
     else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
-    else if (p.name === "run_python") body = <><pre>{String(p.args.code || "")}</pre><pre>{p.result}</pre></>;
+    else if (p.name === "run_python") body = <><pre>{code}</pre><pre>{p.result}</pre></>;
     else body = <>{Object.keys(p.args).length > 0 && !["shell", "host_shell", "todo", "quality_check"].includes(p.name) && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
   }
   return (
     <div className={"tool" + (pending ? " live" : "")}>
       <button className="tool-row" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>{target && <span className="tgt">{target}</span>}
-        {pending ? <span className="spin" /> : p.ok === false && !ap ? <X className="err" /> : null}
+        <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>
+        {target && (filePath && !pending
+          ? <span className="tgt link" role="link" title="Open" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
+          : <span className="tgt">{target}</span>)}
+        {pending ? <><Elapsed /><span className="spin" /></> : p.ok === false && !ap ? <X className="err" /> : null}
       </button>
-      {openable && !pending && <button className="ib sm" aria-label="Open file" onClick={() => app.openFile(String(p.args.path))}><AppWindow /></button>}
       {p.name === "todo" && lastTodo && meta?.todo && <TodoList items={meta.todo} />}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {meta?.image && !pending && <img className="tool-shot" src={fileUrl(meta.image)} alt="" onClick={() => app.openFile(meta.image!)} />}
-      {open && !pending && <div className="tool-body">{body}</div>}
+      {open && body && <div className="tool-body">{body}</div>}
+      {meta?.memory && <MemoryNote mem={meta.memory} />}
       {ap && <ApproveBar ap={ap} live={!!live} mid={mid} pid={p.id} />}
     </div>
   );
@@ -192,10 +240,31 @@ function LiveText({ text, streaming, h, unverified }: { text: string; streaming:
   return <StreamMarkdown text={s.text} streaming={s.live} unverified={unverified} {...h} />;
 }
 
-export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string }) {
+function MemoryNote({ mem }: { mem: { id: string; text: string; scope: string } }) {
+  const [gone, setGone] = useState(false);
+  if (gone) return <div className="mem-note">Forgotten</div>;
+  return <div className="mem-note"><Bookmark /><span>{mem.scope === "profile" ? "Profile" : "Noted"}</span><span className="tx">{mem.text}</span>
+    <button type="button" onClick={async () => { const r = await fetch("/api/memory", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id }) }); if (r.ok) setGone(true); }}>Undo</button></div>;
+}
+
+export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid, quiet }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string; quiet?: boolean }) {
   const h = useMdHandlers();
   const [animate] = useState(streaming); // messages loaded from history render instantly
   if (!parts.length && streaming) return <div className="thinking" />;
+  if (quiet) {
+    const sources: Src[] = [];
+    const seen = new Set<string>();
+    for (const p of parts) if (p.type === "tool" && p.name === "web_search") for (const s of ((p.meta as { sources?: Src[] } | undefined)?.sources || [])) if (s.url && !seen.has(s.url)) { seen.add(s.url); sources.push(s); }
+    const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
+    const searching = streaming && !texts.some((p) => p.text.trim()) && parts.some((p) => p.type === "tool" && p.result === undefined);
+    const keep = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && (p.name === "ask_user" || p.name === "remember"));
+    return <>
+      {sources.length > 0 && <SourceList items={sources} />}
+      {searching && <div className="thinking" />}
+      {texts.map((p, i) => animate ? <LiveText key={i} text={p.text} streaming={streaming && i === texts.length - 1 && !keep.length} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />)}
+      {keep.map((p) => <ToolCall key={p.id} p={p} live={!!last && !streaming} mid={mid} />)}
+    </>;
+  }
   let lastTodo = -1;
   parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
   return <>{parts.map((p, i) => p.type === "text"
@@ -225,10 +294,10 @@ export function Attachments({ items }: { items: Msg["attachments"] }) {
 
 type Props = {
   m: Msg; streaming: boolean; sib: { i: number; n: number }; onNav: (d: number) => void;
-  onEdit?: () => void; onRegenerate?: () => void; onThread?: () => void; threadCount?: number; last?: boolean;
+  onEdit?: () => void; onRegenerate?: () => void; onThread?: () => void; threadCount?: number; last?: boolean; quiet?: boolean;
 };
 
-export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount, last }: Props) {
+export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount, last, quiet }: Props) {
   if (m.role === "user") return (
     <div className="turn user">
       {m.quote && <div className="quoteline">{m.quote}</div>}
@@ -244,7 +313,7 @@ export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit,
   const text = m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   return (
     <div className="turn ai" data-mid={m.id}>
-      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} /></div>
+      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} quiet={quiet} /></div>
       {!streaming && <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={text} />

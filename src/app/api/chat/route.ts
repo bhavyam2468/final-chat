@@ -4,20 +4,33 @@ import { db } from "@/db";
 import { conversations, messages, Attachment } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { runAgent } from "@/lib/agent";
+import { activeIds, activeRun, anyRun, attach, startRun, stopRun } from "@/lib/runs";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-type Body = { conversationId?: string; parentId: string | null; threadOf?: string | null; user?: { content: string; attachments?: Attachment[]; quote?: string | null } };
+type Body = { conversationId?: string; parentId: string | null; threadOf?: string | null; user?: { content: string; attachments?: Attachment[]; quote?: string | null }; stop?: boolean; mode?: string };
+const NDJSON = { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" };
+
+/** GET ?conversationId= re-attaches to a running (or just finished) run; without it, lists running conversation ids. */
+export async function GET(req: NextRequest) {
+  const id = req.nextUrl.searchParams.get("conversationId");
+  if (!id) return Response.json({ running: activeIds() });
+  const run = anyRun(id);
+  if (!run) return new Response(null, { status: 204 });
+  return new Response(attach(run, req.signal), { headers: NDJSON });
+}
 
 export async function POST(req: NextRequest) {
   const b = (await req.json()) as Body;
+  if (b.stop) return Response.json({ stopped: b.conversationId ? stopRun(b.conversationId) : false });
   let convId = b.conversationId;
+  if (convId && activeRun(convId)) return Response.json({ error: "This chat is still responding" }, { status: 409 });
   let conv = convId ? (await db.select().from(conversations).where(eq(conversations.id, convId)))[0] : undefined;
   if (!conv) {
     convId = nanoid(10);
-    const title = (b.user?.content || "New chat").replace(/\s+/g, " ").trim().split(" ").slice(0, 7).join(" ").slice(0, 60);
-    [conv] = await db.insert(conversations).values({ id: convId, title }).returning();
+    const title = (b.user?.content || "New chat").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().split(" ").slice(0, 7).join(" ").slice(0, 60) || "New chat";
+    [conv] = await db.insert(conversations).values({ id: convId, title, ...(b.mode === "search" ? { state: { mode: "search" } } : {}) }).returning();
   }
   let parentId = b.parentId;
   let userId: string | null = null;
@@ -27,17 +40,14 @@ export async function POST(req: NextRequest) {
     parentId = userId;
   }
   const assistantId = nanoid(12);
-  const enc = new TextEncoder();
   const c = conv;
-  const stream = new ReadableStream({
-    async start(ctrl) {
-      const emit = (e: Record<string, unknown>) => { try { ctrl.enqueue(enc.encode(JSON.stringify(e) + "\n")); } catch {} };
-      emit({ t: "meta", conversationId: c.id, userId, assistantId, parentId, title: c.title });
-      try { await runAgent({ conv: c, assistantId, parentId: parentId!, threadOf: b.threadOf || null, emit, signal: req.signal }); }
-      catch (e) { emit({ t: "error", text: String(e) }); }
-      emit({ t: "done" });
-      try { ctrl.close(); } catch {}
-    },
-  });
-  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
+  const { run, emit, finish, signal } = startRun(c.id, assistantId);
+  emit({ t: "meta", conversationId: c.id, userId, assistantId, parentId, threadOf: b.threadOf || null, title: c.title });
+  // the run is not tied to this request: it survives the viewer leaving
+  (async () => {
+    try { await runAgent({ conv: c, assistantId, parentId: parentId!, threadOf: b.threadOf || null, emit, signal }); }
+    catch (e) { emit({ t: "error", text: String(e) }); }
+    finally { finish(); }
+  })();
+  return new Response(attach(run, req.signal), { headers: NDJSON });
 }

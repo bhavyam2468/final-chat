@@ -2,6 +2,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Plus, ArrowUp, Square, X, FileText, Hash, File as FileIcon } from "lucide-react";
 import { Attachment, flatFiles, fileUrl, useApp } from "./ctx";
+import { chatDir } from "@/lib/shared";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
 export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
@@ -13,10 +14,15 @@ type Props = {
   onSend: (p: SendPayload) => void; streaming?: boolean; onStop?: () => void;
   quote?: string | null; onClearQuote?: () => void; inline?: boolean; capture?: boolean;
   commands?: Command[]; initial?: SendPayload; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean;
+  /** per-chat draft: text + attachments survive chat switches and reloads (localStorage "draft:<key>") */
+  draftKey?: string;
 };
+type Draft = { text: string; chips: Attachment[] };
+const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
 
-export async function upload(files: File[]): Promise<Attachment[]> {
+export async function upload(files: File[], dir?: string): Promise<Attachment[]> {
   const fd = new FormData();
+  if (dir) fd.append("dir", dir);
   files.forEach((f) => fd.append("files", f));
   const r = await fetch("/api/workspace/upload", { method: "POST", body: fd });
   return r.json();
@@ -33,6 +39,21 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   const [menuIdx, setMenuIdx] = useState(0);
   const [caret, setCaret] = useState(0);
 
+  // drafts: save on every change (cheap), load when the chat changes
+  const keyRef = useRef(p.draftKey);
+  useEffect(() => {
+    if (!p.draftKey) return;
+    keyRef.current = p.draftKey;
+    const d = readDraft(p.draftKey);
+    setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path })));
+  }, [p.draftKey]);
+  useEffect(() => {
+    const k = keyRef.current; if (!k) return;
+    const done = chips.filter((c) => !c.loading).map(({ path, name, mime, size }) => ({ path, name, mime, size }));
+    if (!text && !done.length) localStorage.removeItem("draft:" + k);
+    else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done }));
+  }, [text, chips]);
+
   const autosize = useCallback(() => { const t = ta.current; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }, []);
   useLayoutEffect(autosize, [text, autosize]);
 
@@ -41,7 +62,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     const temp: Chip[] = files.map((f) => ({ key: Math.random().toString(36), path: "", name: f.name, mime: f.type, size: f.size, loading: true, preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined }));
     setChips((c) => [...c, ...temp]);
     try {
-      const res = await upload(files);
+      const res = await upload(files, app.convId ? chatDir(app.convId) + "/uploads" : undefined); // a chat's attachments live in its folder
       setChips((c) => c.map((x) => { const i = temp.findIndex((t) => t.key === x.key); return i < 0 ? x : { ...x, ...res[i], loading: false }; }));
       app.refreshTree();
     } catch { setChips((c) => c.filter((x) => !temp.some((t) => t.key === x.key))); }
@@ -62,9 +83,25 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key.length === 1 && !document.querySelector(".scrim")) ta.current?.focus();
     };
+    // Ctrl/Cmd+V anywhere pastes into the message box, exactly like typing does
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t?.closest?.("input, textarea, select, [contenteditable=true], iframe") || document.querySelector(".scrim") || !e.clipboardData) return;
+      const files = [...e.clipboardData.files];
+      const txt = e.clipboardData.getData("text/plain");
+      if (!files.length && !txt) return;
+      e.preventDefault();
+      if (files.length) addFiles(files);
+      if (txt) {
+        const el = ta.current; const at = el ? el.selectionStart ?? el.value.length : 0;
+        setText((v) => { const i = el && document.activeElement === el ? at : v.length; return v.slice(0, i) + txt + v.slice(i); });
+        requestAnimationFrame(() => { const el2 = ta.current; if (!el2) return; el2.focus(); const c = el2.value.length; el2.setSelectionRange(c, c); });
+      } else ta.current?.focus();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [p.capture]);
+    window.addEventListener("paste", onPaste);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("paste", onPaste); };
+  }, [p.capture, addFiles]);
 
   useEffect(() => { if (p.autoFocus) ta.current?.focus(); }, [p.autoFocus]);
   useEffect(() => { if (p.quote) ta.current?.focus(); }, [p.quote]);

@@ -55,14 +55,18 @@ export function baseEnv(sandboxed: boolean): NodeJS.ProcessEnv {
   return env;
 }
 
-function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; input?: string }): Promise<RunOut> {
+/** live output + cancellation for a run (the chat's Stop kills the process instead of waiting for its timeout) */
+export type IO = { onData?: (chunk: string) => void; signal?: AbortSignal };
+function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; input?: string } & IO): Promise<RunOut> {
   return new Promise((res) => {
     const p = spawn(cmd, args, { cwd: o.cwd, env: o.env });
     let out = "";
-    const cap = (d: Buffer) => { if (out.length < 400000) out += d; };
+    const cap = (d: Buffer) => { const s = d.toString(); if (out.length < 400000) out += s; o.onData?.(s); };
     const t = setTimeout(() => { p.kill("SIGKILL"); out += `\n(timeout after ${Math.round(o.timeout / 1000)}s)`; }, o.timeout);
     p.stdout.on("data", cap); p.stderr.on("data", cap);
-    p.on("close", (code) => { clearTimeout(t); res({ out, code: code ?? 1 }); });
+    const kill = () => { out += "\n(stopped by the user)"; try { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 1500); } catch {} };
+    if (o.signal?.aborted) kill(); else o.signal?.addEventListener("abort", kill, { once: true });
+    p.on("close", (code) => { clearTimeout(t); o.signal?.removeEventListener("abort", kill); res({ out, code: code ?? 1 }); });
     p.on("error", (e) => { clearTimeout(t); res({ out: String(e), code: 1 }); });
     if (o.input !== undefined) { p.stdin.write(o.input); p.stdin.end(); } else p.stdin.end();
   });
@@ -90,19 +94,40 @@ export function mode(st: Settings, host = false) {
 }
 export const hostDenied = (st: Settings) => (st.terminal !== "host" ? "Host terminal is off. The user can enable it in Settings → Access; until then use shell (sandbox)." : null);
 
+// sudo password typed by the user in the chat's password prompt: kept in server memory only (never on disk, never in
+// the model's context), forgotten after 30 idle minutes or on restart. A saved SUDO_PASSWORD secret takes precedence.
+let sessionPw: { pw: string; until: number } | null = null;
+export function setSessionSudo(pw: string) { sessionPw = { pw, until: Date.now() + 30 * 60_000 }; }
+function sudoPassword(st: Settings) {
+  if (st.secrets?.SUDO_PASSWORD) return st.secrets.SUDO_PASSWORD;
+  if (sessionPw && sessionPw.until > Date.now()) { sessionPw.until = Date.now() + 30 * 60_000; return sessionPw.pw; }
+  sessionPw = null; return "";
+}
+/** Can sudo run right now without asking? (password known, NOPASSWD rule, or a still-valid sudo timestamp) */
+export function sudoReady(st: Settings) {
+  if (sudoPassword(st)) return true;
+  try { return spawnSync("sudo", ["-n", "true"], { timeout: 3000, stdio: "ignore" }).status === 0; } catch { return false; }
+}
+/** Checks a password without keeping it anywhere: sudo -S -k -v reads it from stdin once. */
+export function sudoCheck(pw: string) {
+  try { return spawnSync("sudo", ["-S", "-k", "-v", "-p", ""], { input: pw + "\n", timeout: 8000, stdio: ["pipe", "ignore", "ignore"] }).status === 0; } catch { return false; }
+}
+
 /** Shell prelude + env for sudo handling. Returns an error string when sudo is not allowed. */
 export function sudoSetup(st: Settings, command: string, sandboxed: boolean, env: NodeJS.ProcessEnv): { prelude: string } | { error: string } {
   if (!usesSudo(command)) return { prelude: "" };
   if (sandboxed) return { error: "sudo is unavailable in the sandbox shell. It needs host_shell with Settings → Access → Allow sudo." };
   if (!st.sudo) return { error: "sudo is disabled. Ask the user to enable it in Settings → Access if this is really needed." };
-  const pw = st.secrets?.SUDO_PASSWORD;
+  // any -S / piped password the model tries is dropped: the password comes from the askpass helper only
+  const strip = 'local a=(); for x in "$@"; do [ "$x" = "-S" ] || a+=("$x"); done; ';
+  const pw = sudoPassword(st);
   if (pw) {
     const helper = path.join(os.tmpdir(), `ws-askpass-${process.pid}.sh`);
     if (!fs.existsSync(helper)) fs.writeFileSync(helper, '#!/bin/sh\nprintf "%s\\n" "$WS_SUDO_PW"\n', { mode: 0o700 });
     env.SUDO_ASKPASS = helper; env.WS_SUDO_PW = pw;
-    return { prelude: 'sudo() { command sudo -A "$@"; }; export -f sudo; ' };
+    return { prelude: `sudo() { ${strip}command sudo -A "\${a[@]}"; }; export -f sudo; ` };
   }
-  return { prelude: 'sudo() { command sudo -n "$@"; }; export -f sudo; ' };
+  return { prelude: `sudo() { ${strip}command sudo -n "\${a[@]}"; }; export -f sudo; ` };
 }
 
 /** argv + spawn options for a bash command in the chosen terminal (shared by one-shot runs and background processes). */
@@ -116,25 +141,54 @@ export function shellSpawn(st: Settings, command: string, host: boolean, cwd?: s
   return { cmd, args, env, cwd: dir };
 }
 
-export async function runShell(st: Settings, command: string, timeoutMs = 120000, host = false, cwd?: string): Promise<RunOut> {
+export async function runShell(st: Settings, command: string, timeoutMs = 120000, host = false, cwd?: string, io: IO = {}): Promise<RunOut> {
   if (host && hostDenied(st)) return { out: hostDenied(st)!, code: 126 };
   const sp = shellSpawn(st, command, host, cwd);
   if ("error" in sp) return { out: sp.error!, code: 126 };
-  return spawnRun(sp.cmd, sp.args, { cwd: sp.cwd, env: sp.env, timeout: timeoutMs });
+  return spawnRun(sp.cmd, sp.args, { cwd: sp.cwd, env: sp.env, timeout: timeoutMs, ...io });
+}
+
+/** One interpreter for run_python and pip. Creates cwd/.venv on first use so chats don't hit PEP 668 system Python. */
+let venvReady: Promise<string> | null = null;
+export function ensurePy(): Promise<string> {
+  if (process.env.PYTHON_BIN) return Promise.resolve(process.env.PYTHON_BIN);
+  const have = VENV();
+  if (have) return Promise.resolve([have, "bin", "python"].join("/"));
+  if (!venvReady) venvReady = new Promise<string>((resolve, reject) => {
+    const dir = [process.cwd(), process.env.VENV_DIR || ".venv"].join("/");
+    const py = [dir, "bin", "python"].join("/");
+    const p = spawn("python3", ["-m", "venv", dir], { stdio: "ignore" });
+    p.on("error", reject);
+    p.on("close", (c) => (c === 0 ? resolve(py) : reject(new Error(`python3 -m venv exited ${c}`))));
+  }).catch((e) => { venvReady = null; throw e; });
+  return venvReady;
+}
+async function pyBin(io: IO): Promise<string> {
+  try {
+    const bin = await ensurePy();
+    io.onData?.(`using ${bin}\n`);
+    return bin;
+  } catch (e) {
+    throw new Error(`Could not create a Python environment (${(e as Error).message}). Install python3-venv, or set PYTHON_BIN to an interpreter that can pip install.`);
+  }
 }
 
 /** run_python and Blocks py() always use the sandbox; host Python goes through host_shell. */
-export async function runPython(_st: Settings | null, code: string, timeoutMs = 120000): Promise<RunOut> {
-  const sandboxed = true;
-  const [cmd, ...args] = wrap([PY(), "-"], sandboxed);
-  return spawnRun(cmd, args, { cwd: WS, env: baseEnv(sandboxed), timeout: timeoutMs, input: code });
+export async function runPython(_st: Settings | null, code: string, timeoutMs = 120000, io: IO = {}): Promise<RunOut> {
+  let bin: string;
+  try { bin = await pyBin(io); } catch (e) { return { out: (e as Error).message, code: 1 }; }
+  const [cmd, ...args] = wrap([bin, "-u", "-"], true);
+  return spawnRun(cmd, args, { cwd: WS, env: baseEnv(true), timeout: timeoutMs, input: code, ...io });
 }
 
-/** pip always runs on the host interpreter (installing is an explicit, visible action). */
-export async function pipInstall(pkgs: string[]): Promise<RunOut> {
+/** pip installs into the same interpreter run_python uses (the app venv, not system Python). */
+export async function pipInstall(pkgs: string[], io: IO = {}): Promise<RunOut> {
   const safe = pkgs.filter((p) => /^[\w.\-\[\],<>=!~]+$/.test(p));
   if (!safe.length) return { out: "no valid package names", code: 1 };
-  return spawnRun(PY(), ["-m", "pip", "install", ...(VENV() || process.env.PYTHON_BIN ? [] : ["--break-system-packages"]), "-q", ...safe], { cwd: WS, env: baseEnv(false), timeout: 300000 });
+  let bin: string;
+  try { bin = await pyBin(io); } catch (e) { return { out: (e as Error).message, code: 1 }; }
+  const own = !!process.env.PYTHON_BIN || bin.includes("/.venv/") || bin.includes("/venv/");
+  return spawnRun(bin, ["-m", "pip", "install", ...(own ? [] : ["--break-system-packages"]), ...safe], { cwd: WS, env: baseEnv(false), timeout: 300000, ...io });
 }
 
 /** Plain helper for trusted internal commands (converters etc.). */

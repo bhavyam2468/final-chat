@@ -8,7 +8,8 @@ import { Block } from "./Block";
 import { StreamMarkdown, CodeBlock } from "@/lib/streammark/StreamMarkdown";
 import { useMdHandlers } from "./Message";
 import { SheetView, DocView, SlidesView, ArchiveView, MediaView, extOf } from "./viewers";
-import { canvasSlug } from "@/lib/shared";
+import { canvasPath } from "@/lib/shared";
+import { ChatView } from "./ChatView";
 
 export type Win = { id: string; spec: CanvasSpec; x: number; y: number; w: number; h: number; z: number; min: boolean; pinned: boolean; dock: boolean };
 
@@ -160,6 +161,7 @@ const Viewer = memo(function Viewer({ spec, winId }: { spec: CanvasSpec; winId: 
   if (spec.kind === "youtube") body = <iframe className="full black" src={`https://www.youtube-nocookie.com/embed/${spec.id}?autoplay=1`} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen title="YouTube" />;
   else if (spec.kind === "web") body = <iframe key={rev} className="full" src={spec.url} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" title={spec.title} />;
   else if (spec.kind === "md") body = <div className="reader"><StreamMarkdown text={spec.body} {...md} /></div>;
+  else if (spec.kind === "chat") body = <ChatView id={spec.id} setBar={setBar} />;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
   else if (k === "image") body = <div className="imgview" style={{ position: "relative" }}>{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
   else if (k === "pdf") body = <PdfView path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} />;
@@ -181,7 +183,7 @@ const Viewer = memo(function Viewer({ spec, winId }: { spec: CanvasSpec; winId: 
     <div className="win-bar bot">
       {toggle[k] && <div className="seg"><button className={mode === "a" ? "on" : ""} onClick={() => setMode("a")} aria-label={toggle[k][0]}>{mode === "a" ? <Eye /> : null}{toggle[k][0]}</button><button className={mode === "b" ? "on" : ""} onClick={() => setMode("b")} aria-label={toggle[k][1]}>{mode === "b" ? <Code2 /> : null}{toggle[k][1]}</button></div>}
       {dirty && path && <button className="ib sm" aria-label="Save" title="Save (Ctrl+S)" onClick={save}><Save /></button>}
-      {spec.kind === "ui" && !spec.path && <button className="ib sm" aria-label="Save to artifacts" title="Save to artifacts" onClick={async () => { const p = `artifacts/${canvasSlug(spec.title)}.ui`; await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path: p, content: src }) }); app.refreshTree(); }}><Save /></button>}
+      {spec.kind === "ui" && !spec.path && <button className="ib sm" aria-label="Save to artifacts" title="Save to artifacts" onClick={async () => { const p = canvasPath(spec.title, "<ui>", app.convId || undefined); await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path: p, content: src }) }); app.refreshTree(); }}><Save /></button>}
       {bar}
       {!bar && <span className="sp" />}
       {(k === "ui" || spec.kind === "web" || k === "html") && <button className="ib sm" aria-label="Reload" title="Reload" onClick={() => setRev((r) => r + 1)}><RotateCw /></button>}

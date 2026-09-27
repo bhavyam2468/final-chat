@@ -31,6 +31,7 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
   const app = useApp();
   const ref = useRef<HTMLIFrameElement>(null);
   const [h, setH] = useState(fill ? 0 : 64);
+  const [issues, setIssues] = useState<string[]>([]);
   const [id] = useState(() => "blk" + Math.random().toString(36).slice(2));
   const [doc] = useState(() => (typeof window === "undefined" ? "" : blocksShell(id, fill)));
   const st = useRef({ ready: false, sent: "", sentDone: false, timer: 0 as unknown as ReturnType<typeof setTimeout> | 0, source, done });
@@ -85,7 +86,8 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
           else app.openFile(t);
           break;
         }
-        case "error": console.warn("[blocks]", m.text); break;
+        case "issues": setIssues(m.issues || []); break;
+        case "error": if (st.current.done) setIssues((x) => (x.includes("error: " + m.text) || x.length > 11 ? x : [...x, "error: " + m.text])); break;
       }
     };
     window.addEventListener("message", onMsg);
@@ -99,9 +101,17 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
     return () => obs.disconnect();
   }, []);
 
+  // the in-frame self-check found something a person would see as broken: offer the model a precise fix request
+  const fix = issues.length > 0 && done && (
+    <div className="blk-issues" role="status">
+      <span>{issues.length === 1 ? "1 problem in this block" : `${issues.length} problems in this block`}</span>
+      <button className="blk-fix" onClick={() => { app.sendText(`The block you rendered has problems:\n${issues.map((i) => "- " + i).join("\n")}\nFix them and re-render the block.`); setIssues([]); }}>Fix</button>
+      <button className="ib sm" aria-label="Dismiss" onClick={() => setIssues([])}>×</button>
+    </div>
+  );
   const frame = <iframe ref={ref} className={fill ? "blk-frame fill" : "blk-frame"} style={fill ? undefined : { height: h }} sandbox="allow-scripts allow-forms allow-popups allow-modals" srcDoc={doc} title="block" />;
-  if (fill) return frame;
+  if (fill) return <>{frame}{fix}</>;
   // inline blocks can move to a canvas window (everything renderable inline renders in canvas and vice versa)
   const title = source.match(/<x-(?:section|card)[^>]*\btitle="([^"]+)"/)?.[1] || source.match(/<h[1-3][^>]*>([^<]{1,60})</)?.[1] || "Block";
-  return <div className="blk-wrap">{frame}{done && <button className="ib sm blk-pop" aria-label="Open in canvas" onClick={() => app.openCanvas({ kind: "ui", title, source })}><AppWindow /></button>}</div>;
+  return <div className="blk-wrap">{frame}{fix}{done && <button className="ib sm blk-pop" aria-label="Open in canvas" onClick={() => app.openCanvas({ kind: "ui", title, source })}><AppWindow /></button>}</div>;
 });

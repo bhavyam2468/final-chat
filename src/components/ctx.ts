@@ -10,14 +10,15 @@ export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
   content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null;
 };
-export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null };
+export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null; mode?: "chat" | "search"; state?: { mode?: "chat" | "search" } };
 export type TreeNode = { name: string; path: string; dir: boolean; size?: number; children?: TreeNode[] };
 export type CanvasSpec =
   | { kind: "ui"; title: string; source: string; path?: string }
   | { kind: "file"; title: string; path: string }
   | { kind: "youtube"; title: string; id: string }
   | { kind: "md"; title: string; body: string }
-  | { kind: "web"; title: string; url: string };
+  | { kind: "web"; title: string; url: string }
+  | { kind: "chat"; title: string; id: string };
 export type OpenOpts = { dock?: boolean };
 
 export type AppApi = {
@@ -26,13 +27,17 @@ export type AppApi = {
   sendUiEvent: (data: unknown, opts?: { label?: string; prompt?: string }) => void;
   sendText: (text: string) => void;
   /** Approve / deny a command the harness held back (tool meta.approval). */
-  decide: (messageId: string, partId: string, decision: "approve" | "deny", cmd: string) => Promise<void>;
+  decide: (messageId: string, partId: string, decision: "approve" | "deny", cmd: string, password?: string) => Promise<string | null>;
   refreshTree: () => void;
   mention: (path: string) => void;
   quote: (text: string) => void;
   tree: TreeNode[];
   context: string[];
   toggleContext: (path: string) => void;
+  /** current chat (null = new, unsaved) and chat titles, for per-chat folders */
+  convId: string | null;
+  convTitles: Record<string, string>;
+  openChat: (id: string) => void;
 };
 export const AppCtx = createContext<AppApi | null>(null);
 export const useApp = () => useContext(AppCtx)!;

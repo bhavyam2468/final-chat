@@ -137,7 +137,7 @@
   define("x-badge", class extends Base { render() { const t = this.tone; this.style.setProperty("--tone", t ? `var(--${t === "neutral" ? "muted" : t})` : "var(--muted)"); } });
   define("x-kbd", class extends HTMLElement {});
   define("x-icon", class extends Base {
-    render() { const n = this.getAttribute("name"); if (!n || this._n === n) return; this._n = n; fetch(`https://unpkg.com/lucide-static@0.469.0/icons/${encodeURIComponent(n)}.svg`).then((r) => (r.ok ? r.text() : "")).then((t) => { this.innerHTML = t; }).catch(() => {}); }
+    render() { const n = this.getAttribute("name"); if (!n || this._n === n) return; this._n = n; B.libFetch("lucide", `${encodeURIComponent(n)}.svg`).then((r) => (r.ok ? r.text() : "")).then((t) => { this.innerHTML = t; }).catch(() => {}); }
   }, { void: true });
   define("x-callout", class extends Base { render() { header(this, "x-callout-t", "div", (t) => esc(t)); } }, { container: true });
   define("x-kv", class extends Base {
@@ -149,7 +149,7 @@
     render() {
       const src = this.getAttribute("text") || this._src || "";
       const put = () => { this.innerHTML = window.marked ? window.marked.parse(src.replace(/^\n+/, "").replace(/^[ \t]+/gm, "")) : `<p>${esc(src)}</p>`; B.typeset(this); };
-      if (window.marked) put(); else load("https://cdn.jsdelivr.net/npm/marked@14/marked.min.js").then(put, put);
+      if (window.marked) put(); else B.loadLib("marked", "marked.umd.js").then(put, put);
     }
   });
   define("x-code", class extends Base {
@@ -158,14 +158,15 @@
       const code = (this._src || "").replace(/^\n/, "").replace(/\s+$/, ""), lang = this.a("lang", "");
       this.innerHTML = `<div class="x-code-h"><span>${esc(lang)}</span><button type="button">Copy</button></div><pre><code>${esc(code)}</code></pre>`;
       this.querySelector("button").onclick = (e) => { navigator.clipboard.writeText(code); e.target.textContent = "Copied"; setTimeout(() => (e.target.textContent = "Copy"), 1200); };
-      load("https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js").then(() => { const c = this.querySelector("code"); try { c.innerHTML = lang && window.hljs.getLanguage(lang) ? window.hljs.highlight(code, { language: lang }).value : window.hljs.highlightAuto(code).value; } catch {} }).catch(() => {});
+      B.loadLib("hljs", "highlight.min.js").then(() => { const c = this.querySelector("code"); try { c.innerHTML = lang && window.hljs.getLanguage(lang) ? window.hljs.highlight(code, { language: lang }).value : window.hljs.highlightAuto(code).value; } catch {} }).catch(() => {});
     }
   });
 
   // ================================================================ data display
   define("x-stat", class extends Base {
     render() {
-      const raw = this.a("value", ""), d = this.getAttribute("delta"), unit = this.a("unit", "");
+      let raw = this.a("value", ""); const d = this.getAttribute("delta"), unit = this.a("unit", "");
+      if (/^[[{]/.test(raw.trim())) { try { raw = B.show(JSON.parse(raw)); } catch {} } // bound object/array: readable text, never raw JSON
       this.innerHTML = `<span class="v"></span><span class="l">${esc(this.a("label", ""))}</span>${d ? `<span class="d ${d.trim().startsWith("-") ? "neg" : ""}">${esc(d)}</span>` : ""}`;
       const v = this.querySelector(".v"), m = String(raw).match(/^([^\d-]*)(-?[\d,]*\.?\d+)(.*)$/);
       if (!m || this._shown === raw) { v.textContent = raw + (unit ? " " + unit : ""); this._shown = raw; return; }
@@ -213,16 +214,36 @@
   }, { void: true });
 
   // charts: type=line|bar|hbar|stacked|area|pie|donut|scatter|radar
+  const names = (v) => { v = String(v ?? "").trim(); if (!v) return []; if (v[0] === "[") { try { return JSON.parse(v).map(String); } catch {} } return list(v, v.includes("|") ? "|" : ","); };
+  const yOf = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.y ?? v.value ?? v.v : v);
+  // accepts "1,2|3,4", JSON arrays, rows of records (x= / y= pick keys), [{name, values}], {labels, datasets}, {name: [..]}
   function series(el) {
-    const raw = el.getAttribute("data") || "";
-    let d;
-    if (/^\s*[[{]/.test(raw)) { try { d = JSON.parse(raw); } catch { d = []; } if (!Array.isArray(d[0]) && typeof d[0] !== "object") d = [d]; }
-    else d = raw.split("|").map((s) => s.split(",").map((x) => x.trim()).filter((x) => x !== ""));
-    const names = list(el.getAttribute("series") || "", "|");
-    return { series: d.map((arr, i) => ({ name: names[i] || "", values: arr })), labels: list(el.getAttribute("labels") || "", el.getAttribute("labels")?.includes("|") ? "|" : ",") };
+    const raw = (el.getAttribute("data") || "").trim();
+    let nm = names(el.getAttribute("series")), labels = names(el.getAttribute("labels")), d = [];
+    if (/^[[{]/.test(raw)) {
+      let j; try { j = JSON.parse(raw); } catch { j = []; }
+      const rec = (r) => r && typeof r === "object" && !Array.isArray(r);
+      if (Array.isArray(j) && j.length && j.every(rec) && !j.some((r) => Array.isArray(r.values) || Array.isArray(r.data))) {
+        const keys = Object.keys(j[0]), xk = el.getAttribute("x") || keys.find((k) => typeof j[0][k] === "string") || null;
+        const yk = el.getAttribute("y") ? names(el.getAttribute("y")) : keys.filter((k) => k !== xk && typeof j[0][k] === "number");
+        if (xk && !labels.length) labels = j.map((r) => String(r[xk]));
+        d = yk.map((k) => j.map((r) => r[k])); if (!nm.length) nm = yk;
+      } else if (Array.isArray(j) && j.length && rec(j[0])) {
+        d = j.map((r) => (r.values || r.data || []).map(yOf)); if (!nm.length) nm = j.map((r) => r.name || r.label || "");
+        if (!labels.length && Array.isArray(j[0].labels)) labels = j[0].labels.map(String);
+      } else if (Array.isArray(j)) d = el.getAttribute("type") === "scatter" ? (Array.isArray(j[0]) && Array.isArray(j[0][0]) ? j : [j]) : j.every(Array.isArray) ? j : [j];
+      else if (rec(j)) {
+        if (Array.isArray(j.labels)) labels = j.labels.map(String);
+        const sets = j.datasets || j.series;
+        if (Array.isArray(sets)) { d = sets.map((r) => (Array.isArray(r) ? r : r.values || r.data || []).map(yOf)); if (!nm.length) nm = sets.map((r) => r.name || r.label || ""); }
+        else { const ks = Object.keys(j).filter((k) => Array.isArray(j[k]) && k !== "labels"); d = ks.map((k) => j[k]); if (!nm.length) nm = ks; }
+      }
+    } else d = raw.split("|").map((x) => x.split(",").map((y) => y.trim()).filter((y) => y !== ""));
+    return { series: d.map((arr, i) => ({ name: nm[i] || "", values: arr.map((v) => (el.getAttribute("type") === "scatter" ? v : yOf(v))) })), labels };
   }
   const nice = (lo, hi, n = 4) => { const span = hi - lo || 1, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0)), step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= step0) || step0; const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step; const t = []; for (let v = a; v <= b + step / 2; v += step) t.push(+v.toFixed(10)); return t; };
-  const short = (v) => (Math.abs(v) >= 1e6 ? +(v / 1e6).toFixed(1) + "M" : Math.abs(v) >= 1e4 ? +(v / 1e3).toFixed(1) + "k" : +(+v).toFixed(2));
+  const short = (v) => { v = +v; const a = Math.abs(v); if (!a) return 0; if (a >= 1e12 || a < 1e-3) return v.toExponential(a >= 1e12 ? 1 : 1).replace("e+", "e"); if (a >= 1e9) return +(v / 1e9).toFixed(1) + "B"; if (a >= 1e6) return +(v / 1e6).toFixed(1) + "M"; if (a >= 1e4) return +(v / 1e3).toFixed(1) + "k"; return +v.toFixed(a < 1 ? 3 : 2); };
+  B.short = short;
   define("x-chart", class extends Base {
     render() {
       this.innerHTML = ""; this.dataset.themed = "";
@@ -249,37 +270,46 @@
         [0.25, 0.5, 0.75, 1].forEach((k) => svg("polygon", { points: Array.from({ length: n }, (_, i) => pt(i, k).join(",")).join(" "), class: "ax", fill: "none" }, s));
         for (let i = 0; i < n; i++) { const [x, y] = pt(i, 1.14); svg("text", { x, y: y + 3, "text-anchor": "middle", class: "lbl" }, s).textContent = labels[i] || ""; }
         S.forEach((se, si) => { const p = svg("polygon", { points: se.values.map((v, i) => pt(i, num(v) / max).join(",")).join(" "), fill: pal[si % pal.length], "fill-opacity": 0.14, stroke: pal[si % pal.length], "stroke-width": 1.8, class: "pop" }, s); p.style.animationDelay = si * 0.15 + "s"; });
-        if (S.length > 1) legend(S.map((se, i) => [se.name, pal[i % pal.length]])); return;
+        if (S.length > 1) legend(S.map((se, i) => [se.name || `Series ${i + 1}`, pal[i % pal.length]])); return;
       }
       const W = 360, H = 200, P = { l: 36, r: 10, t: 10, b: 26 };
       const s = svg("svg", { viewBox: `0 0 ${W} ${H}` }, this);
       if (type === "scatter") {
-        const pts = S.flatMap((se, si) => se.values.map((p) => [...String(p).split(":").map(Number), si]));
+        const pts = S.flatMap((se, si) => se.values.map((p) => [...(Array.isArray(p) ? p.map(Number) : p && typeof p === "object" ? [+p.x, +p.y] : String(p).split(/[:;]/).map(Number)), si])).filter((p) => isFinite(p[0]) && isFinite(p[1]));
         const xs = nice(Math.min(...pts.map((p) => p[0])), Math.max(...pts.map((p) => p[0]))), ys = nice(Math.min(...pts.map((p) => p[1])), Math.max(...pts.map((p) => p[1])));
         const X = (v) => P.l + ((v - xs[0]) / (xs[xs.length - 1] - xs[0] || 1)) * (W - P.l - P.r), Y = (v) => H - P.b - ((v - ys[0]) / (ys[ys.length - 1] - ys[0] || 1)) * (H - P.t - P.b);
         ys.forEach((v) => { svg("line", { x1: P.l, x2: W - P.r, y1: Y(v), y2: Y(v), class: "ax" }, s); svg("text", { x: P.l - 5, y: Y(v) + 3, "text-anchor": "end", class: "lbl" }, s).textContent = short(v); });
         xs.forEach((v) => (svg("text", { x: X(v), y: H - 8, "text-anchor": "middle", class: "lbl" }, s).textContent = short(v)));
         pts.forEach((p, i) => { const c = svg("circle", { cx: X(p[0]), cy: Y(p[1]), r: 3.4, fill: pal[p[2] % pal.length], class: "pop" }, s); c.style.animationDelay = Math.min(i * 15, 800) + "ms"; svg("title", {}, c).textContent = `${p[0]}, ${p[1]}`; });
-        this.axisLabels(s, W, H); if (S.length > 1) legend(S.map((se, i) => [se.name, pal[i % pal.length]])); return;
+        this.axisLabels(s, W, H); if (S.length > 1) legend(S.map((se, i) => [se.name || `Series ${i + 1}`, pal[i % pal.length]])); return;
       }
       const n = Math.max(...S.map((x) => x.values.length), 1), stacked = type === "stacked", horiz = type === "hbar";
       const sums = Array.from({ length: n }, (_, i) => S.reduce((a, se) => a + num(se.values[i]), 0));
       const all = stacked ? sums : S.flatMap((x) => x.values.map(Number));
-      const ticks = nice(Math.min(0, ...all), Math.max(0, ...all)), lo = ticks[0], hi = ticks[ticks.length - 1];
+      // a series 50× smaller than the rest gets its own right-hand axis instead of flattening into the baseline
+      const mag = S.map((se) => Math.max(...se.values.map((x) => Math.abs(num(x))), 0)), top = Math.max(...mag, 0);
+      const right = new Set(!stacked && !horiz && type !== "bar" && S.length > 1 ? mag.map((m, i) => (m > 0 && m < top / 50 ? i : -1)).filter((i) => i >= 0) : []);
+      const leftVals = stacked ? sums : S.flatMap((x, i) => (right.has(i) ? [] : x.values.map(Number)));
+      const ticks = nice(Math.min(0, ...(right.size ? leftVals : all)), Math.max(0, ...(right.size ? leftVals : all))), lo = ticks[0], hi = ticks[ticks.length - 1];
+      const rVals = S.flatMap((x, i) => (right.has(i) ? x.values.map(Number) : []));
+      const rt = right.size ? nice(Math.min(0, ...rVals), Math.max(0, ...rVals)) : null;
+      P.l = Math.max(30, 8 + 6 * Math.max(...ticks.map((t) => String(short(t)).length))); if (rt) P.r = Math.max(30, 8 + 6 * Math.max(...rt.map((t) => String(short(t)).length)));
       if (horiz) {
         const L = 70, bh = ((H - P.t - P.b) / n) * 0.7, X = (v) => L + ((v - lo) / (hi - lo || 1)) * (W - L - P.r), Y = (i) => P.t + ((i + 0.5) * (H - P.t - P.b)) / n;
         ticks.forEach((v) => { svg("line", { x1: X(v), x2: X(v), y1: P.t, y2: H - P.b, class: "ax" }, s); svg("text", { x: X(v), y: H - 8, "text-anchor": "middle", class: "lbl" }, s).textContent = short(v); });
         S.forEach((se, si) => se.values.forEach((v, i) => { const r = svg("rect", { x: X(Math.min(0, v)), y: Y(i) - bh / 2 + (si * bh) / S.length, width: Math.abs(X(v) - X(0)), height: bh / S.length - 2, rx: 3, fill: pal[si % pal.length], class: "growx" }, s); r.style.animationDelay = i * 40 + "ms"; svg("title", {}, r).textContent = `${labels[i] || ""} ${v}`; }));
         labels.forEach((l, i) => (svg("text", { x: L - 6, y: Y(i) + 3, "text-anchor": "end", class: "lbl" }, s).textContent = l.slice(0, 12)));
-        if (S.length > 1) legend(S.map((se, i) => [se.name, pal[i % pal.length]])); return;
+        if (S.length > 1) legend(S.map((se, i) => [se.name || `Series ${i + 1}`, pal[i % pal.length]])); return;
       }
       const Y = (v) => P.t + (H - P.t - P.b) * (1 - (v - lo) / (hi - lo || 1));
+      const Yr = rt ? (v) => P.t + (H - P.t - P.b) * (1 - (v - rt[0]) / (rt[rt.length - 1] - rt[0] || 1)) : Y;
+      if (rt) rt.forEach((v) => (svg("text", { x: W - P.r + 5, y: Yr(v) + 3, "text-anchor": "start", class: "lbl" }, s).textContent = short(v)));
       ticks.forEach((v) => { svg("line", { x1: P.l, x2: W - P.r, y1: Y(v), y2: Y(v), class: "ax" }, s); svg("text", { x: P.l - 5, y: Y(v) + 3, "text-anchor": "end", class: "lbl" }, s).textContent = short(v); });
       const bar = type === "bar" || stacked, X = (i) => P.l + (bar ? ((i + 0.5) * (W - P.l - P.r)) / n : n === 1 ? (W - P.l - P.r) / 2 : (i * (W - P.l - P.r)) / (n - 1));
       labels.forEach((l, i) => { if (i < n && (n <= 12 || i % Math.ceil(n / 10) === 0)) svg("text", { x: X(i), y: H - 8, "text-anchor": "middle", class: "lbl" }, s).textContent = l; });
-      const base = Array(n).fill(0);
+      const base = Array(n).fill(0), Y0 = Y;
       S.forEach((se, si) => {
-        const col = pal[si % pal.length], v = se.values.map(Number);
+        const col = pal[si % pal.length], v = se.values.map(Number), Y = right.has(si) ? Yr : Y0;
         if (bar) {
           const bw = ((W - P.l - P.r) / n) * 0.66 / (stacked ? 1 : S.length);
           v.forEach((val, i) => {
@@ -295,7 +325,7 @@
         }
       });
       this.axisLabels(s, W, H);
-      if (S.length > 1) legend(S.map((se, i) => [se.name, pal[i % pal.length]]));
+      if (S.length > 1) legend(S.map((se, i) => [(se.name || `Series ${i + 1}`) + (right.has(i) ? " (right axis)" : ""), pal[i % pal.length]]));
     }
     axisLabels(s, W, H) {
       const xl = this.getAttribute("x-label"), yl = this.getAttribute("y-label");
@@ -343,85 +373,152 @@
     render() { const tex = this.getAttribute("tex") || this._src || ""; B.katex().then(() => { this.innerHTML = window.katex.renderToString(tex.trim(), { displayMode: !this.hasAttribute("inline"), throwOnError: false }); }); }
   });
 
-  // interactive function graph: fn="a*sin(x); x^2/4"  params come from scope (named inputs / state)
+  // interactive function graph (Desmos-like). fn="a*sin(x); x^2+y^2=16; x=cos(t), y=sin(t); r=2sin(3θ)"
+  // params come from scope (named inputs / state). Drawn in real pixels: resizing reveals more plane, never stretches.
   const MATHN = new Set(Object.getOwnPropertyNames(Math).concat(["x", "t", "theta", "r", "e", "pi", "ln", "log10", "sec", "csc", "cot"]));
   function compileExpr(src, vars) {
-    let e = String(src).replace(/\^/g, "**").replace(/π/g, "PI").replace(/θ/g, "theta").replace(/\bpi\b/g, "PI").replace(/\bln\(/g, "log(")
-      .replace(/(\d)\s*([a-zA-Z(])/g, "$1*$2").replace(/\)\s*([a-zA-Z(\d])/g, ")*$1");
-    const free = [...new Set((e.match(/\b[a-zA-Z_]\w*\b/g) || []).filter((w) => !MATHN.has(w) && !MATHN.has(w.toLowerCase())))];
+    let e = String(src).replace(/\*\*/g, "^").replace(/\^/g, "**").replace(/π/g, "PI").replace(/θ/g, "theta").replace(/\bpi\b/g, "PI").replace(/\bln\(/g, "log(").replace(/√\(?/g, "sqrt(").replace(/·|×/g, "*")
+      .replace(/(\d)\s*([a-zA-Z(])/g, "$1*$2").replace(/\)\s*([a-zA-Z(\d])/g, ")*$1").replace(/\|([^|]+)\|/g, "abs($1)");
+    const own = new Set(vars.split(",").map((x) => x.trim()));
+    const free = [...new Set((e.match(/\b[a-zA-Z_]\w*\b/g) || []).filter((w) => !own.has(w) && !MATHN.has(w) && !MATHN.has(w.toLowerCase())))];
     const pro = free.map((w) => `const ${w}=+v[${JSON.stringify(w)}]||0;`).join("");
     // eslint-disable-next-line no-new-func
     const f = new Function(vars, "v", `with(Math){const e=E,sec=(z)=>1/cos(z),csc=(z)=>1/sin(z),cot=(z)=>1/tan(z);${pro}return (${e});}`);
     return { f, free };
   }
+  // split "a, b" at the top-level comma only
+  const topSplit = (s) => { let d = 0; for (let i = 0; i < s.length; i++) { const c = s[i]; if (c === "(" || c === "[") d++; else if (c === ")" || c === "]") d--; else if (c === "," && !d) return [s.slice(0, i), s.slice(i + 1)]; } return [s]; };
+  function parseFns(src) {
+    const parts = String(src).split(/;|\n/).map((s) => s.trim()).filter(Boolean), out = [];
+    for (let i = 0; i < parts.length; i++) {
+      const s = parts[i]; let m;
+      const X = /^x\s*(?:\(\s*t\s*\))?\s*=\s*(.+)$/, Y = /^y\s*(?:\(\s*t\s*\))?\s*=\s*(.+)$/;
+      const pair = (a, b, label) => { const fx = compileExpr(a, "t"), fy = compileExpr(b, "t"); out.push({ kind: "param", fx: fx.f, fy: fy.f, free: [...fx.free, ...fy.free], label }); };
+      const two = topSplit(s);
+      if (two.length === 2 && X.test(two[0].trim()) && Y.test(two[1].trim())) { pair(two[0].trim().match(X)[1], two[1].trim().match(Y)[1], s); continue; }
+      if ((m = s.match(X)) && /\bt\b/.test(m[1]) && parts[i + 1] && Y.test(parts[i + 1])) { pair(m[1], parts[i + 1].match(Y)[1], `${s}, ${parts[i + 1]}`); i++; continue; }
+      if ((m = s.match(/^\(\s*(.+)\s*\)$/)) && topSplit(m[1]).length === 2 && /\bt\b/.test(m[1])) { const [a, b] = topSplit(m[1]); pair(a, b, s); continue; }
+      if ((m = s.match(/^r\s*(?:\(\s*(?:θ|theta)\s*\))?\s*=\s*(.+)$/))) { const R = compileExpr(m[1], "theta"); out.push({ kind: "polar", f: R.f, free: R.free, label: s }); continue; }
+      const fm = s.match(/^(?:y|[a-z]\s*\(\s*x\s*\))\s*=\s*(.+)$/);
+      if (fm && !/(^|[^\w])y([^\w]|$)/.test(fm[1])) { const c = compileExpr(fm[1], "x"); out.push({ kind: "fn", f: c.f, free: c.free, label: s.startsWith("y") ? s : "y = " + fm[1] }); continue; }
+      const eq = s.match(/^([^=<>]+?)\s*(?:=|<=|>=|<|>)\s*([^=<>]+)$/);
+      if (eq) { const c = compileExpr(`(${eq[1]})-(${eq[2]})`, "x,y"); out.push({ kind: "implicit", f: c.f, free: c.free, label: s }); continue; }
+      const c = compileExpr(s, "x"); out.push({ kind: "fn", f: c.f, free: c.free, label: "y = " + s });
+    }
+    return out;
+  }
   define("x-graph", class extends Base {
     static owns = true;
     init() {
       this.dataset.reactive = ""; this.dataset.themed = "";
-      const x0 = this.n("xmin", -10), x1 = this.n("xmax", 10);
-      this.view = { x0, x1, y0: this.getAttribute("ymin"), y1: this.getAttribute("ymax") };
       this._wrap = document.createElement("div"); this._wrap.className = "gw"; this.appendChild(this._wrap);
+      this._wrap.style.height = this.n("height", document.body.classList.contains("fill") ? 340 : 260) + "px";
       this._tip = document.createElement("div"); this._tip.className = "gtip"; this._wrap.appendChild(this._tip);
       let drag = null;
-      this._wrap.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, v: { ...this.view } }; this._wrap.setPointerCapture(e.pointerId); });
+      const px = () => { const r = this._wrap.getBoundingClientRect(); return { r, sx: (this.view.x1 - this.view.x0) / r.width, sy: (this.view.y1 - this.view.y0) / r.height }; };
+      this._wrap.addEventListener("pointerdown", (e) => { if (!this.view) return; drag = { x: e.clientX, y: e.clientY, v: { ...this.view } }; this._wrap.setPointerCapture(e.pointerId); });
       this._wrap.addEventListener("pointermove", (e) => {
-        const r = this._wrap.getBoundingClientRect();
-        if (drag) { const dx = ((e.clientX - drag.x) / r.width) * (drag.v.x1 - drag.v.x0), dy = ((e.clientY - drag.y) / r.height) * (drag.v.y1 - drag.v.y0); this.view = { x0: drag.v.x0 - dx, x1: drag.v.x1 - dx, y0: drag.v.y0 + dy, y1: drag.v.y1 + dy }; this.paint(false); }
-        else if (this._fns) { const x = this.view.x0 + ((e.clientX - r.left) / r.width) * (this.view.x1 - this.view.x0); const ys = this._fns.map((f) => { try { return f.f(x, this._vars); } catch { return NaN; } }).filter(isFinite); this._tip.textContent = `x ${x.toFixed(2)}${ys.length ? "  y " + ys.map((y) => y.toFixed(3)).join(", ") : ""}`; this._tip.style.opacity = 1; }
+        if (!this.view) return; const { r, sx, sy } = px();
+        if (drag) { const dx = (e.clientX - drag.x) * sx, dy = (e.clientY - drag.y) * sy; this.view = { x0: drag.v.x0 - dx, x1: drag.v.x1 - dx, y0: drag.v.y0 + dy, y1: drag.v.y1 + dy }; this.paint(false); return; }
+        const x = this.view.x0 + (e.clientX - r.left) * sx; const ys = (this._fns || []).filter((f) => f.kind === "fn").map((f) => { try { return f.f(x, this._vars); } catch { return NaN; } }).filter(isFinite);
+        this._tip.textContent = `x ${x.toFixed(2)}${ys.length ? "  y " + ys.map((y) => y.toFixed(3)).join(", ") : ""}`; this._tip.style.opacity = 1;
       });
       this._wrap.addEventListener("pointerup", () => (drag = null));
       this._wrap.addEventListener("pointerleave", () => (this._tip.style.opacity = 0));
-      this._wrap.addEventListener("wheel", (e) => { e.preventDefault(); const r = this._wrap.getBoundingClientRect(), k = Math.exp(e.deltaY * 0.0015), fx = (e.clientX - r.left) / r.width, fy = 1 - (e.clientY - r.top) / r.height, v = this.view; const cx = v.x0 + fx * (v.x1 - v.x0), cy = v.y0 + fy * (v.y1 - v.y0); this.view = { x0: cx - (cx - v.x0) * k, x1: cx + (v.x1 - cx) * k, y0: cy - (cy - v.y0) * k, y1: cy + (v.y1 - cy) * k }; this.paint(false); }, { passive: false });
-      this._wrap.addEventListener("dblclick", () => { this.view = { x0, x1, y0: this.getAttribute("ymin"), y1: this.getAttribute("ymax") }; this.paint(false); });
+      this._wrap.addEventListener("wheel", (e) => { if (!this.view) return; e.preventDefault(); const { r, sx, sy } = px(), k = Math.exp(e.deltaY * 0.0015), v = this.view; const cx = v.x0 + (e.clientX - r.left) * sx, cy = v.y1 - (e.clientY - r.top) * sy; this.view = { x0: cx - (cx - v.x0) * k, x1: cx + (v.x1 - cx) * k, y0: cy - (cy - v.y0) * k, y1: cy + (v.y1 - cy) * k }; this.paint(false); }, { passive: false });
+      this._wrap.addEventListener("dblclick", () => { this.view = null; this.paint(false); });
+      // resize keeps units-per-pixel (reveals more plane) instead of stretching the picture
+      new ResizeObserver(() => {
+        const w = this._wrap.clientWidth, h = this._wrap.clientHeight; if (!w || !h) return;
+        if (this.view && this._size && (this._size[0] !== w || this._size[1] !== h)) { const v = this.view, sx = (v.x1 - v.x0) / this._size[0], sy = (v.y1 - v.y0) / this._size[1], cx = (v.x0 + v.x1) / 2, cy = (v.y0 + v.y1) / 2; this.view = { x0: cx - (w / 2) * sx, x1: cx + (w / 2) * sx, y0: cy - (h / 2) * sy, y1: cy + (h / 2) * sy }; }
+        if (this._fns) this.paint(!this._painted);
+      }).observe(this._wrap);
     }
     render() { this._key = null; this.refresh(true); }
     refresh(force) {
       const src = this.getAttribute("fn") || this._src || "x";
-      if (!this._fns || this._srcFn !== src) {
-        this._srcFn = src;
-        this._fns = src.split(/;|\n/).map((s) => s.trim()).filter(Boolean).map((s) => {
-          let m;
-          if ((m = s.match(/^x\s*=\s*(.+?)\s*,\s*y\s*=\s*(.+)$/))) { const X = compileExpr(m[1], "t"), Y = compileExpr(m[2], "t"); return { kind: "param", fx: X.f, fy: Y.f, free: [...X.free, ...Y.free], label: s }; }
-          if ((m = s.match(/^r\s*=\s*(.+)$/))) { const R = compileExpr(m[1], "theta"); return { kind: "polar", f: R.f, free: R.free, label: s }; }
-          const body = s.replace(/^(?:y|f\(x\))\s*=\s*/, ""); const c = compileExpr(body, "x"); return { kind: "fn", f: c.f, free: c.free, label: "y = " + body };
-        });
-      }
+      if (!this._fns || this._srcFn !== src) { this._srcFn = src; try { this._fns = parseFns(src); } catch (e) { this._fns = []; B.post && B.post("error", { text: "x-graph: " + e.message }); } this.view = null; }
       const vars = {}; this._fns.forEach((f) => f.free.forEach((k) => { const v = B.evaluate(k); vars[k] = typeof v === "number" ? v : num(v, 0); }));
       const key = JSON.stringify(vars);
       if (!force && key === this._key) return;
-      const first = this._key === null || this._key === undefined; this._key = key; this._vars = vars;
-      this.paint(first);
+      this._key = key; this._vars = vars;
+      this.paint(!this._painted);
     }
-    paint(animate) {
-      const W = 400, H = this.n("height", 250), v = this.view, pal = PAL(), N = 600;
-      const samples = this._fns.map((f) => {
-        const pts = [];
-        if (f.kind === "fn") for (let i = 0; i <= N; i++) { const x = v.x0 + ((v.x1 - v.x0) * i) / N; let y; try { y = f.f(x, this._vars); } catch { y = NaN; } pts.push([x, y]); }
-        else { const [t0, t1] = f.kind === "polar" ? [0, 2 * Math.PI * this.n("turns", 1)] : [this.n("tmin", 0), this.n("tmax", 2 * Math.PI)]; for (let i = 0; i <= N; i++) { const t = t0 + ((t1 - t0) * i) / N; try { if (f.kind === "polar") { const r = f.f(t, this._vars); pts.push([r * Math.cos(t), r * Math.sin(t)]); } else pts.push([f.fx(t, this._vars), f.fy(t, this._vars)]); } catch { pts.push([NaN, NaN]); } } }
+    fit(W, H) {
+      const fns = this._fns, shapes = fns.length && fns.every((f) => f.kind !== "fn");
+      const equal = this.hasAttribute("equal") ? this.getAttribute("equal") !== "false" : shapes;
+      let x0 = this.n("xmin", NaN), x1 = this.n("xmax", NaN), y0 = this.n("ymin", NaN), y1 = this.n("ymax", NaN);
+      if (shapes && !isFinite(x0)) { // frame the curves themselves
+        const pts = this.samples({ x0: -10, x1: 10, y0: -10, y1: 10 }, 300, 200).flat().filter((p) => isFinite(p[0]) && isFinite(p[1]) && Math.abs(p[0]) < 1e6 && Math.abs(p[1]) < 1e6);
+        if (pts.length) { const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]); const a = Math.min(...xs), b = Math.max(...xs), c = Math.min(...ys), d = Math.max(...ys), pad = Math.max(b - a, d - c, 1e-6) * 0.12; x0 = a - pad; x1 = b + pad; if (!isFinite(y0)) { y0 = c - pad; y1 = d + pad; } }
+      }
+      if (!isFinite(x0) || !isFinite(x1)) { x0 = -10; x1 = 10; }
+      if (!isFinite(y0) || !isFinite(y1)) {
+        if (equal) { y0 = -((x1 - x0) * H) / W / 2; y1 = -y0; }
+        else {
+          const ys = this.samples({ x0, x1, y0: -1, y1: 1 }, W, H).flat().map((p) => p[1]).filter(isFinite).sort((a, b) => a - b);
+          let lo = ys.length ? ys[Math.floor(ys.length * 0.02)] : -1, hi = ys.length ? ys[Math.ceil(ys.length * 0.98) - 1] : 1;
+          if (hi - lo < 1e-9) { lo -= 1; hi += 1; } const pad = (hi - lo) * 0.12; y0 = lo - pad; y1 = hi + pad;
+        }
+      }
+      if (equal) { // same units on both axes: grow whichever range is short
+        const sx = (x1 - x0) / W, sy = (y1 - y0) / H, s = Math.max(sx, sy), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        x0 = cx - (W / 2) * s; x1 = cx + (W / 2) * s; y0 = cy - (H / 2) * s; y1 = cy + (H / 2) * s;
+      }
+      return { x0, x1, y0, y1 };
+    }
+    samples(v, W, H) {
+      return this._fns.map((f) => {
+        const pts = [], vars = this._vars || {};
+        if (f.kind === "fn") { const N = Math.max(200, Math.round(W * 1.5)); for (let i = 0; i <= N; i++) { const x = v.x0 + ((v.x1 - v.x0) * i) / N; let y; try { y = f.f(x, vars); } catch { y = NaN; } pts.push([x, y]); } }
+        else if (f.kind === "implicit") return this.contour(f, v, W, H);
+        else { const [t0, t1] = f.kind === "polar" ? [this.n("tmin", 0), this.n("tmax", 2 * Math.PI * this.n("turns", 1))] : [this.n("tmin", 0), this.n("tmax", 2 * Math.PI)]; const N = 800; for (let i = 0; i <= N; i++) { const t = t0 + ((t1 - t0) * i) / N; try { if (f.kind === "polar") { const r = f.f(t, vars); pts.push([r * Math.cos(t), r * Math.sin(t)]); } else pts.push([f.fx(t, vars), f.fy(t, vars)]); } catch { pts.push([NaN, NaN]); } } }
         return pts;
       });
-      if (v.y0 === null || v.y0 === undefined || v.y1 === null || v.y1 === undefined) {
-        const ys = samples.flat().map((p) => p[1]).filter(isFinite).sort((a, b) => a - b);
-        let lo = ys.length ? ys[Math.floor(ys.length * 0.02)] : -1, hi = ys.length ? ys[Math.ceil(ys.length * 0.98) - 1] : 1;
-        if (hi - lo < 1e-9) { lo -= 1; hi += 1; } const pad = (hi - lo) * 0.12; v.y0 = num(v.y0, lo - pad); v.y1 = num(v.y1, hi + pad);
-        if (this.hasAttribute("equal")) { const mid = (v.y0 + v.y1) / 2, half = ((v.x1 - v.x0) * H) / W / 2; v.y0 = mid - half; v.y1 = mid + half; }
+    }
+    // marching squares over a ~4px grid; returns points with NaN separators between segments
+    contour(f, v, W, H) {
+      const nx = Math.max(40, Math.round(W / 4)), ny = Math.max(30, Math.round(H / 4)), vars = this._vars || {}, G = [];
+      for (let j = 0; j <= ny; j++) { const row = []; const y = v.y0 + ((v.y1 - v.y0) * j) / ny; for (let i = 0; i <= nx; i++) { let z; try { z = f.f(v.x0 + ((v.x1 - v.x0) * i) / nx, y, vars); } catch { z = NaN; } row.push(z); } G.push(row); }
+      const out = [], X = (i) => v.x0 + ((v.x1 - v.x0) * i) / nx, Y = (j) => v.y0 + ((v.y1 - v.y0) * j) / ny;
+      const lerp = (a, b, za, zb) => a + ((b - a) * za) / (za - zb);
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        const a = G[j][i], b = G[j][i + 1], c = G[j + 1][i + 1], d = G[j + 1][i];
+        if (![a, b, c, d].every(isFinite)) continue;
+        const p = [];
+        if (a * b < 0 || (a === 0) !== (b === 0)) p.push([lerp(X(i), X(i + 1), a, b), Y(j)]);
+        if (b * c < 0) p.push([X(i + 1), lerp(Y(j), Y(j + 1), b, c)]);
+        if (c * d < 0) p.push([lerp(X(i), X(i + 1), d, c), Y(j + 1)]);
+        if (d * a < 0) p.push([X(i), lerp(Y(j), Y(j + 1), a, d)]);
+        if (p.length >= 2) { const big = Math.max(Math.abs(a), Math.abs(b), Math.abs(c), Math.abs(d)); if (big > 1e6) continue; out.push(p[0], p[1], [NaN, NaN]); if (p.length === 4) out.push(p[2], p[3], [NaN, NaN]); }
       }
-      v.y0 = +v.y0; v.y1 = +v.y1;
+      return out;
+    }
+    paint(animate) {
+      const W = this._wrap.clientWidth, H = this._wrap.clientHeight; if (!W || !H || !this._fns) return;
+      this._size = [W, H]; this._painted = true;
+      if (!this.view) this.view = this.fit(W, H);
+      const v = this.view, pal = PAL();
       const X = (x) => ((x - v.x0) / (v.x1 - v.x0)) * W, Y = (y) => H - ((y - v.y0) / (v.y1 - v.y0)) * H;
       const old = this._wrap.querySelector("svg"); if (old) old.remove();
-      const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" }); this._wrap.prepend(s);
-      nice(v.x0, v.x1, 8).forEach((gx) => { svg("line", { x1: X(gx), x2: X(gx), y1: 0, y2: H, class: "ax", opacity: gx === 0 ? 1 : 0.45 }, s); if (gx !== 0) svg("text", { x: X(gx) + 2, y: Math.min(H - 3, Math.max(10, Y(0) + 11)), class: "lbl" }, s).textContent = short(gx); });
-      nice(v.y0, v.y1, 6).forEach((gy) => { svg("line", { x1: 0, x2: W, y1: Y(gy), y2: Y(gy), class: "ax", opacity: gy === 0 ? 1 : 0.45 }, s); if (gy !== 0) svg("text", { x: Math.min(W - 24, Math.max(2, X(0) + 3)), y: Y(gy) - 2, class: "lbl" }, s).textContent = short(gy); });
-      samples.forEach((pts, i) => {
-        let d = "", pen = false; const span = v.y1 - v.y0;
-        pts.forEach(([x, y], k) => { if (!isFinite(x) || !isFinite(y) || y < v.y0 - span * 2 || y > v.y1 + span * 2 || (pen && k && Math.abs(y - pts[k - 1][1]) > span * 1.5)) { pen = false; return; } d += `${pen ? "L" : "M"}${X(x).toFixed(1)},${Y(y).toFixed(1)}`; pen = true; });
-        const p = svg("path", { d, fill: "none", stroke: pal[i % pal.length], "stroke-width": 2.2, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }, s);
-        if (animate) drawIn(p, 0.05 + i * 0.12);
+      const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H }); this._wrap.prepend(s);
+      const gx = nice(v.x0, v.x1, Math.max(3, Math.round(W / 70))), gy = nice(v.y0, v.y1, Math.max(3, Math.round(H / 55)));
+      const ax = Math.min(W - 4, Math.max(4, X(0))), ay = Math.min(H - 4, Math.max(4, Y(0)));
+      gx.forEach((g) => { svg("line", { x1: X(g), x2: X(g), y1: 0, y2: H, class: "ax", opacity: g === 0 ? 1 : 0.4 }, s); if (g !== 0) svg("text", { x: X(g), y: Math.min(H - 4, ay + 14), "text-anchor": "middle", class: "lbl" }, s).textContent = short(g); });
+      gy.forEach((g) => { svg("line", { x1: 0, x2: W, y1: Y(g), y2: Y(g), class: "ax", opacity: g === 0 ? 1 : 0.4 }, s); if (g !== 0) svg("text", { x: ax > W - 40 ? ax - 5 : ax + 5, y: Y(g) + 4, "text-anchor": ax > W - 40 ? "end" : "start", class: "lbl" }, s).textContent = short(g); });
+      this.samples(v, W, H).forEach((pts, i) => {
+        let d = "", pen = false; const span = v.y1 - v.y0, f = this._fns[i];
+        pts.forEach(([x, y], k) => {
+          if (!isFinite(x) || !isFinite(y) || y < v.y0 - span * 2 || y > v.y1 + span * 2 || (f.kind === "fn" && pen && k && Math.abs(y - pts[k - 1][1]) > span * 1.5)) { pen = false; return; }
+          d += `${pen ? "L" : "M"}${X(x).toFixed(1)},${Y(y).toFixed(1)}`; pen = true;
+        });
+        const p = svg("path", { d: d || "M0,0", fill: "none", stroke: pal[i % pal.length], "stroke-width": 2.2, "stroke-linejoin": "round", "stroke-linecap": "round" }, s);
+        if (animate && f.kind !== "implicit") drawIn(p, 0.05 + i * 0.12); else if (animate) p.classList.add("pop");
       });
       const ptsAttr = this.getAttribute("points");
-      if (ptsAttr) ptsAttr.split(";").forEach((pp, k) => { const [px, py, lab] = pp.split(",").map((z) => z.trim()); const c = svg("circle", { cx: X(+px), cy: Y(+py), r: 3.5, fill: "var(--fg)", class: animate ? "pop" : "" }, s); c.style.animationDelay = 0.6 + k * 0.05 + "s"; if (lab) svg("text", { x: X(+px) + 6, y: Y(+py) - 6, class: "lbl", fill: "var(--fg)" }, s).textContent = lab; });
+      if (ptsAttr) ptsAttr.split(";").filter((x) => x.trim()).forEach((pp, k) => { const [px, py, lab] = pp.split(",").map((z) => z.trim()); const c = svg("circle", { cx: X(+px), cy: Y(+py), r: 4, fill: "var(--fg)", class: animate ? "pop" : "" }, s); c.style.animationDelay = 0.6 + k * 0.05 + "s"; if (lab) svg("text", { x: X(+px) + 7, y: Y(+py) - 7, class: "lbl pt" }, s).textContent = lab; });
       let lg = this.querySelector(".legend");
-      if (this._fns.length > 1 || this.hasAttribute("legend")) { if (!lg) { lg = document.createElement("div"); lg.className = "legend"; this.appendChild(lg); } lg.innerHTML = this._fns.map((f, i) => `<span><i style="background:${pal[i % pal.length]}"></i>${esc(f.label)}</span>`).join(""); }
+      if (this._fns.length > 1 || this.hasAttribute("legend")) { if (!lg) { lg = document.createElement("div"); lg.className = "legend"; this.appendChild(lg); } lg.innerHTML = this._fns.map((f, i) => `<span><i style="background:${pal[i % pal.length]}"></i>${esc(f.label.replace(/\*\*/g, "^").replace(/\*/g, "·"))}</span>`).join(""); }
     }
   });
   define("x-plot", class extends (customElements.get("x-graph")) {});
@@ -431,7 +528,7 @@
       const sm = this.getAttribute("smiles") || (this._src || "").trim(); if (!sm) return;
       this.dataset.themed = ""; this.innerHTML = "";
       const s = svg("svg", { id: "sm" + Math.random().toString(36).slice(2) }, this); s.style.minHeight = (this.n("height", 200)) + "px";
-      load("https://unpkg.com/smiles-drawer@2.0.1/dist/smiles-drawer.min.js").then(() => {
+      B.loadLib("smiles", "smiles-drawer.min.js").then(() => {
         const SD = window.SmilesDrawer, dark = document.body.dataset.theme === "dark";
         const d = new SD.SvgDrawer({ width: this.n("width", 320), height: this.n("height", 200), bondThickness: 1.1, compactDrawing: false });
         SD.parse(sm, (tree) => { d.draw(tree, s, dark ? "dark" : "light", false); s.classList.add("pop"); const l = this.getAttribute("label"); if (l) { const c = document.createElement("div"); c.className = "cap"; c.textContent = l; this.appendChild(c); } }, (e) => { this.innerHTML = `<div class="err">${esc(e)}</div>`; });
@@ -442,7 +539,7 @@
     render() {
       this.innerHTML = '<div class="m3"></div>'; const box = this.firstChild;
       const name = this.getAttribute("name"), cid = this.getAttribute("cid"), smiles = this.getAttribute("smiles"), pdb = this.getAttribute("pdb");
-      load("https://cdn.jsdelivr.net/npm/3dmol@2.4.2/build/3Dmol-min.js").then(async () => {
+      B.loadLib("3dmol", "3Dmol-min.js").then(async () => {
         const v = window.$3Dmol.createViewer(box, { backgroundAlpha: 0 });
         let data, fmt = "sdf";
         const pc = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound";
@@ -457,10 +554,29 @@
     static owns = true;
     render() {
       this.dataset.themed = ""; const code = (this._src || "").trim(), dark = document.body.dataset.theme === "dark";
-      import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs").then(async ({ default: m }) => {
+      B.libImport("mermaid", "mermaid.esm.min.mjs").then(async ({ default: m }) => {
         m.initialize({ startOnLoad: false, theme: "base", fontFamily: "inherit", themeVariables: { darkMode: dark, background: "transparent", primaryColor: css("--surface-solid") || (dark ? "#2b2a27" : "#e8e2d7"), primaryTextColor: css("--fg"), primaryBorderColor: css("--line-solid") || css("--muted"), lineColor: css("--muted"), secondaryColor: dark ? "#2f2c28" : "#efe9df", tertiaryColor: "transparent", fontSize: "14px" } });
         try { const { svg: out } = await m.render("m" + Math.random().toString(36).slice(2), code); this.innerHTML = out; this.firstElementChild && this.firstElementChild.classList.add("pop"); } catch (e) { this.innerHTML = `<div class="err">${esc(e.message || e)}</div>`; }
       });
+    }
+  });
+  // TikZ diagrams (physics, circuits via circuitikz, geometry, pgfplots, chemfig, Feynman), rendered offline by the host
+  define("x-tikz", class extends Base {
+    static owns = true;
+    render() {
+      const src = (this.getAttribute("src-tex") || this._src || "").trim(); if (!src || this._done === src) return; this._done = src;
+      this.dataset.themed = ""; this.innerHTML = '<div class="b-skel" data-k="viz"></div>';
+      B.loadLib("tikzjax", "fonts.css");
+      fetch(`${B.ORIGIN}/api/tikz`, { method: "POST", headers: { "content-type": "text/plain" }, body: src })
+        .then((r) => r.json())
+        .then((r) => {
+          if (!r.svg) throw new Error(r.error || "render failed");
+          this.innerHTML = r.svg; const s = this.querySelector("svg"); if (!s) return;
+          const w = parseFloat(s.getAttribute("width")) || 200, k = this.n("scale", 1.6);
+          s.removeAttribute("height"); s.setAttribute("width", "100%"); s.style.maxWidth = Math.round(w * k) + "px"; s.classList.add("pop");
+          const cap = this.getAttribute("caption"); if (cap) { const c = document.createElement("div"); c.className = "cap"; c.textContent = cap; this.appendChild(c); }
+        })
+        .catch((e) => { const m = String(e.message || e); this.innerHTML = `<div class="err">TikZ: ${esc(m)}</div>`; B.post("error", { text: "x-tikz: " + m.slice(0, 300) }); });
     }
   });
   // x-draw: primitives for physics/geometry diagrams, one per line (px units)
@@ -482,6 +598,7 @@
           case "dot": svg("circle", { cx: a, cy: b, r: c || 3, fill: "var(--fg)", class: "pop" }, s); if (label) T(a + 8, b - 6, label, "start"); break;
           case "pulley": P(svg("circle", { cx: a, cy: b, r: c, ...st }, s)); svg("circle", { cx: a, cy: b, r: 2.5, fill: "var(--fg)" }, s); P(svg("line", { x1: a, y1: b, x2: a, y2: b - c - 12, ...st }, s)); P(svg("line", { x1: a - 14, y1: b - c - 12, x2: a + 14, y2: b - c - 12, ...st, "stroke-width": 3 }, s)); break;
           case "line": P(svg("line", { x1: a, y1: b, x2: c, y2: d, ...st }, s)); if (label) T((a + c) / 2, (b + d) / 2 - 6, label); break;
+          case "rope": case "string": P(svg("line", { x1: a, y1: b, x2: c, y2: d, ...st, "stroke-width": 1.2 }, s)); if (label) T((a + c) / 2 + 8, (b + d) / 2, label, "start"); break;
           case "dashed": svg("line", { x1: a, y1: b, x2: c, y2: d, ...st, "stroke-dasharray": "4 4", opacity: 0.6 }, s); if (label) T((a + c) / 2, (b + d) / 2 - 6, label); break;
           case "arrow": case "vector": case "force": P(svg("line", { x1: a, y1: b, x2: c, y2: d, ...st, stroke: "var(--accent)", "marker-end": "url(#ah)" }, s)); if (label) T(c + (c >= a ? 8 : -8), d + 4, label, c >= a ? "start" : "end"); break;
           case "text": case "label": T(a, b, label || ""); break;
@@ -498,13 +615,23 @@
           case "battery": { P(svg("line", { x1: a, y1: b - 12, x2: a, y2: b + 12, ...st }, s)); P(svg("line", { x1: a + 8, y1: b - 6, x2: a + 8, y2: b + 6, ...st, "stroke-width": 3 }, s)); if (label) T(a + 4, b - 18, label); break; }
         }
       }
+      // labels never sit on each other: nudge later labels down/right until clear (3 passes)
+      requestAnimationFrame(() => {
+        const ts = [...s.querySelectorAll("text")]; if (ts.length < 2) return;
+        for (let pass = 0; pass < 3; pass++) for (let i = 1; i < ts.length; i++) for (let j = 0; j < i; j++) {
+          let A, Bb; try { A = ts[i].getBBox(); Bb = ts[j].getBBox(); } catch { return; }
+          const ox = Math.min(A.x + A.width, Bb.x + Bb.width) - Math.max(A.x, Bb.x), oy = Math.min(A.y + A.height, Bb.y + Bb.height) - Math.max(A.y, Bb.y);
+          if (ox > 1 && oy > 1) ts[i].setAttribute("y", +ts[i].getAttribute("y") + oy + 2);
+        }
+      });
     }
   });
 
   // ================================================================ time
   define("x-timer", class extends Base {
-    init() { this.mode = this.a("mode", "down"); this.total = this.n("seconds", this.mode === "up" ? 0 : 60); this.left = this.total; this.elapsed = 0; this.running = false; if (this.hasAttribute("autostart")) requestAnimationFrame(() => this.start()); }
-    render() { if (!this.running && this.hasAttribute("seconds") && this.n("seconds") !== this.total && this.mode !== "up") { this.total = this.left = this.n("seconds"); this.elapsed = 0; } this.paint(); }
+    init() { this.mode = this.a("mode", "down"); this.total = this.n("seconds", this.mode === "up" ? 0 : 60); this._s0 = this.n("seconds", null); this.left = this.total; this.elapsed = 0; this.running = false; if (this.hasAttribute("autostart")) requestAnimationFrame(() => this.start()); }
+    // a new `seconds` value (e.g. a mode switch bound with :seconds) always takes effect, even mid-run
+    render() { if (this.hasAttribute("seconds") && this.n("seconds") !== this._s0 && this.mode !== "up") { const was = this.running; this._s0 = this.n("seconds"); if (was) this.stop(); this.total = this.left = this._s0; this.elapsed = 0; if (was && this.hasAttribute("keep-running")) this.start(); this.tick(); return; } this.paint(); }
     paint() { this.textContent = fmt(this.mode === "up" ? this.elapsed : this.left); this.classList.toggle("low", this.mode !== "up" && this.running && this.left <= 10); }
     tick() { this.paint(); this.dispatchEvent(new CustomEvent("tick", { bubbles: true, detail: { id: this.id, left: this.left, total: this.total, elapsed: this.elapsed } })); }
     start() {
@@ -519,6 +646,9 @@
     toggle() { this.running ? this.stop() : this.start(); }
     reset(s) { this.stop(); if (s !== undefined) this.total = s; this.left = this.total; this.elapsed = 0; this.tick(); }
     set(s) { this.reset(s); }
+    add(s) { this.left = Math.max(0, this.left + num(s)); this.total = Math.max(this.total, this.left); this.tick(); }
+    pause() { this.stop(); } resume() { this.start(); }
+    get seconds() { return this.value; }
     get value() { return Math.round(this.mode === "up" ? this.elapsed : this.left); }
   }, { void: true });
   define("x-stopwatch", class extends (customElements.get("x-timer")) { init() { this.setAttribute("mode", "up"); super.init(); } }, { void: true });
@@ -589,8 +719,16 @@
       const o = this.opts(), multi = this.hasAttribute("multi"), rev = this.hasAttribute("reveal") && this.getAttribute("reveal") !== "false", ans = this.answerIdx();
       if (!this._built || this._built !== o.join("\u0001")) {
         this._built = o.join("\u0001");
-        this.innerHTML = o.map((t, i) => `<button type="button" class="opt" data-i="${i}" style="--i:${i}"><span class="mk">${multi ? "" : String.fromCharCode(65 + i)}</span><span class="tx">${esc(t)}</span></button>`).join("");
-        this.querySelectorAll(".opt").forEach((b) => (b.onclick = () => { if (this.hasAttribute("reveal") && this.getAttribute("reveal") !== "false" && this.hasAttribute("lock")) return; const i = +b.dataset.i; this._sel = multi ? (this._sel.includes(i) ? this._sel.filter((x) => x !== i) : [...this._sel, i]) : [i]; this.paint(); change(this); }));
+        // `other` adds a write-your-own answer, `skip` a way out; both are plain options to the reader
+        const other = this.hasAttribute("other"), skip = this.hasAttribute("skip");
+        this.innerHTML = o.map((t, i) => `<button type="button" class="opt" data-i="${i}" style="--i:${i}"><span class="mk">${multi ? "" : String.fromCharCode(65 + i)}</span><span class="tx">${esc(t)}</span></button>`).join("") +
+          (other ? `<label class="opt other" style="--i:${o.length}"><span class="mk">${multi ? "" : "\u2026"}</span><input class="tx" type="text" aria-label="Your own answer" placeholder="${esc(this.a("other", "") || "Other")}"></label>` : "") +
+          (skip ? `<button type="button" class="skip">${esc(this.a("skip", "") || "Skip")}</button>` : "");
+        this.querySelectorAll("button.opt").forEach((b) => (b.onclick = () => { if (this.hasAttribute("reveal") && this.getAttribute("reveal") !== "false" && this.hasAttribute("lock")) return; const i = +b.dataset.i; this._skip = false; this._sel = multi ? (this._sel.includes(i) ? this._sel.filter((x) => x !== i) : [...this._sel, i]) : [i]; if (!multi) this._other = ""; this.paint(); change(this); }));
+        const oi = this.querySelector(".other input");
+        if (oi) oi.oninput = () => { this._other = oi.value.trim(); this._skip = false; if (!multi) this._sel = []; this.paint(); change(this); };
+        const sk = this.querySelector(".skip");
+        if (sk) sk.onclick = () => { this._skip = !this._skip; if (this._skip) { this._sel = []; this._other = ""; if (oi) oi.value = ""; } this.paint(); change(this); };
         B.typeset(this);
       }
       this.classList.toggle("multi", multi); this._rev = rev; this._ans = ans; this.paint();
@@ -603,9 +741,16 @@
         b.classList.toggle("bad", this._rev && on && !this._ans.includes(i));
         b.disabled = this._rev && this.hasAttribute("lock");
       });
-      this.toggleAttribute("answered", this._sel.length > 0);
+      const oth = this.querySelector(".opt.other"); if (oth) oth.classList.toggle("on", !!this._other);
+      const sk = this.querySelector(".skip"); if (sk) sk.classList.toggle("on", !!this._skip);
+      this.toggleAttribute("answered", this._sel.length > 0 || !!this._other || !!this._skip);
     }
-    get value() { const o = this.opts(); return this.hasAttribute("multi") ? this._sel.map((i) => o[i]) : this._sel.length ? o[this._sel[0]] : null; }
+    get skipped() { return !!this._skip; }
+    get value() {
+      if (this._skip) return "(skipped)";
+      const o = this.opts(), picked = this._sel.map((i) => o[i]).concat(this._other ? [this._other] : []);
+      return this.hasAttribute("multi") ? picked : picked.length ? picked[0] : null;
+    }
     set value(v) { const o = this.opts(); const arr = Array.isArray(v) ? v : v === null || v === undefined || v === "" ? [] : [v]; this._sel = arr.map((x) => o.indexOf(x)).filter((i) => i >= 0); this.paint(); }
     get index() { return this._sel.length ? this._sel[0] : -1; }
     get correct() { const a = this.answerIdx(); if (!a.length) return null; return a.length === this._sel.length && a.every((i) => this._sel.includes(i)); }
@@ -682,7 +827,7 @@
   define("x-map", class extends Base {
     render() {
       this.innerHTML = `<div class="mp" style="height:${this.n("height", 280)}px"></div>`; const box = this.firstChild;
-      load("https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"); load("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js").then(() => {
+      B.loadLib("leaflet", "leaflet.css"); B.loadLib("leaflet", "leaflet.js").then(() => {
         const L = window.L, m = L.map(box, { zoomControl: true, attributionControl: false }).setView([this.n("lat", 20), this.n("lng", 0)], this.n("zoom", 3));
         L.tileLayer("https://{s}.basemaps.cartocdn.com/" + (document.body.dataset.theme === "dark" ? "dark_all" : "light_all") + "/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(m);
         const pts = (this.getAttribute("markers") || "").split("|").map((s) => s.split(",").map((x) => x.trim())).filter((p) => p.length >= 2);

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { X, Plus } from "lucide-react";
 import { Mcp, Skills } from "./Extensions";
 
-type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
+type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
 type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
@@ -124,6 +124,7 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
               </div>
             </div>
             {F("Context window (tokens)", "contextTokens", "number")}
+            {F("Working context per request (tokens)", "workingTokens", "number")}
             <div className="srv"><div className="t">Vision<small>{s.vision ? "The model sees images: uploads, view_image, screenshots from browser and checks." : "Off: images are described by path only. Use for text-only models."}</small></div>
               <button className={"sw" + (s.vision ? " on" : "")} aria-label="Vision" onClick={() => saveS({ vision: !s.vision })} /></div>
             <label className="field">Theme<select value={theme} onChange={(e) => setTheme(e.target.value)}><option value="dark">Dark</option><option value="light">Light</option></select></label>

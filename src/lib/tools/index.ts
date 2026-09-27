@@ -6,7 +6,7 @@ import { WS, resolvePath, rel, tree, Node, mimeOf, isImage, readText } from "../
 import type { Settings } from "../settings";
 import { searchCatalog } from "../blocks/catalog";
 import { callMcp } from "../mcp";
-import { runShell, runPython as execPython, pipInstall, hostDenied } from "../exec";
+import { runShell, runPython as execPython, pipInstall, hostDenied, usesSudo, sudoReady } from "../exec";
 import { youtubeId } from "../shared";
 import { firecrawlScrape, firecrawlSearch, firecrawlExtract } from "../web";
 import { applyEdits, insertLines, snippet, hasPlaceholder, Edit } from "./edit";
@@ -16,6 +16,7 @@ import { browse, Step } from "../browser";
 import { runChecks, lintFiles } from "../harness/check";
 import { findSkill, skillMeta, skillFiles } from "../skills";
 import { destructive, checkInstalls } from "../harness/guard";
+import { forget, remember } from "../memory";
 import { createHash } from "crypto";
 import os from "os";
 
@@ -30,7 +31,7 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[] };
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "search" };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in
@@ -47,23 +48,25 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("context_remove", "Unpin a file from context", { path: s() }, ["path"]),
     T("compact_context", "Free context. tools=fold old tool outputs; web=old web results to key facts; history=summarise all but last keep_last messages", { scope: { type: "string", enum: ["tools", "web", "history"] }, keep_last: n() }),
     T("fs_list", "List a directory", { path: s(), depth: n("1-3, default 1") }),
-    T("fs_read", "Read a file with line numbers (250 lines per call; pdf/docx/xlsx/pptx as text)", { path: s(), start: n(), end: n() }, ["path"]),
+    T("fs_read", "Read a file with line numbers (250 lines per call; pdf/docx/xlsx/pptx as text). Long file: outline=true lists headings/definitions with line numbers; around=\"text\" shows the lines around its first match (nth=2 for the next)", { path: s(), start: n(), end: n(), around: s(), nth: n(), outline: b() }, ["path"]),
     T("fs_search", "Search file contents (regex; ripgrep). Returns path:line: text", { pattern: s(), path: s("dir or file, default workspace"), glob: s("e.g. *.ts"), literal: b() }, ["pattern"]),
     T("fs_write", "Create a file or replace it entirely. Existing files: fs_read first; prefer fs_edit for changes", { path: s(), content: s(), mode: { type: "string", enum: ["overwrite", "append"] } }, ["path", "content"]),
     T("fs_edit", "Replace exact text. find must match the file (copy from fs_read without line numbers) and be unique unless all=true. Several edits apply atomically", { path: s(), find: s(), replace: s(), all: b(), edits: arr({ type: "object", properties: { find: s(), replace: s(), all: b() }, required: ["find", "replace"] }, "multiple edits in one call") }, ["path"]),
     T("fs_insert", "Insert lines after line N (0 = top, -1 = end) without matching text", { path: s(), line: n(), text: s() }, ["path", "line", "text"]),
     T("fs_move", "Move/rename. Into a folder: end `to` with /. Refuses to replace an existing file unless overwrite=true", { from: s(), to: s(), overwrite: b() }, ["from", "to"]),
     T("fs_delete", "Delete file or dir (goes to trash; recoverable)", { path: s() }, ["path"]),
-    T("run_python", "Run python3 in your sandbox, cwd=workspace", { code: s() }, ["code"]),
-    T("pip_install", "Install python packages for run_python", { packages: arr({ type: "string" }) }, ["packages"]),
-    T("shell", "Run bash in YOUR sandbox (cwd=workspace). Not the user's machine", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
-    ...(host ? [T("host_shell", "Run bash on the USER'S machine as the user (their tools, logins, files). State what you run", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
-    T("web_search", "Search the web", { query: s(), limit: n() }, ["query"]),
+    T("run_python", "Run Python in the app venv (created on first use; same interpreter as pip_install). Charts the user should see are <x-chart> or <x-graph>, not matplotlib", { code: s() }, ["code"]),
+    T("pip_install", "Install packages into the same venv run_python uses. Not system pip", { packages: arr({ type: "string" }) }, ["packages"]),
+    T("shell", "Run bash in YOUR sandbox (cwd=workspace). Not the user's machine. If it fails, read the error; do not guess another binary", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
+    ...(host ? [T("host_shell", "Run bash on the USER'S machine as the user (their tools, logins, files). State what you run. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
+    T("web_search", "Search the web. Cite only pages you then open", { query: s(), limit: n() }, ["query"]),
     T("web_fetch", "Fetch a URL as markdown", { url: s() }, ["url"]),
     ...(st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (Firecrawl AI)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
     T("view_image", "Look at an image (workspace path or URL)", { path: s() }, ["path"]),
     T("todo", "Set the task checklist shown to the user (full list each call). Use for tasks with 3+ steps", { items: arr({ type: "object", properties: { text: s(), status: { type: "string", enum: ["todo", "doing", "done"] } }, required: ["text", "status"] }) }, ["items"]),
-    T("ask_user", "Ask the user to choose; ends your turn", { question: s(), options: arr({ type: "string" }), multi: b() }, ["question", "options"]),
+    T("ask_user", "Ask the user to choose (2-5 short options; they can also type their own answer or skip). Only when a real decision blocks you. Ends your turn", { question: s(), options: arr({ type: "string" }), multi: b() }, ["question", "options"]),
+    T("remember", "Save a durable fact the user asked to remember (profile) or a decision that will matter in a later chat (episode). Not for the current task. They can undo it", { text: s(), scope: { type: "string", enum: ["profile", "episode"] } }, ["text"]),
+    T("forget", "Delete a remembered note by the id shown in Memory", { id: s() }, ["id"]),
     T("canvas_open", "Show a workspace file, web page or YouTube URL in a canvas window", { target: s("path or URL"), title: s(), dock: b("dock beside chat") }, ["target"]),
     T("ui_search", "Find BlocksUI components", { query: s() }, ["query"]),
   ];
@@ -82,6 +85,9 @@ export type ToolCtx = {
   settings: Settings; conversationId: string; pinned: string[]; emit: (e: Record<string, unknown>) => void;
   setPinned: (p: string[]) => Promise<void>; compact: (scope?: string, keepLast?: number) => Promise<string>;
   state: ConvState; setState: (s: ConvState) => Promise<void>;
+  /** live stdout/stderr of the running call (shown in the tool row while it runs) */
+  output?: (chunk: string) => void;
+  signal?: AbortSignal;
 };
 export type ToolOut = { result: string; ok: boolean; meta?: unknown; images?: string[]; stop?: boolean };
 
@@ -90,16 +96,17 @@ export const approvalHash = (cmd: string, host: boolean) => createHash("sha1").u
  * Destructive or risky actions need one click from the user. Returns null when this exact command was approved
  * (the approval is consumed), otherwise a stop result the UI renders with Approve / Deny. Enforced here, not in the prompt.
  */
-async function approvalGate(ctx: ToolCtx, cmd: string, reason: string, host: boolean): Promise<ToolOut | null> {
+async function approvalGate(ctx: ToolCtx, cmd: string, reason: string, host: boolean, sudo = false): Promise<ToolOut | null> {
   const hash = approvalHash(cmd, host);
   const ok = ctx.state.approved || [];
   if (ok.includes(hash)) { await ctx.setState({ ...ctx.state, approved: ok.filter((h) => h !== hash) }); return null; }
-  return { ok: false, stop: true, result: `Not run: needs the user's approval (${reason}). The user sees Approve / Deny. Stop here and wait; if approved, run exactly the same command again.`, meta: { approval: { cmd, hash, reason, host } } };
+  const ask = sudo ? "The user sees a password prompt" : "The user sees Approve / Deny";
+  return { ok: false, stop: true, result: `Not run: ${sudo ? "sudo needs the user's password" : `needs the user's approval (${reason})`}. ${ask}. Stop here and wait; if approved, run exactly the same command again (plain sudo, never echo/pipe a password).`, meta: { approval: { cmd, hash, reason, host, sudo } } };
 }
 
 /** Recoverable delete: workspace files → workspace/.trash, others → the desktop trash (freedesktop / macOS). */
 // paths built with Array.join: path.join here makes the bundler trace the project folder (see workspace.ts)
-async function trash(abs: string): Promise<string> {
+export async function trash(abs: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   let dir: string, label: string;
   if (abs.startsWith(WS + path.sep)) { dir = [WS, ".trash"].join("/"); label = ".trash/"; }
@@ -117,7 +124,14 @@ async function trash(abs: string): Promise<string> {
   return label === ".trash/" ? `.trash/${path.basename(dest)}` : label;
 }
 
-const cut = (x: string, max = 8000) => (x.length > max ? x.slice(0, max) + `\n… (${x.length - max} more chars)` : x);
+const cut = (x: string, max = 8000) => (x.length > max ? x.slice(0, max) + `\n… omitted ${x.length - max} chars. Incomplete, not an error. Recover with a narrower call (fs_read start/end or around, web_fetch a section). Do not repeat this same call.` : x);
+/** A failed command is an observation. Say so, so the model doesn't invent a binary or sudo a guess. */
+function shellNote(out: string): string {
+  if (/command not found/.test(out)) return "\n\n[harness] That binary is not on PATH. Do not guess another name and do not sudo it. Find the real command (command -v, the package file list, or the project's docs) and retry once.";
+  if (/externally-managed-environment/.test(out)) return "\n\n[harness] System Python refuses pip. Use pip_install / run_python (the app venv), not sudo pip.";
+  if (/a password is required|sorry, try again/.test(out)) return "\n\n[harness] Do not pipe a password. Run the sudo command again; the app prompts the user.";
+  return "";
+}
 
 /** Server-side python for Blocks `py()` helper (always sandboxed). */
 export const runPython = (code: string, st: Settings | null = null) => execPython(st, code);
@@ -179,10 +193,12 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const meta = skillMeta(sk.text);
         if (meta.requires === "host-terminal" && st.terminal !== "host") return { ok: false, result: "This skill needs Host terminal (Settings → Access)." };
         if (meta.requires === "host-files" && st.access === "sandbox") return { ok: false, result: "This skill needs Home folder access (Settings → Access)." };
-        if (a.file) {
+        if (a.file && !/^SKILL\.md$/i.test(String(a.file))) {
           const f = path.resolve(sk.dir, String(a.file));
           if (!f.startsWith(sk.dir + path.sep)) return { ok: false, result: "file must be inside the skill" };
-          return { ok: true, result: cut(await fs.readFile(f, "utf8"), 24000) };
+          const txt = await fs.readFile(f, "utf8").catch(() => null);
+          if (txt === null) { const fl = await skillFiles(sk.dir); return { ok: false, result: `No file "${a.file}" in skill ${sk.name}. ${fl.length ? "Files: " + fl.join(", ") : "It has only SKILL.md: call skill_open without file."}` }; }
+          return { ok: true, result: cut(txt, 24000) };
         }
         let extra = "";
         const packs = (meta.tools || "").split(/[\s,]+/).filter((p): p is Pack => p === "dev");
@@ -207,9 +223,24 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const raw = ["pdf", "docx", "pptx", "xlsx", "xls"].includes(ext) ? await readText(f, 400000) : await fs.readFile(f, "utf8");
         if (raw.startsWith("(binary file)")) return { ok: false, result: "Binary file; not readable as text." };
         const lines = raw.split("\n");
-        const s0 = Math.max(1, Number(a.start) || 1), e0 = Math.min(lines.length, Number(a.end) || s0 + 249);
+        if (a.outline) {
+          // a map of the file: markdown headings, code definitions, section-like lines; with line numbers
+          const re = /^(#{1,6}\s|\s{0,4}(export\s+)?(default\s+)?(async\s+)?(function|class|def|interface|type|enum|struct|impl|fn|const\s+\w+\s*=\s*(async\s*)?\(|let\s+\w+\s*=\s*\()|\s*(public|private|protected)\s+[\w<>\[\]]+\s+\w+\s*\(|\[[\w.-]+\]\s*$|<(h[1-3]|section|x-slide)\b)/;
+          const hits = lines.map((l, i) => [i + 1, l] as const).filter(([, l]) => re.test(l)).slice(0, 200);
+          ledger(ctx.conversationId).set(f, mtime(f));
+          return { ok: true, result: `${a.path} · ${lines.length} lines · outline (${hits.length})\n` + (hits.map(([n, l]) => `${n}\t${l.trim().slice(0, 140)}`).join("\n") || "(no headings or definitions found; read with start/end)") };
+        }
+        let aroundAt = 0;
+        if (a.around) {
+          const q = String(a.around).toLowerCase(); let k = Math.max(1, Number(a.nth) || 1);
+          const idx = lines.findIndex((l) => l.toLowerCase().includes(q) && --k === 0);
+          if (idx < 0) return { ok: false, result: `"${a.around}" not found${Number(a.nth) > 1 ? ` ${a.nth} times` : ""} in ${a.path} (${lines.length} lines). Try fs_search or outline=true.` };
+          aroundAt = idx + 1;
+        }
+        const s0 = aroundAt ? Math.max(1, aroundAt - 30) : Math.max(1, Number(a.start) || 1);
+        const e0 = aroundAt ? Math.min(lines.length, aroundAt + 60) : Math.min(lines.length, Number(a.end) || s0 + 249);
         ledger(ctx.conversationId).set(f, mtime(f));
-        const head = `${a.path} · ${lines.length} lines${s0 > 1 || e0 < lines.length ? ` · showing ${s0}-${e0}` : ""}\n`;
+        const head = `${a.path} · ${lines.length} lines${s0 > 1 || e0 < lines.length ? ` · showing ${s0}-${e0}` : ""}${aroundAt ? ` · match at ${aroundAt}` : ""}\n`;
         const more = e0 < lines.length ? `\n… more: start=${e0 + 1}` : "";
         return { ok: true, result: cut(head + lines.slice(s0 - 1, e0).map((l, i) => `${s0 + i}\t${l.length > 400 ? l.slice(0, 400) + "…" : l}`).join("\n") + more, 20000) };
       }
@@ -226,6 +257,8 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       }
       case "fs_write": {
         const f = P(a.path), content = String(a.content ?? "");
+        const stt = await fs.stat(f).catch(() => null);
+        if (stt?.isDirectory() || String(a.path).endsWith("/")) return { ok: false, result: `${a.path} is a directory. Write a file inside it, for example ${String(a.path).replace(/\/$/, "")}/index.html.` };
         await fs.mkdir(path.dirname(f), { recursive: true });
         let before = "", exists = false;
         try { before = await fs.readFile(f, "utf8"); exists = true; } catch {}
@@ -279,13 +312,17 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         await fs.rename(from, to).catch(async (e) => { if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e; await fs.cp(from, to, { recursive: true }); await fs.rm(from, { recursive: true, force: true }); });
         return { ok: true, result: `Moved ${rel(from)} → ${rel(to)}${clash ? " (replaced file moved to trash)" : ""}` };
       }
-      case "run_python": { const r = await execPython(st, a.code); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
+      case "run_python": {
+        const r = await execPython(st, a.code, 120000, { onData: ctx.output, signal: ctx.signal });
+        const chart = /\b(matplotlib|pyplot|plt\.show|plt\.savefig)\b/.test(String(a.code)) ? "\n\n[harness] A matplotlib figure is not visible in chat. If the user should see a chart, emit <ui><x-chart> or <x-graph>. Keep a file only if they asked for one." : "";
+        return { ok: r.code === 0, result: cut((r.out || "(no output)") + chart) };
+      }
       case "pip_install": {
         const pk = ([] as string[]).concat(a.packages).map(String);
         const chk = await checkInstalls(pk, "pypi");
         if (chk?.block) return { ok: false, result: chk.block };
         if (chk?.approve) { const gate = await approvalGate(ctx, `pip install ${pk.join(" ")}`, chk.approve, false); if (gate) return gate; }
-        const r = await pipInstall(pk); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
+        const r = await pipInstall(pk, { onData: ctx.output, signal: ctx.signal }); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
       }
       case "shell":
       case "host_shell": {
@@ -293,13 +330,15 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         if (host && hostDenied(st)) return { ok: false, result: hostDenied(st)! };
         const cmd = String(a.command);
         const danger = destructive(cmd, host ? "host" : "sandbox");
-        if (danger) { const gate = await approvalGate(ctx, cmd, danger.reason, host); if (gate) return gate; }
+        // sudo with no known password: one in-app prompt (masked field) that also covers any risk approval
+        if (host && st.sudo && usesSudo(cmd) && !sudoReady(st)) { const gate = await approvalGate(ctx, cmd, danger?.reason || "Needs your sudo password", true, true); if (gate) return gate; }
+        else if (danger) { const gate = await approvalGate(ctx, cmd, danger.reason, host); if (gate) return gate; }
         const chk = await checkInstalls(cmd);
         if (chk?.block) return { ok: false, result: chk.block };
         if (chk?.approve) { const gate = await approvalGate(ctx, cmd, chk.approve, host); if (gate) return gate; }
         const cwd = a.cwd ? resolvePath(String(a.cwd), host ? st.access : "sandbox") : undefined;
-        const r = await runShell(st, String(a.command), Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd);
-        return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}`) };
+        const r = await runShell(st, String(a.command), Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd, { onData: ctx.output, signal: ctx.signal });
+        return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}` + shellNote(r.out)) };
       }
       case "canvas_open": {
         const t = String(a.target || "").trim();
@@ -315,7 +354,17 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       case "web_search": {
         const j = await firecrawlSearch(st, a.query, Math.min(Number(a.limit) || 5, 8));
         const items = ((j.data as { url: string; title?: string; description?: string }[]) || []).map((d) => ({ url: d.url, title: d.title || d.url, snippet: (d.description || "").slice(0, 240) }));
-        return { ok: true, result: items.map((d, i) => `[${i + 1}] ${d.title}\n${d.url}\n${d.snippet}`).join("\n\n") || "no results", meta: { sources: items, source: j._source } };
+        const empty = !items.length ? (j._source === "none" ? "no results. Search is not configured (no keyless hits, local Firecrawl not up, no cloud key). Say so; do not invent sources." : "no results") : "";
+        return { ok: items.length > 0, result: items.map((d, i) => `[${i + 1}] ${d.title}\n${d.url}\n${d.snippet}`).join("\n\n") || empty, meta: { sources: items, source: j._source } };
+      }
+      case "remember": {
+        const scope = a.scope === "profile" ? "profile" : "episode";
+        const row = await remember(String(a.text || ""), scope);
+        return { ok: true, result: `Remembered [${row.id}] ${row.text}. The user can undo this.`, meta: { memory: row } };
+      }
+      case "forget": {
+        const ok = await forget(String(a.id || ""));
+        return { ok, result: ok ? `Forgot ${a.id}` : `No memory with id ${a.id}` };
       }
       case "web_fetch": {
         const j = await firecrawlScrape(st, a.url);

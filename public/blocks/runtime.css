@@ -186,7 +186,8 @@ circle.pop,rect.pop,polygon.pop{transform-box:fill-box;transform-origin:center}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:.78em;color:var(--muted);margin-top:8px}.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px}
 x-graph .gw{position:relative;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;touch-action:none;cursor:grab;background:var(--surface)}
 x-graph .gw:active{cursor:grabbing}
-x-graph svg{display:block;width:100%;height:calc(250px*var(--s,1))}
+x-graph svg{display:block;position:absolute;inset:0}
+x-graph .lbl.pt{fill:var(--fg)}
 .gtip{position:absolute;right:8px;top:6px;font:11px ui-monospace,monospace;color:var(--muted);opacity:0;transition:opacity .2s;pointer-events:none;background:color-mix(in srgb,var(--bg) 80%,transparent);padding:2px 6px;border-radius:var(--rs)}
 x-table{display:block;overflow:auto;border:1px solid var(--line);border-radius:var(--r)}
 table{border-collapse:collapse;width:100%;font-size:.9em;font-variant-numeric:tabular-nums}
@@ -235,3 +236,51 @@ x-todo .td{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radiu
 x-todo .td.on span{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
 x-todo .td span{flex:1}x-todo .td-x{border:0;background:none;color:var(--faint);padding:0 4px;font-size:16px;opacity:0}x-todo .td:hover .td-x{opacity:1}
 x-todo .td-add{display:flex;gap:6px;margin-top:6px}x-todo .td-add input{flex:1}
+
+x-tikz{display:block;text-align:center;color:var(--fg)}
+x-tikz svg{display:block;margin:0 auto;height:auto;overflow:visible}
+x-tikz .cap{margin-top:6px}
+x-draw text{paint-order:stroke;stroke:var(--bg);stroke-width:3.5px;stroke-linejoin:round}
+
+/* ---------- design layer: iOS-like controls, content-sized buttons, own fonts ---------- */
+@font-face{font-family:"Geist";src:url("../vendor/geist/geist-sans/Geist-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("../vendor/geist/geist-mono/GeistMono-Variable.woff2") format("woff2");font-weight:100 900;font-display:swap}
+code,pre,kbd,samp{font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+/* the root flows like text for buttons: every block takes a full line, adjacent buttons sit side by side at their own width */
+#root{flex-direction:row;flex-wrap:wrap;align-items:flex-start;align-content:flex-start}
+#root>*{flex:1 1 100%;min-width:0}
+#root>:is(button,a.btn,x-badge){flex:0 0 auto}
+/* standalone buttons (not the parts of a component) */
+button:not(:is(x-tabs,x-deck,x-code,x-segmented,x-todo,x-choice,x-rating,x-sketch) button){min-height:36px;padding:8px 16px;font-weight:550;letter-spacing:-.006em;
+  background:color-mix(in srgb,var(--fg) 7%,transparent);border:1px solid color-mix(in srgb,var(--fg) 10%,transparent);
+  box-shadow:inset 0 1px 0 color-mix(in srgb,#fff 6%,transparent),0 1px 2px rgba(0,0,0,.14);
+  transition:transform .16s var(--ease),background .15s,border-color .15s,box-shadow .15s,opacity .15s,color .15s}
+button:not(:is(x-tabs,x-deck,x-code,x-segmented,x-todo,x-choice,x-rating,x-sketch) button):hover{background:color-mix(in srgb,var(--fg) 11%,transparent);border-color:color-mix(in srgb,var(--fg) 18%,transparent)}
+button:active:not(:disabled){transform:scale(.96)}
+button:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px}
+button:disabled{opacity:.45;cursor:default}
+button:is([tone=accent],[tone=primary],.primary,[type=submit]):not(:is(x-tabs,x-deck,x-code,x-segmented,x-todo,x-choice,x-rating,x-sketch) button){background:var(--fg);color:var(--bg);border-color:transparent;box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 1px 3px rgba(0,0,0,.22)}
+button:is([tone=accent],[tone=primary],.primary,[type=submit]):not(:is(x-tabs,x-deck,x-code,x-segmented,x-todo,x-choice,x-rating,x-sketch) button):hover{background:color-mix(in srgb,var(--fg) 86%,var(--bg))}
+button[tone=danger]{color:var(--danger)}
+/* async action in flight: spinner replaces the label, width stays */
+button.busy{position:relative;color:transparent!important;pointer-events:none}
+button.busy>*{visibility:hidden}
+button.busy::after{content:"";position:absolute;inset:0;margin:auto;width:15px;height:15px;border-radius:50%;border:2px solid color-mix(in srgb,var(--fg) 22%,transparent);border-top-color:var(--fg);animation:b-spin .7s linear infinite}
+button:is([tone=accent],[tone=primary],.primary,[type=submit]).busy::after{border-color:color-mix(in srgb,var(--bg) 30%,transparent);border-top-color:var(--bg)}
+@keyframes b-spin{to{transform:rotate(360deg)}}
+/* choice: Skip is a quiet link, not a slab */
+x-choice .skip{align-self:flex-start;background:none;border:0;box-shadow:none;padding:4px 2px;min-height:0;color:var(--muted);font-weight:500;font-size:.9em}
+x-choice .skip:hover{color:var(--fg);background:none}
+/* chart legend above the plot, readable */
+x-chart{display:flex;flex-direction:column}
+x-chart .legend{order:-1;margin:0 0 10px;font-size:.84em;gap:14px}
+x-chart .legend i{width:9px;height:9px;border-radius:3px}
+x-choice label.opt.other{display:flex;align-items:center;gap:12px;padding:5px 14px;border:1px solid var(--line);border-radius:var(--r);cursor:text;transition:border-color .15s,background .15s}
+x-choice label.opt.other:focus-within{border-color:color-mix(in srgb,var(--fg) 30%,transparent)}
+x-choice label.opt.other input{flex:1;min-width:0;border:0;background:none;box-shadow:none;padding:6px 0;outline:none;font:inherit;color:inherit}
+#root>x-segmented{flex:0 1 auto}
+x-choice label.opt.other{flex-direction:row;font-size:1em;color:var(--fg)}
+x-choice label.opt.other input{font-size:1em}
+/* forms: fields stretch, buttons keep their size, steady spacing */
+form{display:flex;flex-direction:column;gap:var(--gap);align-items:stretch;margin:0}
+form>:is(button,a.btn){align-self:flex-start}

@@ -8,6 +8,9 @@ export type Settings = {
   apiKey: string;
   model: string;
   contextTokens: number;
+  /** What one request may use, whatever the model's window: trimming, folding and compaction work against this.
+      Big windows (1M) otherwise mean every agent step resends everything. */
+  workingTokens: number;
   firecrawlUrl: string;
   firecrawlKey: string;
   firecrawlCloudUrl: string;
@@ -45,6 +48,7 @@ export function defaults(): Settings {
     apiKey: process.env.LLM_API_KEY || "",
     model: process.env.LLM_MODEL || PRESETS.freellmapi.model,
     contextTokens: Number(process.env.LLM_CONTEXT_TOKENS) || 131072,
+    workingTokens: Number(process.env.LLM_WORKING_TOKENS) || 64000,
     firecrawlUrl: process.env.FIRECRAWL_URL || "http://localhost:3002",
     firecrawlKey: process.env.FIRECRAWL_API_KEY || "",
     firecrawlCloudUrl: process.env.FIRECRAWL_CLOUD_URL || "https://api.firecrawl.dev",

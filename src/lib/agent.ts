@@ -17,7 +17,9 @@ import { fmtIssues } from "./harness/slop";
 import { mode as execMode } from "./exec";
 import { est, estMsg, endpoint, headers, normalize, complete, OAMsg } from "./llm";
 import { chain, assistantText, compactTools, compactWeb, compactHistory, turnReport, Msg, Conv, CtxReport, CtxSection } from "./context";
-import { canvasPath } from "./shared";
+import { canvasPath, chatDir } from "./shared";
+import { liftFences, uiIssues } from "./ui-check";
+import { memoryPrompt } from "./memory";
 
 export type Emit = (e: Record<string, unknown>) => void;
 
@@ -36,11 +38,29 @@ export function packsFor(st: Settings, state: ConvState | null | undefined): Pac
 }
 
 type Sys = { text: string; sections: CtxSection[] };
-async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number): Promise<Sys> {
+/** Search conversations (History): an answer engine, not a chat. Results for the query arrive in <search_results>. */
+const SEARCH_MODE = `# Search mode
+The user is searching, not chatting. Answer the way a search engine's AI mode does: the answer in the first sentence, then only the detail that helps. Short paragraphs, a table for comparisons, no preamble, no closing offers.
+- Results for their query are attached in <search_results>. The result cards are shown above your answer, so never list the links again; cite claims inline as [n](url) using those results.
+- Stable general knowledge (definitions, math, history, how something works): answer directly, citations optional.
+- A specific lookup (a product, person, place, price, version, schedule, news): give the facts that answer it, each cited. If the results don't answer it, search again with a better query or web_fetch the best page. Never guess.
+- A task (compare, find me, plan, fix, how do I …): search and fetch as much as it needs, then do it. Check every command, flag and API against current docs before giving it.`;
+
+/** Search mode skips the pre-search for small talk and plain arithmetic. */
+export function needsSearch(q: string) {
+  const t = q.trim();
+  if (!t || t.length > 2000) return false;
+  if (/^(hi|hello|hey|yo|thanks?|thank you|ok(ay)?|cool|nice|good (morning|afternoon|evening|night))\b[\s!.?]*$/i.test(t)) return false;
+  if (/^[\d\s+\-*/^().,=x×÷%]+\??$/.test(t)) return false;
+  return true;
+}
+
+async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number, query = ""): Promise<Sys> {
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
   const memory = (await fs.readFile(path.join(WS, "system/AGENTS.md"), "utf8").catch(() => "")).trim();
+  const recall = query ? await memoryPrompt(query).catch(() => "") : "";
   const skills = `# Skills (skill_open to load)\n${await skillsIndex(st)}`;
-  const tree = `# Workspace tree\n${await treeText()}`;
+  const tree = `# Workspace tree\n${await treeText(160, conv.id)}`;
   const items: { path: string; tokens: number }[] = [];
   let files = "";
   let left = Math.floor(budget * 0.35 * 3.6);
@@ -55,9 +75,9 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
   }
   const parts: [string, string, string][] = [
     ["system", "System prompt", base],
-    ["memory", "Memory (AGENTS.md)", memory && `# ${memory}`],
+    ["memory", "Memory", [memory && `# ${memory}`, recall && `# Remembered\n${recall}\nremember only when the user asks, or a decision that will matter in a later chat. forget(id) undoes one.`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
-    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
+    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, conv.state?.mode === "search" ? SEARCH_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
     ["tree", "Workspace tree", tree],
     ["files", "Files in context", files && `# Active context files\n${files}`],
   ];
@@ -100,7 +120,7 @@ export async function buildHistory(conv: Conv, all: Msg[], leafId: string, threa
     if (m.compact && !last) { out.push({ role: "user", content: "[Earlier turns, compacted]" }, { role: "assistant", content: m.compact }); continue; }
     if (m.role === "user") out.push({ role: "user", content: await userContent(m, last, st.access) });
     else {
-      const t = assistantText(m);
+      const t = assistantText(m, k < msgs.length - 4); // older than the last two exchanges: one-line tool gists
       toolTok += est(t) - est(m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n"));
       out.push({ role: "assistant", content: t || "(no text)" });
     }
@@ -122,7 +142,7 @@ function allTools(st: Settings, packs: Pack[], mcp: Awaited<ReturnType<typeof mc
     ...mcp.tools.map((t) => ({ type: "function" as const, function: { name: `mcp__${t.server}__${t.name}`.slice(0, 64), description: (t.description || "").slice(0, 300), parameters: (t.inputSchema as Record<string, unknown>) || { type: "object", properties: {} } } })),
   ];
 }
-const budgetOf = (st: Settings) => Math.max(6000, st.contextTokens - Math.min(8000, Math.max(2500, Math.round(st.contextTokens * 0.12))));
+const budgetOf = (st: Settings) => { const w = Math.min(st.contextTokens, st.workingTokens || 64000); return Math.max(6000, w - Math.min(8000, Math.max(2500, Math.round(w * 0.12)))); };
 
 /** Full accounting of what the next request would send. Used by the Context status panel. */
 export async function contextReport(convId: string, leafId: string | null, threadOf: string | null): Promise<CtxReport> {
@@ -217,7 +237,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     },
   };
 
-  let sys = await buildSystem(conv, st, mcpNames, budget);
+  let sys = await buildSystem(conv, st, mcpNames, budget, parent?.role === "user" ? parent.content : "");
   let hist = await buildHistory(conv, all, parentId, threadOf, st, Number.MAX_SAFE_INTEGER);
   // Auto-compaction: first fold old tool output (free), then the builder trims oldest turns.
   if (est(sys.text) + toolDefTok + hist.tokens > budget * 0.9) {
@@ -241,6 +261,25 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     }
   }
 
+  // Search mode: search the query right away (no model round trip), show the results, hand them to the model.
+  // Greetings and plain arithmetic skip it; a short follow-up is searched together with the previous question.
+  let presearched = false;
+  if (state.mode === "search" && parent?.role === "user" && !parent.threadOf && needsSearch(parent.content)) {
+    const prevQ = hist.path.filter((m) => m.role === "user" && m.id !== parent.id).slice(-1)[0]?.content || "";
+    const q = (parent.content.trim().split(/\s+/).length < 4 && prevQ ? `${prevQ.slice(0, 120)} ${parent.content}` : parent.content).replace(/\s+/g, " ").trim().slice(0, 300);
+    const id = `presearch_${Date.now()}`;
+    const part: Part = { type: "tool", id, name: "web_search", args: { query: q } };
+    parts.push(part);
+    emit({ t: "tool", id, name: "web_search", args: part.args });
+    const out = await execTool("web_search", { query: q, limit: 6 }, ctx);
+    Object.assign(part, { result: out.result, ok: out.ok, meta: { ...(out.meta || {}), presearch: true } });
+    emit({ t: "toolResult", id, result: out.result.slice(0, 20000), ok: out.ok, meta: part.meta });
+    const last = hist.msgs[hist.msgs.length - 1];
+    const add = out.ok ? `\n\n<search_results query="${q.replace(/"/g, "'")}">\n${out.result}\n</search_results>` : `\n\n<search_results query="${q.replace(/"/g, "'")}">search failed: ${out.result.slice(0, 200)}</search_results>`;
+    if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
+    presearched = out.ok;
+  }
+
   const touched = new Set<string>();
   const snapshots = new Map<string, string>(); // file content before this turn's first write (integrity diff)
   const brief = [...hist.path.filter((m) => m.role === "user").slice(-3).map((m) => m.content)].join("\n");
@@ -251,7 +290,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const stuck = new StuckDetector();
   let opener = new OpenerGate();
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
-  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false;
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
@@ -384,6 +423,17 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             continue;
           }
         }
+        // One repair round when a block is fenced, unknown, or missing the element its script reads.
+        if (st.quality === "fix" && uiRounds < 1 && text && !signal.aborted) {
+          const issues = uiIssues(text);
+          if (issues.length) {
+            uiRounds++;
+            rewriteStep(text, "");
+            loopMsgs.push({ role: "assistant", content: text });
+            loopMsgs.push({ role: "user", content: `[Automatic block check, not from the user]\n${issues.map((i) => "- " + i).join("\n")}\nRe-emit one corrected <ui> block inline (not in a code fence, not in a canvas unless the user asked for a window). Then one short sentence.` });
+            continue;
+          }
+        }
         break;
       }
       loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
@@ -398,7 +448,12 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         emit({ t: "tool", id: c.id, name: part.name, args });
         const name = c.function.name;
         if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
-        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, ctx);
+        // live output: batched every 120ms so a chatty process doesn't flood the stream; last 6 KB is what the row shows
+        let buf = "", timer: ReturnType<typeof setTimeout> | null = null;
+        const flush = () => { timer = null; if (buf) { emit({ t: "toolOutput", id: c.id, chunk: buf }); buf = ""; } };
+        const output = (chunk: string) => { buf = (buf + chunk).slice(-6000); if (!timer) timer = setTimeout(flush, 120); };
+        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, signal });
+        if (timer) { clearTimeout(timer); flush(); }
         callNo++;
         if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }
         if (VERIFY.test(name)) lastVerify = callNo;
@@ -443,26 +498,32 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
 
   // End-of-turn text hygiene. The client refetches the saved message right after the stream, so fixes show up there.
   if (!signal.aborted) {
+    let lifted = false;
+    for (const p of parts) if (p.type === "text") { const n = liftFences(p.text); if (n !== p.text) { p.text = n; lifted = true; } }
     const lt = lastText();
-    if (lt) lt.text = trimCloser(lt.text);
+    if (lt) { const n = trimCloser(lt.text); if (n !== lt.text) { lt.text = n; lifted = true; } if (lifted) emit({ t: "retext", text: lt.text }); }
     await fixForeign(st, parts, brief).catch(() => {});
     const seen = seenText();
     for (const p of parts) if (p.type === "text" && urlsIn(p.text).length) { const u = unverifiedUrls(p.text, seen); if (u.length) p.unverified = u; else delete p.unverified; }
   }
+  // stopped mid-call: no spinner forever on reload; the partial answer itself is kept as-is
+  if (signal.aborted) for (const p of parts) if (p.type === "tool" && p.result === undefined) Object.assign(p, { result: "(stopped by the user)", ok: false });
   const content = parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
   await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts });
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));
 
   // persist canvases as artifacts (same title = update in place)
   for (const m of content.matchAll(/<canvas\s+title="([^"]*)"[^>]*>([\s\S]*?)<\/canvas>/g)) {
-    const rel = canvasPath(m[1], m[2]);
+    const rel = canvasPath(m[1], m[2], conv.id);
     const body = rel.endsWith(".ui") ? m[2].replace(/^[\s\S]*?<ui[^>]*>/, "").replace(/<\/ui>[\s\S]*$/, "").trim() : m[2].trim();
-    await fs.mkdir(path.join(WS, "artifacts"), { recursive: true });
+    await fs.mkdir(path.dirname(path.join(WS, rel)), { recursive: true });
     await fs.writeFile(path.join(WS, rel), body);
     emit({ t: "artifact", path: rel });
   }
   // mirror chat into workspace
   const fresh = await db.select().from(messages).where(eq(messages.conversationId, conv.id));
-  await fs.mkdir(path.join(WS, "chats"), { recursive: true });
-  await fs.writeFile(path.join(WS, "chats", `${conv.id}.json`), JSON.stringify({ conversation: conv, messages: fresh }, null, 1)).catch(() => {});
+  const dir = path.join(WS, chatDir(conv.id));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "chat.json"), JSON.stringify({ conversation: conv, messages: fresh }, null, 1)).catch(() => {});
+  await fs.rm(path.join(WS, "chats", `${conv.id}.json`), { force: true }).catch(() => {}); // old flat layout
 }
