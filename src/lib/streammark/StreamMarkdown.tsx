@@ -44,6 +44,9 @@ type Ctx = { onLink?: (href: string, e: React.MouseEvent) => boolean | void; str
 const C = createContext<Ctx>({ streaming: false, fn: new Map(), components: {} });
 
 const yt = (u: string) => u.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{11})/)?.[1];
+/** A media URL alone on its line becomes a player instead of a bare link. */
+const MEDIA = /\.(mp4|webm|mov|m4v|ogv)(\?\S*)?$/i;
+const AUDIO = /\.(mp3|wav|ogg|m4a|flac|aac|opus)(\?\S*)?$/i;
 const IMG = /\.(png|jpe?g|gif|webp|svg|avif)(\?.*)?$/i;
 
 function Tex({ tex, display }: { tex: string; display?: boolean }) {
@@ -141,6 +144,10 @@ function BlockView({ t, done }: { t: Token; done: boolean }) {
         const id = /^https?:\/\/\S+$/.test(url) ? yt(url) : undefined;
         if (id) return <div className="sm-embed"><iframe src={`https://www.youtube-nocookie.com/embed/${id}`} allow="encrypted-media; picture-in-picture" allowFullScreen title="YouTube" /></div>;
         if (/^https?:\/\/\S+$/.test(url) && IMG.test(url)) return <p><Img src={url} /></p>;
+        if (/^https?:\/\/\S+$/.test(url) && (MEDIA.test(url) || AUDIO.test(url)))
+          return <div className="sm-media">{MEDIA.test(url)
+            ? <video src={url} controls playsInline preload="metadata" title={only.text || "video"} />
+            : <audio src={url} controls preload="metadata" />}</div>;
         if (only.type === "link" && ctx.components.file && done && !/^(https?:|mailto:|#|data:)/.test(url) && /\.[\w]{1,5}$|\/$/.test(url))
           return <>{ctx.components.file({ href: url, label: only.text })}</>;
       }

@@ -177,6 +177,8 @@ function CanvasCard({ title, body, done, attrs }: { title: string; body: string;
     const onlyUi = /^<ui[\s>]/.test(t) && /<\/ui>$/.test(t) && t.indexOf("<ui", 1) < 0;
     if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, { dock });
     else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, { dock });
+    else if (/^https?:\/\/\S+$/i.test(t) && /\.(mp4|webm|mov|m4v|ogv)(\?\S*)?$/i.test(t)) app.openCanvas({ kind: "media", title, url: t, video: true }, { dock });
+    else if (/^https?:\/\/\S+$/i.test(t) && /\.(mp3|wav|ogg|m4a|flac|aac|opus)(\?\S*)?$/i.test(t)) app.openCanvas({ kind: "media", title, url: t, video: false }, { dock });
     else app.openCanvas({ kind: "md", title, body }, { dock });
   }, [app, title, body, dock]);
   useEffect(() => { if (done && liveAtMount.current) { liveAtMount.current = false; open(); } }, [done, open]);

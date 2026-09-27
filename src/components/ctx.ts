@@ -17,6 +17,7 @@ export type CanvasSpec =
   | { kind: "file"; title: string; path: string }
   | { kind: "youtube"; title: string; id: string }
   | { kind: "md"; title: string; body: string }
+  | { kind: "media"; title: string; url: string; video: boolean }
   | { kind: "web"; title: string; url: string };
 export type OpenOpts = { dock?: boolean };
 

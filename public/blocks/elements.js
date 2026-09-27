@@ -45,7 +45,7 @@
   B.Base = Base; B.define = define;
 
   // skeleton shapes for elements still streaming
-  const VIZ = /chart|graph|plot|draw|smiles|mol|mermaid|map|heatmap|sketch|image|video|youtube|embed|clock|ring|gauge|table|timeline|md|code/;
+  const VIZ = /chart|graph|plot|draw|physic|smiles|mol|mermaid|map|heatmap|sketch|image|video|youtube|embed|clock|ring|gauge|table|timeline|md|code/;
   B.skelKind = (t) => (VIZ.test(t) ? "viz" : /choice|sortable|kv|callout/.test(t) ? "list" : /input|select|textarea|segmented|toggle|rating|timer|stat|button|upload/.test(t) ? "line" : "block");
 
   // ================================================================ layout
@@ -373,6 +373,7 @@
       this._wrap.addEventListener("pointerleave", () => (this._tip.style.opacity = 0));
       this._wrap.addEventListener("wheel", (e) => { e.preventDefault(); const r = this._wrap.getBoundingClientRect(), k = Math.exp(e.deltaY * 0.0015), fx = (e.clientX - r.left) / r.width, fy = 1 - (e.clientY - r.top) / r.height, v = this.view; const cx = v.x0 + fx * (v.x1 - v.x0), cy = v.y0 + fy * (v.y1 - v.y0); this.view = { x0: cx - (cx - v.x0) * k, x1: cx + (v.x1 - cx) * k, y0: cy - (cy - v.y0) * k, y1: cy + (v.y1 - cy) * k }; this.paint(false); }, { passive: false });
       this._wrap.addEventListener("dblclick", () => { this.view = { x0, x1, y0: this.getAttribute("ymin"), y1: this.getAttribute("ymax") }; this.paint(false); });
+      if (typeof ResizeObserver !== "undefined" && !this._ro) { this._ro = new ResizeObserver(() => { if (this._wrap?.clientWidth) this.paint(false); }); this._ro.observe(this._wrap); }
     }
     render() { this._key = null; this.refresh(true); }
     refresh(force) {
@@ -393,7 +394,8 @@
       this.paint(first);
     }
     paint(animate) {
-      const W = 400, H = this.n("height", 250), v = this.view, pal = PAL(), N = 600;
+      // the viewBox is the element's real pixel box: the graph keeps its shape at any canvas width
+      const W = Math.max(200, Math.round(this._wrap?.clientWidth || 400)), H = this.n("height", 250), v = this.view, pal = PAL(), N = 600;
       const samples = this._fns.map((f) => {
         const pts = [];
         if (f.kind === "fn") for (let i = 0; i <= N; i++) { const x = v.x0 + ((v.x1 - v.x0) * i) / N; let y; try { y = f.f(x, this._vars); } catch { y = NaN; } pts.push([x, y]); }
@@ -501,10 +503,230 @@
     }
   });
 
+  // ================================================================ physics
+  /* x-physics: a diagram renderer that understands metres, newtons and seconds — no pixel maths, no matplotlib.
+     One item per line, world units, y up. Forces are drawn to scale and can be decomposed; inclines and
+     pendulums come with their own force sets; projectiles integrate g; `animate` plays the motion and a
+     range input can scrub it with :t="t".
+       <x-physics w="520" h="320" xmin="-1" xmax="6" ymin="-1" ymax="4" grid axis>
+         ground y=0
+         body x=1 y=0.4 m=2 v="3,0" label="A"
+         force x=1 y=0.4 fx=0 fy=-19.6 label="mg" components
+         incline x=2 y=0 angle=30 len=3 m=2 label="B" mu=0.2
+         spring 0.5 2 1.5 2 k=20
+         projectile x=0 y=0 vx=8 vy=12 g=9.8 dots
+         pendulum x=4 y=3 L=1.5 theta=35 m=1
+         field type="point" x=2 y=2 q=1
+         lens x=3 y=2 f=0.6 h=1.2 object=1 objectY=0.6
+         text 5 3 "range 12 m"
+       </x-physics> */
+  const PH_TXT = (s, x, y, t, anchor, color) => { const e = svg("text", { x, y, "text-anchor": anchor || "middle", "font-size": 11, fill: color || "var(--fg)", "paint-order": "stroke", stroke: "var(--bg)", "stroke-width": 3, "stroke-linejoin": "round" }, s); e.textContent = t == null ? "" : String(t); return e; };
+  const PH_MID = (s, x1, y1, x2, y2, t, color) => { const a = Math.atan2(y2 - y1, x2 - x1), mx = (x1 + x2) / 2, my = (y1 + y2) / 2, o = Math.cos(a) >= 0 ? 1 : -1; PH_TXT(s, mx + o * 3, my - 5, t, o > 0 ? "start" : "end", color); };
+  const PH_TOK = (line) => { const w = {}, p = []; for (const raw of line.match(/"[^"]*"|\S+/g) || []) { const m = raw.match(/^([\w-]+)=("[^"]*"|[^\s]+)$/); if (m) w[m[1]] = m[2].replace(/^"|"$/g, ""); else p.push(raw.replace(/^"|"$/g, "")); } return { w, p }; };
+  // positional slots per command, so `ground y=0` and `ground 0` both work
+  const PH_FIELDS = { body: ["x", "y"], mass: ["x", "y"], block: ["x", "y"], force: ["x", "y"], text: ["x", "y"], label: ["x", "y"], pendulum: ["x", "y"], lens: ["x", "y"], projectile: ["x", "y"], circle: ["x", "y", "r"], ground: ["y"], floor: ["y"], wall: ["x"], incline: ["x", "y"], spring: ["x1", "y1", "x2", "y2"], line: ["x1", "y1", "x2", "y2"], dashed: ["x1", "y1", "x2", "y2"], arrow: ["x1", "y1", "x2", "y2"], vector: ["x1", "y1", "x2", "y2"], ray: ["x1", "y1", "x2", "y2"] };
+  define("x-physics", class extends Base {
+    static owns = true;
+    init() { this.dataset.reactive = ""; this._t = 0; }
+    get t() { return this.n("t", this._t); }
+    items() {
+      const out = [];
+      for (const line of lines(this._src)) {
+        const { w, p } = PH_TOK(line);
+        if (!p.length) continue;
+        const cmd = p.shift(); const nums = p.map(Number);
+        const fields = PH_FIELDS[cmd];
+        if (fields) fields.forEach((n, i) => { if (w[n] === undefined && nums[i] !== undefined && !isNaN(nums[i])) w[n] = String(nums[i]); });
+        out.push({ cmd, w });
+      }
+      return out;
+    }
+    bounds(items) {
+      const xs = [], ys = [];
+      for (const it of items) {
+        const w = it.w, g = (k, d) => (w[k] === undefined ? d : +w[k]);
+        if (w.x !== undefined) xs.push(g("x", 0));
+        if (w.y !== undefined) ys.push(g("y", 0));
+        if (w.x2 !== undefined) xs.push(g("x2", 0));
+        if (w.y2 !== undefined) ys.push(g("y2", 0));
+        if (it.cmd === "projectile") { const vx = g("vx", 0), vy = g("vy", 0), gg = g("g", 9.8); if (vy > 0) { xs.push(g("x", 0) + vx * ((2 * vy) / gg)); ys.push(g("y", 0) + (vy * vy) / (2 * gg)); } }
+        if (it.cmd === "incline") { const L = g("len", 3), ang = (g("angle", 30) * Math.PI) / 180; xs.push(g("x", 0) + L * Math.cos(ang)); ys.push(g("y", 0) + L * Math.sin(ang)); }
+      }
+      if (!xs.length) return { x0: -1, x1: 6, y0: -1, y1: 4 };
+      const pad = (n) => Math.max(0.5, n * 0.14);
+      return { x0: Math.min(...xs) - pad(Math.max(...xs) - Math.min(...xs)), x1: Math.max(...xs) + pad(Math.max(...xs) - Math.min(...xs)), y0: Math.min(0, ...ys) - pad(Math.max(...ys) - Math.min(...ys)), y1: Math.max(...ys) + pad(Math.max(...ys) - Math.min(...ys)) };
+    }
+    render() {
+      const items = this.items();
+      const W = this.n("w", 480), H = this.n("h", 300);
+      const b = this.bounds(items);
+      const x0 = this.n("xmin", b.x0), x1 = this.n("xmax", b.x1), y0 = this.n("ymin", b.y0), y1 = this.n("ymax", b.y1);
+      const X = (x) => ((x - x0) / (x1 - x0)) * W, Y = (y) => H - ((y - y0) / (y1 - y0)) * H;
+      const U = (m) => (m / (x1 - x0)) * W, V = (m) => (m / (y1 - y0)) * H; // metres → px
+      const t = this.t, pal = PAL();
+      this.innerHTML = "";
+      const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "xMidYMid meet" }, this);
+      s.style.width = "100%"; s.style.height = "auto"; s.style.maxWidth = W + "px";
+      const defs = svg("defs", {}, s);
+      const mk = (id, color) => { const m = svg("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 5.5, markerHeight: 5.5, orient: "auto-start-reverse" }, defs); svg("path", { d: "M0,0 L10,5 L0,10 z", fill: color }, m); };
+      mk("ph-a", "var(--accent)"); mk("ph-v", "var(--muted)"); mk("ph-f", "var(--success)"); mk("ph-w", "var(--fg)"); mk("ph-d", "var(--danger)");
+      const head = (color) => color === "var(--accent)" ? "url(#ph-a)" : color === "var(--muted)" ? "url(#ph-v)" : color === "var(--success)" ? "url(#ph-f)" : color === "var(--danger)" ? "url(#ph-d)" : "url(#ph-w)";
+      const A = (x1, y1, x2, y2, color, w, dash) => svg("line", { x1: X(x1), y1: Y(y1), x2: X(x2), y2: Y(y2), stroke: color, "stroke-width": w || 2, "stroke-linecap": "round", "marker-end": head(color), ...(dash ? { "stroke-dasharray": dash } : {}) }, s);
+      const L = (x1, y1, x2, y2, color, w, dash) => svg("line", { x1: X(x1), y1: Y(y1), x2: X(x2), y2: Y(y2), stroke: color, "stroke-width": w || 1.5, ...(dash ? { "stroke-dasharray": dash } : {}) }, s);
+      if (this.hasAttribute("grid")) {
+        for (let gx = Math.ceil(x0); gx <= x1; gx++) L(gx, y0, gx, y1, "var(--line)", gx === 0 ? 1.2 : 0.6);
+        for (let gy = Math.ceil(y0); gy <= y1; gy++) L(x0, gy, x1, gy, "var(--line)", gy === 0 ? 1.2 : 0.6);
+      }
+      // force scale: the largest force in the scene becomes ~30% of the view height
+      let fmax = 0, vmax = 0;
+      for (const it of items) {
+        const w = it.w, g = (k, d) => (w[k] === undefined ? d : +w[k]);
+        if (it.cmd === "force") fmax = Math.max(fmax, Math.hypot(g("fx", 0), g("fy", 0)));
+        if (it.cmd === "incline") fmax = Math.max(fmax, g("m", 1) * g("g", 9.8));
+        if (it.cmd === "body" || it.cmd === "mass" || it.cmd === "block") vmax = Math.max(vmax, Math.hypot(g("vx", 0), g("vy", 0)));
+      }
+      const FK = (it, mag) => { const k = it.w.fscale ? +it.w.fscale : fmax ? (H * 0.3) / fmax : 1; return (k * mag) / (V(1) || 1); }; // metres per newton
+      for (const it of items) {
+        const w = it.w, g = (k, d) => (w[k] === undefined ? d : +w[k]);
+        switch (it.cmd) {
+          case "ground": case "floor": {
+            const y = g("y", 0);
+            L(x0, y, x1, y, "var(--fg)", 1.6);
+            for (let px = X(x0) + 2; px < X(x1); px += 11) svg("line", { x1: px, y1: Y(y), x2: px - 6, y2: Y(y) + 7, stroke: "var(--muted)", "stroke-width": 0.9 }, s);
+            break;
+          }
+          case "wall": {
+            const x = g("x", 0);
+            L(x, y0, x, y1, "var(--fg)", 1.6);
+            for (let py = Y(y1) + 2; py < Y(y0); py += 11) svg("line", { x1: X(x), y1: py, x2: X(x) - 7, y2: py + 6, stroke: "var(--muted)", "stroke-width": 0.9 }, s);
+            break;
+          }
+          case "axis": {
+            for (let gx = Math.ceil(x0); gx <= x1; gx++) { if (!gx) continue; L(gx, 0, gx, 0, "var(--muted)", 1); svg("line", { x1: X(gx), y1: Y(0) - 3, x2: X(gx), y2: Y(0) + 3, stroke: "var(--muted)" }, s); PH_TXT(s, X(gx), Y(0) + 15, gx, "middle", "var(--muted)"); }
+            for (let gy = Math.ceil(y0); gy <= y1; gy++) { if (!gy) continue; svg("line", { x1: X(0) - 3, y1: Y(gy), x2: X(0) + 3, y2: Y(gy), stroke: "var(--muted)" }, s); PH_TXT(s, X(0) - 6, Y(gy) + 4, gy, "end", "var(--muted)"); }
+            PH_TXT(s, W - 4, Y(0) - 6, "x (m)", "end", "var(--muted)"); PH_TXT(s, X(0) + 6, 12, "y (m)", "start", "var(--muted)");
+            break;
+          }
+          case "body": case "mass": case "block": {
+            const m = g("m", 1), vx = g("vx", 0), vy = g("vy", 0), r = g("r", 0.22), cx = X(g("x", 0)), cy = Y(g("y", 0)), px = U(r) * 2;
+            if (w.shape === "circle" || w.r !== undefined) svg("circle", { cx, cy, r: U(r), fill: "var(--surface-solid, var(--bg))", stroke: "var(--fg)", "stroke-width": 1.6 }, s);
+            else svg("rect", { x: cx - px / 2, y: cy - px / 2, width: px, height: px, rx: 4, fill: "var(--surface-solid, var(--bg))", stroke: "var(--fg)", "stroke-width": 1.6 }, s);
+            if (w.m !== undefined) PH_TXT(s, cx, cy + 4, m + " kg");
+            if (w.label) PH_TXT(s, cx, cy - px / 2 - 6, w.label);
+            if (vx || vy) { const vv = Math.hypot(vx, vy), k = (U(1.2) / Math.max(vmax, vv, 1e-6)) * (vv / (U(1) || 1)) / (vv || 1); A(g("x", 0), g("y", 0), g("x", 0) + (vx / vv) * (1.2 * vv / Math.max(vmax, vv)), g("y", 0) + (vy / vv) * (1.2 * vv / Math.max(vmax, vv)), "var(--muted)", 1.6, "4 3"); PH_MID(s, cx, cy, X(g("x", 0) + (vx / vv) * (1.2 * vv / Math.max(vmax, vv))), Y(g("y", 0) + (vy / vv) * (1.2 * vv / Math.max(vmax, vv))), "v " + vv.toFixed(1) + " m/s", "var(--muted)"); }
+            break;
+          }
+          case "force": {
+            const fx = g("fx", 0), fy = g("fy", 0), mag = Math.hypot(fx, fy); if (!mag) break;
+            const k = FK(it, mag), ex = g("x", 0) + (fx / mag) * k, ey = g("y", 0) + (fy / mag) * k;
+            const col = w.color || (w.type === "normal" ? "var(--success)" : w.type === "friction" ? "var(--danger)" : "var(--accent)");
+            A(g("x", 0), g("y", 0), ex, ey, col, 2.2);
+            PH_MID(s, X(g("x", 0)), Y(g("y", 0)), X(ex), Y(ey), w.label || mag.toFixed(1) + " N", col);
+            if (w.components !== undefined) {
+              L(ex, ey, ex, g("y", 0), "var(--faint)", 1, "3 3");
+              L(ex, ey, g("x", 0), ey, "var(--faint)", 1, "3 3");
+            }
+            break;
+          }
+          case "incline": {
+            const ang = (g("angle", 30) * Math.PI) / 180, LEN = g("len", 3), m = g("m", 1), gg = g("g", 9.8), mu = g("mu", 0), ax = g("x", 0), ay = g("y", 0);
+            const ex = ax + LEN * Math.cos(ang), ey = ay + LEN * Math.sin(ang);
+            svg("path", { d: `M${X(ax)},${Y(ay)} L${X(ex)},${Y(ey)} L${X(ex)},${Y(ay)} Z`, fill: "var(--surface)", stroke: "var(--fg)", "stroke-width": 1.6 }, s);
+            const bx = ax + LEN * 0.55 * Math.cos(ang), by = ay + LEN * 0.55 * Math.sin(ang) + 0.22, px = U(0.24) * 2;
+            svg("rect", { x: X(bx) - px / 2, y: Y(by) - px / 2, width: px, height: px, rx: 4, fill: "var(--surface-solid, var(--bg))", stroke: "var(--fg)", "stroke-width": 1.6, transform: `rotate(${-g("angle", 30)} ${X(bx)} ${Y(by)})` }, s);
+            PH_TXT(s, X(bx), Y(by) + 4, m + " kg");
+            if (w.label) PH_TXT(s, X(bx), Y(by) - px / 2 - 6, w.label);
+            const fw = FK(it, m * gg), N = m * gg * Math.cos(ang), nx = Math.sin(ang), ny = Math.cos(ang), fwN = fw * Math.cos(ang), fwf = fw * mu * Math.cos(ang);
+            A(bx, by, bx, by - fw, "var(--accent)", 2.2); PH_MID(s, X(bx), Y(by), X(bx), Y(by - fw), "mg " + (m * gg).toFixed(0) + " N", "var(--accent)");
+            A(bx, by, bx + nx * fwN, by + ny * fwN, "var(--success)", 2.2); PH_MID(s, X(bx), Y(by), X(bx + nx * fwN), Y(by + ny * fwN), "N " + N.toFixed(0) + " N", "var(--success)");
+            if (mu) { A(bx, by, bx - Math.cos(ang) * fwf, by + Math.sin(ang) * fwf, "var(--danger)", 2.2); PH_MID(s, X(bx), Y(by), X(bx - Math.cos(ang) * fwf), Y(by + Math.sin(ang) * fwf), "f " + (mu * N).toFixed(1) + " N", "var(--danger)"); }
+            PH_TXT(s, X(ax + 0.42 * Math.cos(ang / 2)), Y(ay + 0.42 * Math.sin(ang / 2)) - 4, g("angle", 30) + "°", "start", "var(--muted)");
+            break;
+          }
+          case "spring": {
+            const x1 = g("x1", 0), y1 = g("y1", 0), x2 = g("x2", x1 + 1), y2 = g("y2", y1), LEN = Math.hypot(x2 - x1, y2 - y1), n = g("coils", 9), amp = g("amp", 0.09), ang = Math.atan2(y2 - y1, x2 - x1);
+            let pth = `M0,0 L${LEN * 0.08},0`;
+            for (let i = 0; i < n; i++) pth += ` L${LEN * 0.08 + ((i + 0.5) * LEN * 0.84) / n},${i % 2 ? amp : -amp}`;
+            pth += ` L${LEN * 0.92},0 L${LEN},0`;
+            svg("path", { d: pth, fill: "none", stroke: "var(--fg)", "stroke-width": 1.5, transform: `translate(${X(x1)},${Y(y1)}) rotate(${(ang * 180) / Math.PI}) scale(${U(1)})` }, s);
+            if (w.k !== undefined) PH_TXT(s, (X(x1) + X(x2)) / 2, (Y(y1) + Y(y2)) / 2 - 12, "k=" + w.k + " N/m", "middle", "var(--muted)");
+            if (w.label) PH_TXT(s, (X(x1) + X(x2)) / 2, (Y(y1) + Y(y2)) / 2 + 16, w.label, "middle", "var(--muted)");
+            break;
+          }
+          case "projectile": {
+            const vx = g("vx", 0), vy = g("vy", 0), gg = g("g", 9.8), ax = g("x", 0), ay = g("y", 0), tEnd = (2 * vy) / gg;
+            let pth = "";
+            for (let i = 0; i <= 60; i++) { const tt = (tEnd * i) / 60; pth += `${i ? "L" : "M"}${X(ax + vx * tt).toFixed(1)},${Y(ay + vy * tt - 0.5 * gg * tt * tt).toFixed(1)} `; }
+            svg("path", { d: pth, fill: "none", stroke: pal[0], "stroke-width": 2, "stroke-linecap": "round" }, s);
+            const tt = Math.max(0, Math.min(tEnd, t)), cx = ax + vx * tt, cy = ay + vy * tt - 0.5 * gg * tt * tt;
+            svg("circle", { cx: X(cx), cy: Y(cy), r: 4.5, fill: pal[0], stroke: "var(--bg)", "stroke-width": 1.5 }, s);
+            if (w.dots !== undefined) for (let i = 0; i <= 10; i++) { const t2 = (tEnd * i) / 10; svg("circle", { cx: X(ax + vx * t2), cy: Y(ay + vy * t2 - 0.5 * gg * t2 * t2), r: 1.8, fill: "var(--muted)", opacity: 0.6 }, s); }
+            PH_TXT(s, X(cx) + 8, Y(cy) - 6, "t=" + tt.toFixed(2) + "s", "start", "var(--muted)");
+            if (w.label) PH_TXT(s, X(ax), Y(ay) - 10, w.label, "middle", "var(--muted)");
+            break;
+          }
+          case "pendulum": {
+            const LEN = g("L", 1), th0 = (g("theta", 30) * Math.PI) / 180, gg = g("g", 9.8), m = g("m", 1), ax = g("x", 0), ay = g("y", 0);
+            const om = Math.sqrt(gg / LEN), th = th0 * Math.cos(om * t), bx = ax + LEN * Math.sin(th), by = ay - LEN * Math.cos(th);
+            L(ax - LEN * 0.4, ay, ax + LEN * 0.4, ay, "var(--line)", 1);
+            L(ax, ay, bx, by, "var(--fg)", 1.6);
+            svg("circle", { cx: X(bx), cy: Y(by), r: U(0.16) + 4, fill: "var(--surface-solid, var(--bg))", stroke: "var(--fg)", "stroke-width": 1.6 }, s);
+            svg("circle", { cx: X(ax), cy: Y(ay), r: 2.5, fill: "var(--fg)" }, s);
+            const rr = U(LEN) * 0.92;
+            svg("path", { d: `M${X(ax) + rr},${Y(ay)} A${rr},${rr} 0 0 ${th > 0 ? 0 : 1} ${X(bx)},${Y(by)}`, fill: "none", stroke: "var(--faint)", "stroke-width": 1, "stroke-dasharray": "3 3" }, s);
+            PH_TXT(s, X(ax) + rr * 0.72, Y(ay) + 15, ((th * 180) / Math.PI).toFixed(0) + "°", "start", "var(--muted)");
+            PH_TXT(s, X(bx), Y(by) + 4, m + " kg");
+            if (w.label) PH_TXT(s, X(ax), Y(ay) - 10, w.label, "middle", "var(--muted)");
+            break;
+          }
+          case "field": {
+            const type = w.type || "uniform", ex = g("ex", 0), ey = g("ey", type === "uniform" ? -1 : 0), step = g("step", 1), px0 = g("x", 0), py0 = g("y", 0), sc = g("scale", 0.32);
+            for (let gx = Math.ceil(x0); gx <= x1; gx += step) for (let gy = Math.ceil(y0); gy <= y1; gy += step) {
+              let dx, dy;
+              if (type === "point") { dx = gx - px0; dy = gy - py0; } else { dx = ex; dy = ey; }
+              const mag = Math.hypot(dx, dy); if (!mag) continue;
+              const kk = sc / mag; A(gx, gy, gx + dx * kk, gy + dy * kk, "var(--muted)", 1.1);
+            }
+            if (type === "point") { const q = g("q", 1); svg("circle", { cx: X(px0), cy: Y(py0), r: 6, fill: q > 0 ? "var(--danger)" : "var(--accent)" }, s); PH_TXT(s, X(px0), Y(py0) - 10, (q > 0 ? "+" : "−") + Math.abs(q) + " C", "middle", "var(--muted)"); }
+            break;
+          }
+          case "lens": {
+            const f = g("f", 0.6), h = g("h", 1), ax = g("x", 0), ay = g("y", 0), ox = g("object", ax - 2), oy = g("objectY", h * 0.5);
+            L(ax, ay - h, ax, ay + h, "var(--accent)", 2.6);
+            PH_TXT(s, X(ax), Y(ay - h) - 6, "f=" + f + " m", "middle", "var(--accent)");
+            L(ax - f, ay, ax + f, ay, "var(--faint)", 1, "4 4");
+            L(ox, ay, ox, ay + oy, "var(--fg)", 2);
+            PH_TXT(s, X(ox), Y(ay + oy) - 6, "object", "middle", "var(--muted)");
+            const sg = f > 0 ? 1 : -1, R = (x1, y1, x2, y2, col) => L(x1, y1, x2, y2, col, 1.6);
+            R(ox, ay + oy, ax, ay + oy, pal[0]); R(ax, ay + oy, ax + f * sg * 2, ay, pal[0]);
+            R(ox, ay + oy, ax + f * sg * 2, ay + oy - (((ax + f * sg * 2 - ax) * oy) / (f * sg * 2)), pal[1]);
+            R(ox, ay + oy, ax - f * sg, ay + oy, pal[2]); R(ax - f * sg, ay + oy, ax + f * sg * 2, ay + oy, pal[2]);
+            break;
+          }
+          case "text": case "label": PH_TXT(s, X(g("x", 0)), Y(g("y", 0)), w.t || w.text || "", w.anchor, w.color || "var(--muted)"); break;
+          case "line": case "dashed": L(g("x1", 0), g("y1", 0), g("x2", 0), g("y2", 0), w.color || "var(--fg)", 1.5, it.cmd === "dashed" ? "5 4" : undefined); break;
+          case "arrow": case "vector": case "ray": A(g("x1", 0), g("y1", 0), g("x2", 0), g("y2", 0), w.color || "var(--accent)", 2.2); if (w.label) PH_MID(s, X(g("x1", 0)), Y(g("y1", 0)), X(g("x2", 0)), Y(g("y2", 0)), w.label, w.color || "var(--accent)"); break;
+          case "circle": svg("circle", { cx: X(g("x", 0)), cy: Y(g("y", 0)), r: U(g("r", 0.2)), fill: "none", stroke: "var(--fg)", "stroke-width": 1.5 }, s); if (w.label) PH_TXT(s, X(g("x", 0)), Y(g("y", 0)) + 4, w.label); break;
+        }
+      }
+      if (this.hasAttribute("animate")) {
+        const tmax = this.n("tmax", 4);
+        const step = () => { if (!this.isConnected) return; this._t = (this._t + 0.016 * this.n("speed", 1)) % tmax; this.render(); this._raf = requestAnimationFrame(step); };
+        if (!this._raf) this._raf = requestAnimationFrame(step);
+      } else if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+      this.dispatchEvent(new CustomEvent("tick", { bubbles: true, detail: { t } }));
+    }
+    disconnectedCallback() { if (this._raf) cancelAnimationFrame(this._raf); this._raf = 0; }
+  });
+
   // ================================================================ time
   define("x-timer", class extends Base {
-    init() { this.mode = this.a("mode", "down"); this.total = this.n("seconds", this.mode === "up" ? 0 : 60); this.left = this.total; this.elapsed = 0; this.running = false; if (this.hasAttribute("autostart")) requestAnimationFrame(() => this.start()); }
-    render() { if (!this.running && this.hasAttribute("seconds") && this.n("seconds") !== this.total && this.mode !== "up") { this.total = this.left = this.n("seconds"); this.elapsed = 0; } this.paint(); }
+    init() { this.mode = this.a("mode", "down"); this.total = this.n("seconds", this.mode === "up" ? 0 : 60); this._secSeen = this.total; this.left = this.total; this.elapsed = 0; this.running = false; if (this.hasAttribute("autostart")) requestAnimationFrame(() => this.start()); }
+    render() {
+      // only a *changed* seconds=… attribute resets the timer; reset()/set()/add() from a button must survive re-renders
+      if (this.mode !== "up" && this.hasAttribute("seconds")) { const s = this.n("seconds"); if (s !== this._secSeen) { this._secSeen = s; if (!this.running) { this.total = this.left = s; this.elapsed = 0; } } }
+      this.paint();
+    }
     paint() { this.textContent = fmt(this.mode === "up" ? this.elapsed : this.left); this.classList.toggle("low", this.mode !== "up" && this.running && this.left <= 10); }
     tick() { this.paint(); this.dispatchEvent(new CustomEvent("tick", { bubbles: true, detail: { id: this.id, left: this.left, total: this.total, elapsed: this.elapsed } })); }
     start() {
@@ -519,6 +741,7 @@
     toggle() { this.running ? this.stop() : this.start(); }
     reset(s) { this.stop(); if (s !== undefined) this.total = s; this.left = this.total; this.elapsed = 0; this.tick(); }
     set(s) { this.reset(s); }
+    add(s) { this.left = Math.max(0, this.left + s); this.total = Math.max(this.total, this.left); this.paint(); this.tick(); }
     get value() { return Math.round(this.mode === "up" ? this.elapsed : this.left); }
   }, { void: true });
   define("x-stopwatch", class extends (customElements.get("x-timer")) { init() { this.setAttribute("mode", "up"); super.init(); } }, { void: true });
@@ -576,21 +799,30 @@
     }
   });
   // multiple choice: options="A|B|C" answer="B" (text, letter or 1-based index) multi reveal
+  // custom="your own answer" adds a free-text row; skip adds a "Skip" button (value = null, .skipped)
   define("x-choice", class extends Base {
     static owns = true;
-    init() { this._sel = []; const src = lines(this._src); this._opts = src.length ? src.map((l) => l.replace(/^[-*]\s*|^[A-Ha-h][).]\s+/, "")) : null; }
+    init() { this._sel = []; this._custom = undefined; this._skipped = false; const src = lines(this._src); this._opts = src.length ? src.map((l) => l.replace(/^[-*]\s*|^[A-Ha-h][).]\s+/, "")) : null; }
     opts() { return this._opts && this._opts.length ? this._opts : list(this.getAttribute("options"), "|").length > 1 ? list(this.getAttribute("options"), "|") : list(this.getAttribute("options")); }
     answerIdx() {
       const a = this.getAttribute("answer"); if (a === null) return [];
       const o = this.opts();
       return a.split(",").map((x) => x.trim()).map((x) => (/^[A-Ha-h]$/.test(x) ? x.toUpperCase().charCodeAt(0) - 65 : /^\d+$/.test(x) && +x >= 1 && +x <= o.length && !o.includes(x) ? +x - 1 : o.findIndex((y) => y === x))).filter((i) => i >= 0);
     }
+    locked() { const r = this.hasAttribute("reveal") && this.getAttribute("reveal") !== "false"; return r && this.hasAttribute("lock"); }
     render() {
       const o = this.opts(), multi = this.hasAttribute("multi"), rev = this.hasAttribute("reveal") && this.getAttribute("reveal") !== "false", ans = this.answerIdx();
-      if (!this._built || this._built !== o.join("\u0001")) {
-        this._built = o.join("\u0001");
-        this.innerHTML = o.map((t, i) => `<button type="button" class="opt" data-i="${i}" style="--i:${i}"><span class="mk">${multi ? "" : String.fromCharCode(65 + i)}</span><span class="tx">${esc(t)}</span></button>`).join("");
-        this.querySelectorAll(".opt").forEach((b) => (b.onclick = () => { if (this.hasAttribute("reveal") && this.getAttribute("reveal") !== "false" && this.hasAttribute("lock")) return; const i = +b.dataset.i; this._sel = multi ? (this._sel.includes(i) ? this._sel.filter((x) => x !== i) : [...this._sel, i]) : [i]; this.paint(); change(this); }));
+      const custom = this.a("custom"), skip = this.hasAttribute("skip");
+      if (!this._built || this._built !== o.join("\u0001") + "\u0002" + custom + "\u0002" + skip) {
+        this._built = o.join("\u0001") + "\u0002" + custom + "\u0002" + skip;
+        this.innerHTML = o.map((t, i) => `<button type="button" class="opt" data-i="${i}" style="--i:${i}"><span class="mk">${multi ? "" : String.fromCharCode(65 + i)}</span><span class="tx">${esc(t)}</span></button>`).join("") +
+          (custom ? `<form class="opt-form" part="custom"><input type="text" name="custom" placeholder="${esc(custom)}" aria-label="${esc(custom)}" value="${esc(this._custom ?? "")}"><button type="submit">${esc(this.a("custom-label", "Answer"))}</button></form>` : "") +
+          (skip ? `<button type="button" class="opt-skip" data-skip="1">${esc(this.a("skip-label", "Skip"))}</button>` : "");
+        this.querySelectorAll(".opt").forEach((b) => (b.onclick = () => { if (this.locked()) return; const i = +b.dataset.i; this._sel = multi ? (this._sel.includes(i) ? this._sel.filter((x) => x !== i) : [...this._sel, i]) : [i]; this._custom = undefined; this._skipped = false; this.paint(); change(this); }));
+        const f = this.querySelector(".opt-form");
+        if (f) f.onsubmit = (e) => { e.preventDefault(); e.stopPropagation(); if (this.locked()) return; const v = f.querySelector("input").value.trim(); if (!v) return; this._custom = v; this._sel = []; this._skipped = false; this.paint(); change(this); };
+        const sk = this.querySelector("[data-skip]");
+        if (sk) sk.onclick = () => { if (this.locked()) return; this._skipped = true; this._sel = []; this._custom = undefined; this.paint(); change(this); };
         B.typeset(this);
       }
       this.classList.toggle("multi", multi); this._rev = rev; this._ans = ans; this.paint();
@@ -601,15 +833,24 @@
         b.classList.toggle("on", on);
         b.classList.toggle("ok", this._rev && this._ans.includes(i));
         b.classList.toggle("bad", this._rev && on && !this._ans.includes(i));
-        b.disabled = this._rev && this.hasAttribute("lock");
+        b.disabled = this.locked();
       });
-      this.toggleAttribute("answered", this._sel.length > 0);
+      this.toggleAttribute("answered", this.answered);
+      this.toggleAttribute("skipped", this._skipped);
+      const f = this.querySelector(".opt-form");
+      if (f) f.classList.toggle("on", this._custom !== undefined);
     }
-    get value() { const o = this.opts(); return this.hasAttribute("multi") ? this._sel.map((i) => o[i]) : this._sel.length ? o[this._sel[0]] : null; }
-    set value(v) { const o = this.opts(); const arr = Array.isArray(v) ? v : v === null || v === undefined || v === "" ? [] : [v]; this._sel = arr.map((x) => o.indexOf(x)).filter((i) => i >= 0); this.paint(); }
+    get value() {
+      if (this._custom !== undefined) return this._custom;
+      const o = this.opts();
+      return this.hasAttribute("multi") ? this._sel.map((i) => o[i]) : this._sel.length ? o[this._sel[0]] : null;
+    }
+    set value(v) { const o = this.opts(); const arr = Array.isArray(v) ? v : v === null || v === undefined || v === "" ? [] : [v]; this._sel = arr.map((x) => o.indexOf(x)).filter((i) => i >= 0); this._custom = undefined; this._skipped = false; this.paint(); }
     get index() { return this._sel.length ? this._sel[0] : -1; }
+    get custom() { return this._custom; }
+    get skipped() { return this._skipped; }
     get correct() { const a = this.answerIdx(); if (!a.length) return null; return a.length === this._sel.length && a.every((i) => this._sel.includes(i)); }
-    get answered() { return this._sel.length > 0; }
+    get answered() { return this._sel.length > 0 || this._custom !== undefined; }
   });
   define("x-rating", class extends Base {
     render() {

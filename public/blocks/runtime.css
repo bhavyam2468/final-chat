@@ -145,6 +145,15 @@ x-choice .opt.on{border-color:var(--fg);background:var(--surface)}x-choice .opt.
 x-choice .opt.ok{border-color:var(--success);background:color-mix(in srgb,var(--success) 10%,transparent)}x-choice .opt.ok .mk{background:var(--success);border-color:var(--success);color:var(--bg)}
 x-choice .opt.bad{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 9%,transparent)}x-choice .opt.bad .mk{background:var(--danger);border-color:var(--danger);color:var(--bg)}
 x-choice[layout=grid]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+x-choice .opt-form{display:flex;gap:8px;align-items:center;animation:b-in .4s var(--ease) both}
+x-choice .opt-form input{flex:1;min-width:0;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r);background:none;color:var(--fg);font:inherit;font-size:.92em;outline:none}
+x-choice .opt-form input:focus{border-color:var(--fg)}
+x-choice .opt-form.on input{border-color:var(--accent)}
+x-choice .opt-form button{flex:none;padding:9px 14px;border:1px solid var(--line);border-radius:var(--r);background:none;color:var(--fg);font:inherit;font-size:.9em}
+x-choice .opt-form button:hover{background:var(--surface)}
+x-choice .opt-skip{align-self:flex-start;padding:6px 12px;border:0;background:none;color:var(--muted);font:inherit;font-size:.85em;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+x-choice .opt-skip:hover{color:var(--fg)}
+x-choice[skipped] .opt-skip{color:var(--fg);text-decoration-color:var(--muted)}
 x-rating{display:inline-flex;gap:2px}x-rating button{border:0;background:none;padding:3px}
 x-rating svg{width:calc(22px*var(--s,1));height:calc(22px*var(--s,1));fill:none;stroke:var(--muted);stroke-width:1.5;transition:transform .15s,fill .15s}
 x-rating button.on svg{fill:var(--accent);stroke:var(--accent)}x-rating button:hover svg{transform:scale(1.12)}
@@ -167,7 +176,9 @@ x-progress i{display:block;height:100%;background:var(--tone);border-radius:6px;
 x-ring,x-gauge,x-clock{display:block;width:100%;max-width:calc(150px*var(--s,1));margin:0 auto}
 x-ring,x-clock{aspect-ratio:1}
 x-ring svg,x-gauge svg,x-clock svg{width:100%;height:100%;overflow:visible;display:block}
-x-chart,x-graph,x-plot,x-draw,x-sparkline,x-smiles,x-mermaid,x-heatmap,x-mol3d,x-map{display:block;width:100%;min-width:0}
+x-chart,x-graph,x-plot,x-draw,x-physics,x-sparkline,x-smiles,x-mermaid,x-heatmap,x-mol3d,x-map{display:block;width:100%;min-width:0}
+x-physics svg{display:block;max-width:100%;height:auto;touch-action:none}
+x-physics text{font-family:var(--font-sans, ui-sans-serif, system-ui);user-select:none}
 x-draw svg{margin-inline:auto}
 x-chart svg,x-draw svg,x-smiles svg,x-mermaid svg{width:100%;height:auto;display:block;overflow:visible;max-height:calc(420px*var(--s,1))}
 x-mermaid svg{max-width:100%!important}

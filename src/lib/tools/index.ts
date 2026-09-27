@@ -283,7 +283,13 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         await fs.rename(from, to).catch(async (e) => { if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e; await fs.cp(from, to, { recursive: true }); await fs.rm(from, { recursive: true, force: true }); });
         return { ok: true, result: `Moved ${rel(from)} → ${rel(to)}${clash ? " (replaced file moved to trash)" : ""}` };
       }
-      case "run_python": { const r = await execPython(st, a.code, Math.min(600, Math.max(5, Number(a.timeout) || 120)) * 1000, liveOut(ctx)); return { ok: r.code === 0, result: cut(r.out || "(no output)") }; }
+      case "run_python": {
+        const r = await execPython(st, a.code, Math.min(600, Math.max(5, Number(a.timeout) || 120)) * 1000, liveOut(ctx));
+        const plot = /matplotlib|pyplot|\bplt\./.test(String(a.code || ""));
+        const hint = plot && !/savefig|\.png|\.svg|\.pdf|to_file|write_image/.test(String(a.code || ""))
+          ? "\n(matplotlib was used for a chart the user only looks at. x-chart / x-graph / x-physics render natively in chat and stay interactive — use those unless a raster file is actually needed.)" : "";
+        return { ok: r.code === 0, result: cut(r.out || "(no output)") + hint };
+      }
       case "pip_install": {
         const pk = ([] as string[]).concat(a.packages).map(String);
         const chk = await checkInstalls(pk, "pypi");
@@ -323,10 +329,12 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const yt = youtubeId(t);
         let spec: Record<string, unknown>;
         if (yt) spec = { kind: "youtube", id: yt, title: title || "YouTube" };
+        else if (/\.(mp4|webm|mov|m4v|ogv)(\?\S*)?$/i.test(t)) spec = { kind: "media", url: t, video: true, title: title || "Video" };
+        else if (/\.(mp3|wav|ogg|m4a|flac|aac|opus)(\?\S*)?$/i.test(t)) spec = { kind: "media", url: t, video: false, title: title || "Audio" };
         else if (/^https?:\/\//.test(t)) spec = { kind: "web", url: t, title: title || new URL(t).hostname };
         else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
         ctx.emit({ t: "canvas", spec, dock: !!a.dock });
-        return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
+        return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") + (spec.kind === "media" ? " (plays in the canvas player)" : "") };
       }
       case "web_search": {
         const j = await firecrawlSearch(st, a.query, Math.min(Number(a.limit) || 5, 8));

@@ -118,7 +118,7 @@ const Viewer = memo(function Viewer({ spec, winId }: { spec: CanvasSpec; winId: 
   const [rev, setRev] = useState(0);
   const [bar, setBar] = useState<React.ReactNode>(null);
   const annot = k === "pdf" || k === "image" || k === "html";
-  const notable = !!path && ["pdf", "image", "html", "doc", "slides", "sheet", "video", "audio", "md", "text"].includes(k);
+  const notable = !!path && ["pdf", "image", "html", "doc", "slides", "sheet", "video", "audio", "md", "text"].includes(k) || spec.kind === "media";
 
   useEffect(() => {
     if (!path || !["text", "md", "html", "ui"].includes(k) || (spec.kind === "ui" && spec.source)) return;
@@ -160,6 +160,9 @@ const Viewer = memo(function Viewer({ spec, winId }: { spec: CanvasSpec; winId: 
   if (spec.kind === "youtube") body = <iframe className="full black" src={`https://www.youtube-nocookie.com/embed/${spec.id}?autoplay=1`} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen title="YouTube" />;
   else if (spec.kind === "web") body = <iframe key={rev} className="full" src={spec.url} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" title={spec.title} />;
   else if (spec.kind === "md") body = <div className="reader"><StreamMarkdown text={spec.body} {...md} /></div>;
+  else if (spec.kind === "media") body = spec.video
+    ? <div className="mediaview"><video src={spec.url} controls autoPlay playsInline title={spec.title} /></div>
+    : <div className="mediaview audio"><audio src={spec.url} controls autoPlay title={spec.title} /></div>;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
   else if (k === "image") body = <div className="imgview" style={{ position: "relative" }}>{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
   else if (k === "pdf") body = <PdfView path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} />;
@@ -174,7 +177,7 @@ const Viewer = memo(function Viewer({ spec, winId }: { spec: CanvasSpec; winId: 
   else body = <div className="v-msg"><a className="txt-btn solid" href={fileUrl(path!)} download>Download {baseName(path!)}</a></div>;
 
   const toggle: Record<string, [string, string]> = { ui: ["Preview", "Code"], html: ["Preview", "Code"], md: ["Read", "Write"], text: ["Read", "Write"] };
-  const external = spec.kind === "web" ? spec.url : spec.kind === "youtube" ? `https://youtu.be/${spec.id}` : null;
+  const external = spec.kind === "web" ? spec.url : spec.kind === "youtube" ? `https://youtu.be/${spec.id}` : spec.kind === "media" ? spec.url : null;
   return <>
     <div className={"win-body k-" + k}>{body}</div>
     {notes !== null && <div className="notes"><textarea autoFocus value={notes} onChange={(e) => setNotes(e.target.value)} onBlur={() => saveNotes()} aria-label="Notes" /></div>}

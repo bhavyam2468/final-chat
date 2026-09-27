@@ -5,6 +5,9 @@ description: BlocksUI language for <ui>: components, reactive bindings, JS/Pytho
 # BlocksUI
 `<ui>` = HTML + x-* components + bindings + optional logic + `<style type="rel">` relations. The system owns all visuals (theme, spacing, radius, animation, responsiveness). Never write CSS, inline style, colors or px sizes. It streams: write `<style type="rel">` first, then data, then markup top-down, then `<script>`.
 
+## Where it goes
+Default to a block INLINE in the reply: it answers in place and scrolls away with the turn. Use <canvas title="…"> only for something the user keeps working in — a tool, a test, a dashboard, a long document — or when the content must not push the answer up the thread. Never both for the same UI.
+
 ## Restraint
 A component existing is not a reason to use it. Use <ui> only when interaction, visualization or live state beats text. Pick the fewest components that do the job; a sentence beats a card, a table beats a chart for <6 numbers. No decorative badges/icons/stats. Never wrap one element in a card.
 
@@ -16,13 +19,14 @@ Data: x-stat[value label delta unit] (counts up) · x-progress[value max tone] �
  x-chart[type=line|bar|hbar|stacked|area|pie|donut|scatter|radar data labels series title x-label y-label center] data="1,2,3" multi "1,2|3,4" series="A|B"; scatter "x:y,x:y"; JSON ok
  x-sparkline[data] · x-table[csv|data sortable] (or CSV/markdown rows as body) · x-heatmap[data="1,2|3,4" x-labels y-labels] · x-timeline (lines "date | title | detail")
 Science: x-math[tex|body inline] · $..$ / $$..$$ in any text renders KaTeX
+ x-physics[w h xmin xmax ymin ymax grid axis t animate tmax] mechanics diagrams in metres (y up), one item per line — `ground y=0` `wall x=0` `body x y m= r= v="vx,vy" label shape=circle` `force x y fx= fy= label= type=normal|friction components fscale=` `incline x y angle= len= m= mu= label=` (draws mg, N and f to scale) `spring x1 y1 x2 y2 k= coils= amp=` `projectile x y vx= vy= g= dots=` `pendulum x y L= theta= m= g=` `field type=uniform|point x y ex ey q= scale= step=` `lens x y f= h= object= objectY=` `text x y "…"` `line|dashed|arrow x1 y1 x2 y2 label=` `circle x y r label=`. `animate` plays it (speed=, tmax=); `t="1.4"` or `:t="t"` with a range input scrubs to that second. Auto-fits the view when xmin/xmax/ymin/ymax are omitted. This is the renderer for physics: never matplotlib, ASCII art or a prose description.
  x-graph[fn xmin xmax ymin ymax equal points legend height] interactive plot, pan/zoom/hover. fn lines/`;`: `y=a*sin(b*x)`, `r=1+cos(theta)`, `x=cos(t),y=sin(2t)`. Free letters (a,b,…) bind live to same-named inputs/state → sliders drive the graph. points="1,2,A;3,4"
  x-smiles[smiles label] 2D structure · x-mol3d[name|cid|smiles|pdb still] 3D (PubChem/RCSB) · x-mermaid (body) · x-draw[w h] diagram lines: rect x y w h "l" | circle x y r | dot x y | line/dashed/arrow x1 y1 x2 y2 "l" | mass x y "m" | pulley x y r | spring x1 y1 x2 y2 | incline x y w h | ground y | wall x | angle x y r deg1 deg2 "θ" | polygon x y x y… | curve x1 y1 cx cy x2 y2 | wave x1 y x2 amp cycles | lens x y h | resistor x1 y1 x2 y2 | battery x y | text x y "t"
-Time: x-timer[id seconds mode=down|up autostart] (.start() .stop() .toggle() .reset(s); .left .elapsed .running; events tick, done) · x-stopwatch · x-clock[time|seconds|for=timerId]
+Time: x-timer[id seconds mode=down|up autostart] (.start() .stop() .toggle() .reset(s) .set(s) .add(s); .left .elapsed .running .value; events tick, done) · x-stopwatch · x-clock[time|seconds|for=timerId]
 Inputs (all with name= are reactive vars): input(text|number|range|date|color|checkbox|radio) select textarea button[tone=accent|success|danger|ghost]
  x-segmented[name options value] · x-toggle[name checked] · x-rating[name max] · x-sortable[name] (body lines) · x-sketch[name] (value = PNG data URL) · x-upload[name accept multiple dir] (value = workspace path)
  x-todo[name title add] body lines "- [ ] task" / "- [x] done" (user ticks; add = user can append); .value [{text,done}] .done .total. For plans/checklists the user works through, not for your own progress (that is the todo tool)
- x-choice[name options="A|B|C" answer multi reveal lock layout=grid] or option lines as body; .value .index .correct .answered; reveal shows right/wrong
+ x-choice[name options="A|B|C" answer multi reveal lock layout=grid] or option lines as body; .value .index .correct .answered; reveal shows right/wrong; custom="Type your answer" adds a free-text row (value = the typed text, .custom), skip adds a Skip button (value = null, .skipped)
 Media: x-image[src caption] x-video[src] x-audio[src] x-youtube[id|url start] x-embed[src height] x-map[lat lng zoom markers="lat,lng,label|…"]. Workspace paths work as src.
 State: <x-state score="0" done="false" picks="{}"> (JSON-parsed initial values)
 
@@ -44,6 +48,7 @@ selector { prop: value } · selectors: .class #id tag root · nesting `.a { .b {
 size xs|s|m|l|xl|xxl or 1..5 (relative weight/scale among siblings) · orient horizontal|vertical · group name (siblings share a row, wrap in portrait) · place top|bottom|center|start|end (start/end = side column on wide screens) · columns n|auto · span n · width fill|hug · max narrow|medium|wide|full · align start|center|end · gap tight|normal|loose · density compact|comfortable · emphasis low|high · tone accent|success|danger|warning|info|neutral · sticky top|bottom · ratio square|wide|tall · hide true
 
 ## Composition notes
+Charts and diagrams are blocks: x-chart for data, x-graph for functions, x-physics for mechanics, x-draw for geometry/optics sketches, x-mermaid for flows. matplotlib/pyplot output is only for when the user needs an image file; never for something they will just look at.
 Multi-step/paged flows: x-deck with one x-slide per step; a result slide shown via show="submitted". Timed tests: x-timer autostart @done="submit()". Scoring: x-choice answer=… then `$$('x-choice').filter(c => c.correct).length`. Reveal after submit with `:reveal="submitted"`. Send results with sendToLm only if the user should get analysis.
 Canvas-sized tools: <canvas title="Name"><ui>…</ui></canvas>. Fill-screen layouts adapt to portrait/landscape via rel.
 Keep data in <script type="data"> JSON, not repeated markup. Short semantic class names.

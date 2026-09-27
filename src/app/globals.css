@@ -483,6 +483,9 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 .sm-img { max-width: 100%; border-radius: var(--r); display: block; opacity: 0; transform: scale(.99); transition: opacity .5s, transform .5s var(--ease); }
 .sm-img.is-in { opacity: 1; transform: none; }
 .sm-embed { margin: 0 0 16px; aspect-ratio: 16/9; border-radius: var(--r); overflow: hidden; background: var(--surface); }
+.sm-media { margin: 0 0 16px; border-radius: var(--r); overflow: hidden; background: var(--surface); }
+.sm-media video { display: block; width: 100%; max-height: 70vh; background: black; }
+.sm-media audio { display: block; width: 100%; max-width: 520px; padding: 12px; }
 .sm-embed iframe { width: 100%; height: 100%; border: 0; }
 .sm-math-block { display: block; margin: 0 0 16px; overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 .sm-details { margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--r); }
