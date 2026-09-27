@@ -1,0 +1,739 @@
+okay so the first prompt i sent to claude opus 5.5 was this: 
+
+
+"""
+
+
+```
+"use npx skills add Leonxlnx/taste-skill for the design, all 13 skills 
+
+create a minimal ai chat application wrapper 
+
+give it a sandboxed workspace but make it possible for me to install it right on my pc, give it access to my terminal and my files.
+
+Okay, here's the idea. The first thing that we have to build is a minimal AI chatbot and in that we have to follow the definition of minimal. So, no extra placeholders, no extra elements, no, you know, small ideas or small info signs that press shift plus enter to next line."
+
+ill give you my gemini api key (AIzaSyApOmzelokCsIVEbnDAj5SFPj41CaftMUE) and my firecrawl api key (fc-45ce8a9dd68f4788914c47d240a706e3) (both are free and highly rate limited, safe to use for testing) but use a free model like gemini-3.5-flash-lite but make it possible for me to connect my freellmapi and my  firecrawl, both running locally in my docker
+
+research openui for streaming markdown and ui on github (by thyses), we have to fundamentally creatre something similar but better, 
+
+custom prompt the llm nicely about this
+
+add a few more tools like a python sandbox locally, with numpy pandas grep etc etc the useful stuff, and let the ai have access to installing more libraries for actions 
+
+deepthink this 
+
+there should be a native artifact viewer for viewing pdf or the webpages the ai creates. and talking about them, so i can talk to it about my classroom slides, annonate in app over them and make it make notes and save them to my device, this is an example, we need to build an ecosystem like this 
+
+add access to add mcps and skills, read official mcp and skill documentations, and research, create and preconfigure (or setup an oauth or any other auth *ONLY if necessary) these mcps and skills
+
+Filesystem MCP: Grants safe, direct read/write access to local directories or designated project folders.GitHub MCP: Enables repository management, pulling open issues, inspecting pull requests, and creating commits.PostgreSQL / Database MCP: Exposes structured execution tools to query, inspect schemas, and run safe SQL commands.
+
+File Parsing MCP: A robust [PDF parsing MCP]([https://mcpservers.org/](https://mcpservers.org/)) that converts tables, academic layouts, and formulas into markdown text so the bot can accurately read your uploaded library
+
+Academic Discovery MCPs: Integrate specific academic servers such as Academic MCP Server (LobeHub) or Paper Search via MCP Market. These give your agent native tools (search_arxiv, fetch_pubmed, biorxiv_query) to pull peer-reviewed papers directly into its prompt context.Vector Storage / Knowledge Graph MCP: Utilize servers like Research Assistant MCP (ChromaDB) to allow the bot to save, tag, and chunk long research notes into a vector database for semantic cross-referencing.
+
+Literature Review &amp; Gap Analysis Skill: Instructions that force the bot to cluster papers by methodology, highlight conflicting findings, and map out "research gaps"—instead of just summarizing documents one by one.Hypothesis Testing &amp; Counter-Argument Skill: Prompts the bot to actively play devil's advocate, evaluating a research thesis against opposing empirical data to spot logical fallacies before writing begins
+
+"
+
+(Transcribed by TurboScribe. Go Unlimited to remove this message.)
+
+Okay, here's the idea. The first thing that we have to build is a minimal AI chatbot and in that we have to follow the definition of minimal. So, no extra placeholders, no extra elements, no, you know, small ideas or small info signs that press shift plus enter to next line.
+
+No, none of that shit. Okay, and so with that minimal chatbot, first you have to think of a design philosophy, like a genuine go in depth and think of a design philosophy where like the idea is like think something that has minimal, primarily dark mode, light mode works but in light mode it's like warm background, a bit of grainy texture, muted colors and yeah, just that vibe follows and in dark mode also similar vibe follows and it's like a charcoal-ish color in the background, not completely amoled black that hurts the eyes and so then think like just give a like design philosophy in the starting when you start to build it. And so, such that we have a blueprint, you know, everything should be very generalized like corner radius and stuff.
+
+So, there should be a really, you know, generalized corner radius. So, like nothing, like not every element should have different corner radius. It should be generalized to everywhere.
+
+So, this is the first thing that we do, that we implement, we idealize one design philosophy and we follow that everywhere. This will be required. I'll let you know where exactly this will be required but this is the first step of it.
+
+Second step is ensuring that minimalism is there. So, like, you know, in small places, like you have to think about every small place that you are implementing and you have to think that how you can implement minimalism here. So, imagine there's like if it's an AI chatbot, the user takes something and then the AI responds and so what vibe coders generally do is that they put a bubble under user's text and give a profile to user and then a profile icon to AI and a bubble under AI.
+
+But that's not the requirement. That's not required. For distinction, only the thing that's required is that user has a bubble and AI does not have a bubble.
+
+AI responds on the normal screen. So, that already gives distinction. You don't have to have profile icons or markers or, you know, stuff like that.
+
+It's very obvious. Even sometimes not having a bubble but like correctly implementing spacing and everything. You have to really genuinely think about typography and everything too, man.
+
+Because later we are going to implement markdown and every markdown element should have a genuine good typography. So, you have to like actually research typography principles for... Like genuinely you have to work on spacing everywhere. So, this was the primary idea that you have some way to distinguish between the AI and the user's text.
+
+But like that should be it. No, nothing extra. Nothing more than that.
+
+That's exactly the definition of minimalism and this is one example. This is one place where minimalism is being implemented. There are tons of more examples.
+
+And so, yeah, the idea is that we implement something minimally. Then after this has been done, the second part is markdown. So, first of all with this, we implement small hover icons under text responses and text prompts of AI and user respectively.
+
+Like copy button and branch option under prompt and branch option under response too. And so, you have to think a lot about branching and everything. Because if I branch text and I send a new prompt instead of the old prompt, then the branch remains in the chart.
+
+But when we would implement a sidebar and where the charts will be shown, every chart that would have as many branches, those branches will be indented a bit and will be visible there and that chart can be collapsed. Like that chart can be a drop-down list and it could contain all those branches. Okay, so this is the first thing, branching.
+
+And the second thing is the copy button. The branch button should be under the user's text. And then there should be a regenerate button under the AI's response.
+
+And both of them are supposed to branch only. And give a small, you know, arrow buttons and like a small info that yeah, this is the branch one of two etc. You don't have to write branch one of two, just one slash two.
+
+So just like implement minimalism and everything. So yeah, that's the basic philosophy offered. And that's how we have to implement it.
+
+This is the branches stuff. And more buttons with profile and everything. No, nothing about profile.
+
+I'm just saying more buttons with the AI response and the user's prompt. Like copy and regenerate and you know, one two more. After that, after this, we implement a thread option where a small button under AI's response is present to open a thread.
+
+A thread is basically like a sub conversation where you can like, you know, text about something either completely different or, you know, something particular from the AI's response and get into the rabbit hole. And the idea is that talking as much as you want to talk in a thread won't make the AI's context window erupt. You know, so the AI won't necessarily have to jump like the context window doesn't necessarily have to jump if you decide to go into a rabbit hole of a specific topic of an umbrella term you're generally talking about with that AI.
+
+So that's a thread option. And you know, also selecting the text, selecting the AI's response, like selecting the text in the AI's response should give you an option to quote it. And so if you're in the general input bar, it gets quoted there.
+
+And if you're in the threads input bar, it gets quoted there. And of course, then there's a plus button to upload multiple files and everything. So that's to, you know, upload a lot of, even just one or a lot of files together.
+
+And that also works in input bar. And so the plus button, what it does is.
+
+(Transcribed by TurboScribe. Go Unlimited to remove this message.)
+
+Okay, so uploading files is a very normal thing and like in uploading files there's nothing much to discuss except the UI part of it. The UI part of it is your complete duty that how you implement, when photos are uploaded, how are they shown in the input bar, how are they shown in the chart so that it matches our UI and when a user is editing the prompt, how do they get to remove the photos or how do they get to add more photos etc etc etc. So you just have to go through all of that thinking. 
+
+You have to think every small thing because like we are working like Apple, we are working like, we are trying to optimize the user's experience to the maximum limit. So you have to genuinely think about it. The next part is, the next part is, the next part is working with markdown. 
+
+So firstly implement genuine markdown. Then we have to think about an alternative to react markdown. Okay, so the idea is that the AI streams markdown and it's in real-time, it's in real-time parsed.
+
+Like as the AI is streaming, as the AI starts to stream a bold line, see the idea is what you have to like ideally implement is like, just look at streamdown. Streamdown is working on exactly this. So what you have to do is, when the AI is streaming an output, when it's like, say it starts with two stars. 
+
+So and it starts to write something. So if it started with two stars and it started to write something, that most probably means that it's writing something bold. So you automatically convert that text into bold and like implicitly assume that there are two trailing stars to and automatically like stream it until the AI actually gives you the two trailing stars and the bold line ends. 
+
+That's how you have to implement, that's how you have to implement everything from code blocks to markdown elements, everything. So the idea with that is that you have to create streaming animations for every kind of markdown UI and make every kind of markdown UI suitable for our general UI design philosophy. So if there is a code block with a copy button and stuff like that, you have to really think about it. 
+
+So if there's like a code block, it should have a copy button, it should suit our UI and while it's streamed, it should have an animation, like it should not just be junkily, you know, again and again flickering while it's being generated, like while every every next token is being added to a code block while the AI is generating code in a code block, you have to make sure that it doesn't keep on, you know, jittering every time while it's being generated or same with tables and everything. So you have to deeply think about this and you have to add a bit of more markdown elements and give the AI, you know, create an a file, a complete new file for system prompt. So I can edit it too and like create a lot of files so that there's like a good amount of modules so that so like the stream markdown can be its own module. 
+
+So we can use it somewhere else too. Like if I'm creating an obsidian like text editor, so I could create it there, like use it there and make it really like that, like make it really useful, make it really backward compatible and make it really standalone working. And the next thing that we do is that you do have to add a bit of more markdown elements, like, you know, those details and stuff. 
+
+There's like a drop down list in markdown, like as in the one liners that expand into a paragraph with like, I don't know what are they called exactly, I forgot. But they are something like the details tag and everything. And then there's like the highlight button. 
+
+So not a button. So like just think about this. You know, you have to think about every markdown element. 
+
+I'm giving you examples, I give example with code blog, I'm giving you another example. So you have to implement a highlight markdown tag, which is like two equal tos. So double equal tos before and after text highlighted. 
+
+And what happens with highlight is when the AI generates a prompt, the highlight, like every markdown is implemented in line, but highlight comes like one second later. So when the AI is done highlighting the text, highlight does not, highlight does not, the idea of the highlight is the highlight animation plays over text after the highlight has ended. So you don't, in highlight specifically, you don't implicitly assume the trailing equal tos. 
+
+If the AI puts leading equal tos, you just like hide them. You don't show them, you just hide them. Because they are markdown element, you consider them markdown element. 
+
+And if the AI puts the trailing equal tos, you have to, after that play the animation of highlight that the text is now being highlighted. Because highlight is like, the text is generated and then you're grabbing the focus of the user. So it should work in that philosophy, it should work in that psychology that the text has been generated and then the highlight animation plays. 
+
+Are you getting me? This is how deeply you have to think about every single small thing. And now, in markdown you have to add every kind of thing. So like image embedding, GIF embedding, YouTube video embedding, stuff like that. 
+
+Checkboxes. You can add XML tags, like you can, you can expand the markdown with XML and add more stuff to it. Footnotes, stuff like that. 
+
+You have to think about footnotes to that. Footnotes, if an AI randomly puts a footnote, it should not appear right at that moment. It should appear after the whole prompt, after the whole text has been streamed or it will like weirdly hang there. 
+
+So you have to think about this stuff really deeply, all of it. After that, the idea is that the phase two begins. This was the markdown part. 
+
+Now we have to stream complete UIs. So the idea here is, this is the main part of the AI. You know, we have created everything. 
+
+We have implemented backwards compatibility for everything. We have made everything work everywhere. So like the idea is that we have made the markdown work in the threads and branches and everything. 
+
+And yeah, now what we implement is, we implement a whole area of new niche, which is generative UI. But we'll get to this later. Okay. 
+
+Just note that we are going to do this, but we are not going to do this right now. So right now we are, we are adding a few more things. Firstly, using like complete dependency on keyboard, like the user does not have to use mouse at all.
+
+So if a user presses, the idea is that input bar is generally smaller. And if a user starts typing, the input bar expands horizontally a bit. And the text all itself starts get adding in the input bar. 
+
+So what the idea with that is, is that you don't have to, the user doesn't have to click over the input bar to start typing. The user can just press any key and the text bar automatically catches this. The input bar automatically catches it, expands horizontally and starts adding the text inside itself. 
+
+And if the user presses backspace, the input bar like erases the text, obviously. And after the user has pressed all the backspace, like when the input bar is empty and the user presses backspace, the input bar like goes out of focus. And you know, like the carrot disappears and the input bar contracts. 
+
+You get the idea, right? Like if I randomly start typing anywhere in the UI, it starts getting added in to the input bar. And if I press backspace and the input bar is like the input bar backspaces stuff, like the text, and if there's no text, the input bar contracts and goes out of focus. This is the idea. 
+
+And you have to add more such stuff that the whole app is able to be controlled by keyboard shortcuts. So pressing slash could give you commands and pressing at the rate could let you mention files. What mentioning files is all about is that mentioning files is about the fact that there are three levels to every file. 
+
+The first level is the fact that the file remains in your file system. The second is that you upload the file into AI's workspace. And the third is that the file is actively in the AI's context. 
+
+So your file space is not really a matter unless you have the app and we are not building an app, we are building a website. So we'll just forget that part for right now and we'll work on the workspace part of it and the context part of it. So in the workspace part of it, when the file is in the workspace and it's the file is in the workspace and the AI will know that the file exists. 
+
+So the AI has access to workspace. The workspace is whenever you upload a file, the file goes with a bit of metadata and that metadata is generated exactly when the file is uploaded. When the file is goes and the name, a small description generated by the same AI. 
+
+And that's done in the front end. When you upload a file and there's like a loading animation in that it's shown that you are generating metadata and like uploading, generating metadata, etc, etc. And so while the metadata is generated, being generated, the AI basically generates a description of it and the name and MIME type, etc, etc is automatically added. 
+
+And that stuff, the name description, very short description, just like one to two lines maximum, nothing else. So the name, the description and MIME type, etc, that metadata is always present in the context of the AI, of the workspace. Like whenever, actually, fuck the metadata. 
+
+Let's, okay, forget the metadata. We don't have to make the AI work over time. Let's not implement metadata. 
+
+Just don't think about it. Hear me out. So what we have to do is we have to, the idea is that the AI has access to the file tree of the workspace. 
+
+So we, okay, forget it. Firstly, let's implement a sidebar. So there's, there are two sides. 
+
+And there's not a whole sidebar that contains all the charts. There's like an element, an element over on the chart. That's like not covering the entire vertical space, but it has like inline scroll and has charts inside it. 
+
+And there's a search bar in, in, inside that where you can search inline charts. Like you, you can search anything and the, and the whole context from all the charts is searched. Like everything is indexed. 
+
+So yeah, that's the idea. And all the charts are present there in that, in that sidebar in left side. And then there's, there are similar sidebars in the right side. 
+
+And there are multiple sidebars in the right side. And so if, and so obviously then they don't cover all the vertical space. So the idea in that is if you open multiple sidebars, they take their individual vertical spaces. 
+
+But if you just open one sidebar, it opens in the like primary space. Like there are, there are like three sidebars. One is about context. 
+
+Second is about artifacts and artifacts. And third is of, third is of the sources. And so if you open just the sources sidebar, it opens in the like top right area. 
+
+And if you open the workspace sidebar too, it opens below it. Like how, like as you keep opening more sidebars, they open below one another. But if you just open the workspace sidebar, it also opens at top right. 
+
+Like I have no sidebar is open. So it's like, you know, they are like elements and they like auto take the automatically adjust the spaces. And so the charts sidebar and the workspace sidebar basically has the whole workspace. 
+
+So if you upload any files, it's uploaded. All the files are included in the uploads folder in the workspace. And the whole workspace is visible to the user. 
+
+The workspace also has the whole chart that the user is doing in as in, in, in its own folder. Like, I don't know, think about this yourself, but you have to be able to export the whole chart in one file. I don't care if it's JSON or XML, you have, you should be able to export the whole workspace basically. 
+
+And it should, it should contain the chart too. And I don't know what the chart should be in, but like you have to implement everything that the chart, the chart file contains the, you know, the branches, the threads and everything is inside that chart file. And so in general, what, what happens is that the, all the files are uploaded in the workspace and the AI has access to only the file tree of the files. 
+
+Now, when you, when you upload a file that file is uploaded into the context and AI gets the file tree and it has access to take that file into the context. So you can at the rate mentioned that file. And when you mention that file, that file goes into the context, that file gets added into the active context of the AI and wherever you second time mention it, like if you mention it again and again, it's added into context only once, but the mentioned part of it remains. 
+
+And that mentioned part of it is the part that pulls that file into the context. Okay. So like, I don't know exactly how to explain it, but just like think over it. 
+
+This is very basic to understand. But the AI always has access to the file tree of the workspace. Secondly, now we have to implement tools. 
+
+So what tools are going to be is like the primary tool is adding to context and removing from context. So the AI can call this tool. Firstly, we have to implement the whole skills thing. 
+
+So skills is basically exactly what it is. Skills is going to be our, like you have to go to Google and research about it. Skills, the thing that Anthropic has built, you have to implement that.
+
+Obviously, all the skills don't remain in the context all of the time. But skills are also present in the workspace. Everything is present in the workspace.
+
+Skills are present in the skills folder. And there are skills about the tool calling too. So this add context and remove context, this tool remains in the AI's system prompt only. 
+
+And a system prompt, system prompt is the only thing that's not present in the workspace. Okay, no, that is also present in the workspace. We are giving the user the entire control. 
+
+The system prompt is also present in the workspace. And in the same folder as a system prompt, there's a subfolder of skills and a subfolder of MCPs. And MCPs and skills are also added into that folder only. 
+
+And the AI has access to the skills and MCPs from right there. And the [agents.md](http://agents.md) and everything is exactly in that folder. Just really deeply research about all of this. 
+
+And in the skills, you have to add a few skills, add context, add context, remove context. So the AI can and compact context too. In compact context, like research how other companies use compact, like compacting context, where it just, what happens is the prompt goes to the AI of the whole chart and all the tool calls and the AI just summarizes it into short, into a shorter chart and less tool calls, like just a small description of the tool calls. 
+
+So this is it. And secondly, then there are file editing, you know, file editing skill. File editing skill, just pull it somewhere from the internet, like either research about it, or like, if there's an already available skill about that, just pull it. 
+
+Of the file editing and file editing is like basically having edits with the whole workspace and everything. And so yeah, the whole workspace can be edited by AI, deleting, creating files, renaming files, or like editing files, inline editing, appending to them, completely rewriting them, etc. These tools, or like deep editing, like find and replace and stuff. 
+
+These function, these tool calls, but these, they don't remain actively in the context all the time. This is a whole skill that you define. Then there are, there are more such skills, there are, there's a terminal skill, like the AI has access to a sandbox terminal with the main installed libraries, like research the useful, all the useful libraries and install all of them in its terminal.
+
+From Pandas, NumPy, to Matplotlib, YT, YouTube DLP, etc, etc, like these kinds of things. And then I'll give you my firecrawl API key, implement that in that for web search. So yeah, so that you can use web search, so that the AI can use web search and web fetch and everything. 
+
+And yeah, the AI can call web search and web fetch and everything. And that is another tool. And just think about what all tools can be generally used and like implement them in the whole primary [agents.md](http://agents.md) or primary [memory.md](http://memory.md) or primary [system.md](http://system.md). And the subtools, just list them there, but and mention that you can open the skill for this tool, like for getting more info on this tool, etc. 
+
+And add skills of everything. And so add more such tools, these are only some tools I talked about, there can be a lot more tools that you can add and create a lot more skills like understanding and editing Excel files. There are multiple Excel, Python libraries for editing Excel files and stuff, understanding PowerPoint files, etc, etc, etc. 
+
+And then there are multiple MCPs, you have to, you also have to if there's an online library or an online marketplace that you can connect in your MCP or your skills, you are completely welcome to do that. You can add skills or MCPs just available for the user to download and connect. Like there's this test skill that creates UI and everything. 
+
+This is the second or the third phase of it, the adding MCPs and skills and workspace and everything. And then there's this thing called, then there's this thing named Canvas that you have to create. Now Canvas is a complicated thing. 
+
+So what you have to do is, this is the stuff that I'm going to talk about is, oh yeah, I'll talk about Canvas later. You got the skills part, right? Skills and MCP and everything. So this is the workspace is going to be the first right side sidebar. 
+
+The second right side sidebar is going to be sources. So if the AI uses any web fetch or any web search, ask the like system from the AI to use web search and web fetch in limits that not to use, not to use web search and web fetch like a lot of it, like ask it to use web search frequently, but not pass a lot of web search tool calls like pass limited number of them so that it does not bomb the context. Okay. 
+
+And yeah, that's, that's the idea to not use a lot of web search, but like use it a bit frequently. So it remains up to date with all the information and everything. Then comes the, like a big phase. 
+
+This phase is the
+
+(Transcribed by TurboScribe. Go Unlimited to remove this message.)
+
+This whole phase is expanding on Markdown, which is generative UI. So now you have to research about, you have to research about and create an SDK. What this is, this is going to be a whole skill and a whole, this is also going to be a whole marketplace for the user to do.
+
+And the idea is that the AI can create UI, but it's not creating that in HTML, CSS, JavaScript. It's just, it's just adding the variables, like filling the variables and the UI is created automatically. So the AI is responding in Markdown, right? Markdown and XML, a combination of Markdown and XML, a combination of Markdown and XML, right? So in that, in XML, add the ability to also call tools from right there and, you know, create UI for inline tool calls. 
+
+If the AI is calling a file editing tool, show an inline tool call that the AI just edited a file and clicking that tool call would let me, the user, be able to, like, see the diff, applied diff. And each such tool call has an output which can be expanded. Like each tool call is just a one-liner which has an expanded option and clicking which shows the entire output of the tool call.
+
+And each tool call has a different UI. So web search tool call has like a group of links formatted nicely into a UI and everything. And a file editing thing has a diff shown and stuff like that. 
+
+So inline tool calls are also supported. An AI can inline call web search and everything. And yeah, that's it. 
+
+And after that you have to implement UI. What UI is, you have to genuinely think about this and create a lot of elements related to this. But the primary idea is that you implement, the primary idea is that you implement a lot of features. 
+
+Which is, so you create, you create SDKs for stuff like input stuff, like buttons, drop-downs, sliders, stuff like that, like radio buttons, check boxes, etc. And then the AI can use them to, like AI can create them in chart natively. And you also, like the SDKs are like, there are a lot of SDKs for like buttons, like input stuff. 
+
+This is like input stuff, buttons and everything. Then there's graphs, like stuff like data visualization with pie charts and everything, like tons of those graphs, pie charts, flow chart diagrams, and bar graphs, line charts. And you have to create animations for all of them. 
+
+Like if a button is being rendered inline with markdown, the button gets an animation while it's streamed. If a drop-down is animated, a drop-down, if a drop-down is streamed, there's an animation of the drop-down. And there's an animation for every such thing. 
+
+If a line chart is streamed, then it has its animation, that line is, the line in the line chart is drawn after the line chart is displayed. So you have to create UI and animation for all of them, streaming animation and UI for everything that you create. And you have to add every kind of thing from chemistry diagrams to maths, dysmorphs to physics, like creating physics diagram, like pulleys and everything.
+
+And you have to categorize them into categories. So the AI can, like, this is the whole, this is a very big set of skills. This is like a whole folder of skills. 
+
+Not exactly skills either. This is like the SDKs for every sort of element. And you have to describe every tool and everything.
+
+So the AI can actually, like the AI does not have every SDK loaded in the context, right? So if the AI wants to create a pie chart, it does not have to specifically search for pie chart, it just has to, you know, search for tags, like data interpretation, circle, etc, etc. And when the AI searches for that, the pie chart automatically shows up to the AI. So that's like basically what tool calling should look like. 
+
+The AI can search for elements, the AI can search for whatever, what all UI elements are present to get the most appropriate one and generate that in the UI, in the chart. And so the idea is that in the chart, everything is streamed in line and everything gets arranged itself. And this is not it, you have to add the UI for not just data interpretation, not just math, graph, not just physics, chemistry diagrams, not just organic chemistry diagrams, you have to implement literally everything.
+
+So you have to like every button and everything you create that should have backwards compatibility too, and that should have an ability to use them. So like the AI can create like the AI should have the ability to create boxes, the AI should have ability to create, you know, icons, like add icons, use Lucida, use Lucida icons to add icons in those boxes, and add text and add, you know, numbers and everything. And have UI for everything to create lines to create boxes and everything. 
+
+So the AI can create a whole UI like the AI can create a clock. The AI should not be the AI should not create it in HTML of CSS, it should create the clock by just adding the 0000 or the analog part and the clock gets rendered like you don't have to give the AI the whole UI of a clock, you don't have to give the SDK of the whole clock, you should have to give the AI the building blocks so it can create the whole clock. And in each such element, you have to somehow think you have to think this very deeply, the generative UI, because the generative UI should contain the ability to parse Python, like the AI should be able to create full fledged apps with generative UI, which also function to the AI, the AI should have building blocks to create a whole, you know, to create a whole Pomodoro timer, like write its back end code, like, like, generally what we use for this stuff is HTML, CSS and JavaScript. 
+
+But right now we are using the blocks SDK, we are calling it blocks, okay, the blocks SDK and Python, make the blocks SDK a whole standalone thing where the AI can create UI elements and implement Python with it. So the AI can create a whole form where submitting it, sends it back to the AI, like adding inputs, adding text, adding, you know, clicking buttons and selecting checkboxes, etc, etc. And pressing submit sends it to the AI.
+
+Right. So send send to the AI should be a Python function in that, that you are clicking that button sends this stuff parsed into an XML to an AI. So if an input if an AI is creating a form, it should be able to create a Python back end for it that captures all the form data and sends it to the AI when the when a button is clicked, or in a Pomodoro timer, there's just a 000, like 000 and then there are then there's a button to start the focus mode and then there's a button to start the rest mode. 
+
+And the focus mode button starts the clock at 25 and goes to zero. And the AI writes the whole logic of the clock and the button and connects them like the integration part, the the integration part integrating two different UI elements should be completely done with Python. All right. 
+
+You have to create this whole SDK and the whole back end with Python. You have to genuinely deeply think about this, how this works and you have to make it work. Okay. 
+
+The next part is the next part is canvas. This is the last part. And this is fairly easy. 
+
+A canvas, what a canvas is a canvas is a collect a canvas is either just a single element or a collection of elements saved into the artifacts place. So what a canvas is a resizable pop, a resizable floating window over the AI chart, which a user can keep in the chart like the chart is scrolled, right? The chart is the AI chart is scrollable. The user charting with the AI is scrollable. 
+
+And so if an AI creates a Pomodoro timer, the user can scroll past it. So the AI can use the canvas tag to create that Pomodoro timer in a canvas. And, and that, and that becomes a file in the workspace. 
+
+And that file can be referenced in the artifacts tab. Artifacts tab is basically just a tab where a lot of elements can be, you know, a lot of elements can be just like mentioned to have a completely different stuff. I'll, I'll explain it to you. 
+
+What, what canvas basically is that you can use either the blocks, you can create stuff with the blocks and add that into the canvas, or you can create stuff with the, you know, you can create stuff with the, the blocks, like you can use the blocks. You can create a mathematical diagram. You can create anything and just say, just create it in a canvas and then add it into the artifacts or like add it into the chart for the user to open it and the user can open like the, it opens in a floating window, which the user can resize and the canvas gets resized and the user can place it anywhere in inside the chart or in the margins of the chart so that the user always has access to it. 
+
+The idea with that is that the canvas can contain anything. So you can, you have to really create a lot of the elements for canvases. Like, the canvas is the main part of this app. 
+
+So if a user opens a workspace, like, I'm not, I don't know if I was able to explain it to you. It's not just a block part. It's like everything.
+
+Like if a user opens a file, a workspace file, if a user opens a react file from the workspace, if a user clicks on the react file from the workspace, it opens up in a markdown editor of the canvas, right? It opens in an editor and that editor is inside the canvas, right? So that editor has a syntax highlighting and everything, and you can edit it there and there are read modes and write modes and everything has a different UI. So this is the editor UI and editor UI has the read mode and the write mode and it adjusts for everything. Like if there's markdown in the read mode, it previews the markdown and then the write mode, it shows the markdown's syntax. 
+
+So if a user opens any file, that file opens in that. If a user opens any image, that image opens in that. And if the user opens, like the LLM, like you are creating a lot of tools, right? You are giving a whole workspace to.
+
+So let the AI create HTML, CSS and JavaScript apps. So if an AI is able to create HTML, CSS and JavaScript apps and the user opens that HTML file, that whole file is shown up in the canvas. Like you are getting the point, right? So, and what artifacts is, artifacts is just a sidebar of buttons where different canvases are referenced. 
+
+Like if an AI creates an HTML, CSS, JavaScript app, the AI puts it up in a static container and it adds the link of that container as a button in the artifact sidebar. And that artifact sidebar can be used to open anything. So like the canvases can hold a huge YouTube video too. 
+
+If like you get the idea that the canvases can hold a YouTube video, like the AI can, the AI can embed a YouTube video into the canvas and the iframe, like the YouTube video is embedded into an iframe, which is embedded into the canvas. So the user can, what the user can do is, user can like decrease the size of that canvas, like resize that canvas to small and just place it in the side of the AI chart and watch the YouTube video while talking to the AI. That's the purpose. 
+
+And the canvas should be, should be immersive. Like it should have a header and a footer, but it should be immersive. Like if the, if a user is interacting inside stuff with the canvas, the header and the footer gets hidden, but the header and the footer have pin elements. 
+
+If the footer has status of the canvas, like there's, there's a lot of stuff. Like the canvas is, the canvas has multiple things. If it's a, if it's a web page, if it's a HTML file, then the canvas has, then the canvas has preview and code mode, which in which, which, which are in the footer.
+
+In the footer, there are all the sub options of the canvas and in the header, there are general options to, you know, pin header and footer to close the canvas, to minimize the canvas, et cetera. The canvas is basically like a window where the user can do anything. User can watch YouTube videos and everything, everything, everything. 
+
+And the AI can, the AI can add blocks in that canvas and AI can create a whole form in that, that specific gesture canvas. And the user can fill the form in that canvas and click submit and the response goes to AI. So everything is seamlessly integrated. 
+
+Like just think about this canvas, please get what I'm trying to explain. I'm not able to explain it, but just try to understand what I'm trying to mean and like create it and plan this whole thing very deeply before starting to create it. This, this whole is like, there are a lot of things I might have missed. 
+
+I just spoke what was on the top of my head. I just spoke whatever was inside my head at this moment, but we have to create a whole ecosystem, a whole operating system of just AI that the user talks to the AI and the AI can do basically anything for the user. The AI can create whole apps, but it doesn't, it does not have to write. 
+
+Basically it's an AI operating system, but the AI is only a small part of it. The AI is only the variable part of it. Everything is done by us. 
+
+Everything is done by the system. The AI just changes the variables in it. Okay. 
+
+Are you getting it? The AI just has to change the variables in it. The AI just have to modify stuff in it. So it, it gets adapted to user's specific needs. 
+
+That's the idea, right? Are you getting it? That's the complete idea of it. So everywhere, everywhere, we have to ensure that we don't overfill the context. Whenever you are giving info files to the AI, like the system prompt or anything, each of them should be info dense and should not contain the weird adjectives that you would generally add for readability because you're giving it as a prompt to the AI and not as a interesting essay to the user. 
+
+It's just info to the AI, it should be info dense. And thus, create the whole app in such a way that the context does not fill in minutes. And like everything we have to do, we have to ensure that the AI, like the input and the output tokens are preserved. 
+
+In system prompting and everything, everywhere, just make sure that the input and output tokens of the AI are not exploited. Okay. They should not be exploited.
+
+Everyone using our app, it's a BYOK app, bring your own key app, where the user can bring an OpenAI key, a Gemini key, an OpenRouter key or its custom endpoint, user's custom own endpoint and use that app. Right? So that's the idea. And the user can also bring his Ollama keys. 
+
+So if I'm running an Ollama container in Docker and I'm running the AI natively in my device, I should also be able to use my Ollama's endpoint and my Ollama's API key to use my local models in that AI and that local model should also work just fine. And the local models have like a context window of 16,000 tokens. So we have to make this app feasible for that amount of tokens too, that amount of context window too.
+
+So, you know, summarizing files that are uploaded and everything, just think about everything deeply. Every single thing, implementation of every single small step, you have to think about it very deeply because it should not break. I gave you a 40 minute long speech to text of whatever was inside my head at this very moment. 
+
+So I couldn't explain everything. Neither am I a software engineer to explain everything. You have to do the thinking part of it. 
+
+You don't have to build it right now. You have to do the thinking part of it very deeply and think about it as deeply as you can before starting to create it. Great.
+
+just make sure you realise this, that all this 40 minute long prompt that i just spoke, was freestyle, so i wouldnt have talked about a deep implementation or all the needed features, i have given you an incomplete idea you need to complet5e
+
+ALSO install.  : npx skills add Leonxlnx/taste-skill
+
+
+
+
+
+
+
+
+my first idea was to create an sdk which is in a way similar to androids material 3 expressive / ios's liquid glass
+
+
+
+like you see how everywhere in ios, even in third party apps, the navbar, the sliders, the buttons are same
+
+i want that
+
+
+
+Any button paired with any python command
+
+
+
+the second thing i thought was extended html
+
+
+
+the idea being that we have a css for everything, we create a whole css ecosystem in a way such that it auto adjusts for every shape, size and type of elements, like how to natively add 2 sliders of time for a pomodoro timer along with an analog clock, a start button and a stop button
+
+
+
+or how to adjust this cluster for portrait/landscape canvases and make them work. 
+
+
+
+are you getting it? we write a css big and robust enough that its able to account for all the native arrangements of all the elements and make sure it doesnt look weird
+
+
+
+the llm only writes 3 things after that, 1. extended html (basically html but we add more native tags for chemistry smiles diagrams or math desmos graphs etc etc etc)
+
+
+
+2. extended javascript: to bind the html to everything, like creating a form and recording the input, extended with a few custom functions like sendToLm() or saveIn(workspace path/) 
+
+
+
+3. compacted styles
+
+this one is fun, the lm gets a really small amount of variablity towards css, mostly relative 
+
+
+
+like 
+
+once its done writing html, it has to write the look of the ui, this is a language we create
+
+
+
+for a pomodoro timer, after it has created the &lt;p class="time"&gt;, &lt;input type="range" class= "focus time"&gt;, &lt;button class= "start"&gt;
+
+
+
+what it does is, it at the end writes a few lines of our language to ensure the look of it but it can only write everything relationally, all elements relationally, 
+
+
+
+background {
+
+.time {
+
+size= 3x
+
+orient= horizontal
+
+}
+
+}
+
+
+
+.focus-time { 
+
+size= 2x
+
+orient= horizontal} 
+
+
+
+ 
+
+etc etc, this basically tells our parser to ensure that the sliders arent vertically placed aside the clock and are smaller than it 
+
+
+
+ 
+
+we would have to create a simple yet extensive spec doc for this 
+
+
+
+
+so just deep think about what to do with this
+```
+
+"""
+
+
+
+ 
+
+and it awesomely implemented alot of it it created a really nice, really minimal app, but that had a few problems, so i started the chat with the agent 
+
+
+
+
+
+"""
+
+clone this repo and understand its entire codebase (not that vast) 
+
+
+
+it actually took 2 prompts, but the second prompt were sent to gemini to generate readme and `setup.md`
+
+
+
+
+especially blocks, i have didnt attach the final part of the prompt to it by mistake (and now my tokens are over lol)
+
+
+
+"i do have a few notes:
+
+we are creating this app to work with local directories, even if the webapp of it works in a closed sandboxed workspace, if someone runs the app locally, they should be able to give the app the access of their home directly and home terminal, and possibly sudo too, but that should be a switch to turn on  and off for safety purposes
+
+markdown isnt the only thing that we are creating streaming animations for, you have to realise that the model outputs normal text also in inconsistent chunks, and we also have our blocks ui, we have to create a stable streaming animation for anything, be it a desmos graph or anything 
+
+there should be status notes in the workspace area, like the whole context that is currently being used with a compact context button (a skill by which the ai can shorten stuff in the chat, deep think this skill and give the ai access to compact specific parts of the chat like tool calls, websearches etc and not always the whole chat) 
+
+the canvas shouldnt just be a markdown viewer, it should be able to view pdfs, ppts, excel files, word files, unopened zip files and everything and have actions regarding each in the bottom bar for each, the ai should be able to add anything that it can add in the chat into the canvas, embed youtube videos to watch, gifs anything really
+
+and also 
+
+the canvas should have two modes, 1 is floating and second is integrated, in integrated the ai's chat shifts and the canvas appears aside it, still horizontally give the option to change the size, but not vertically when its integrated
+
+and genuinely genuinely take a good amount of deepthinking to deepthink the blocks sdk, i mean you basically have to create an entire new language for it and dozens of components, and make sure to system prompt the ai in such a way that it doesnt spam all the components, just because they exist doesnt mean they have to be always used 
+
+really think of every kind of block there can be, for creating input stuff like asking user questions, creating a pomodoro timer, creating visualizations, creating graphs of equations, creating organic smiles diagrams, and then using such blocks to work with entire usecases, like imagine if the ai has access to creating a page with a header, a line break and create questions with options and embed images, create a timer, create multiple cards and switch view to move to the next card, create visualisations, the ai can literally then websearch past year questions of jee and create a whole 1 hour long mock test for the user, with analysis as the user clicks submit, analysis of each question and everything man, and this is just one usecase, the possibilities are like crazy, you just have to design and create fundamental html components first, like line breaks, inputs etc, then create some wrappers like desmos, latex, cemistry etc.... the only thing you are forbidden from creating is templates, like there should be no preset for a pomodoro timer, that is restricted, or youd junk the app with useless things, thats why i named it blocksUI"
+
+
+
+ 
+
+ 
+
+i didnt attach this, and like im sending all of this to you with the hopes that you can reliably make all of this work somehow
+
+"""
+
+
+and so it started working and created a really nice over access app
+
+
+"""
+
+
+All six parts are built and pushed to `arena/01a0dade-final-chat`. Everything was tested against an offline mock model, because this sandbox can't reach Gemini, Firecrawl or CDNs. Your real keys haven't been tried yet, and neither have the libraries that load from a CDN: SMILES, 3D molecules, Mermaid, maps and Pyodide. The app is running in the preview now, answering from the mock.
+
+**What works:**
+1. **Local access switches** (Settings → Access): home folder, entire disk, host terminal and sudo are separate switches, all off by default.
+   - Entire disk needs home access first, and sudo needs the host terminal. Turning sudo on asks for confirmation.
+   - The server enforces these limits too, so they can't be bypassed through the API. Setting `HOST_ACCESS=off` locks everything to the sandbox for web deployments.
+   - Commands are fully isolated only if bubblewrap is installed. Without it, the sandbox confines them to the workspace and strips secrets, but doesn't enforce isolation.
+2. **Streaming**: text is released at a pace that follows how fast chunks arrive, so irregular chunks don't jitter. Blocks components show a placeholder shaped like the component until they finish, then render once.
+3. **Context status**: a token meter in the workspace panel with a per-section breakdown. You can fold tool output, fold web results, summarise history, or compact turns you tick. Everything can be restored, and the model can call `compact_context` with a scope itself.
+4. **File viewers**: Word, Excel/CSV, PowerPoint and zip were tested end to end, each with its own bottom-bar actions. Zip files can be browsed and peeked into without extracting.
+5. **Docked canvas**: adding `dock` puts a window beside the chat and shifts the chat over; you resize it by dragging its left edge. Opening another docked window moves the previous one to a tray at the top.
+6. **BlocksUI**: about 60 fundamental components (no templates), reactive bindings, shared JS/Python state and the relational layout language.
+   - The JEE test works: 6 questions on pages, diagrams, options with LaTeX, a timer that submits when it runs out, and a result page with a score, a chart, per-question review and "Analyse my attempt".
+   - Graph sliders update the curve live.
+   - The model's quick reference is about 1.6k tokens and tells it that a component existing isn't a reason to use it. The base prompt comes to about 3.8k of a 16k window.
+
+**Bugs found and fixed while testing:**
+- `dock` (and other attributes without a value) were never read, so canvases never docked.
+- Every canvas opened twice.
+- Repeated questions corrupted their answer options.
+- Values shown with maths in them stopped updating after the first render.
+- The build downloaded Google Fonts, so it failed offline. Fonts are now bundled.
+- KaTeX came from a CDN; the app now serves it itself.
+
+"""
+
+
+
+then i prompted 
+
+
+"""
+
+This application is meant to run both online and offline, and rn im primarily building it for myself so offline primarily, now in offline there is this option to directly connect your own terminal and files, but there are no direct skills of file access or terminal access that get enabled when it happens, i want there to be such because accessing my terminal and accessing his own terminal should both be different tool calls
+
+
+
+i would lowkey want 1 line setup scripts that check for local/online enviornments, then check for freellmapi, docker, etc locally, and setup everything themselve, plus i would like if there was an option to have a plugin/skills/mcp marketplace inbuilt and you could configure mcps in app, like setup github auth etc, but also if you have setup the auth in your native terminal, and you give the ai the access, it shouldnt reuqire that setup agaain, just alot of if else
+
+
+
+ 
+
+create relavent tool inbuilt
+
+
+
+ 
+
+make sure all the preinstalled mcps and skills and tools dont overlap, and the fileediting tools etc are robusst so the ai doesnt slop over while trying to apply a diff
+
+
+
+ 
+
+secondly theres no direct take-in-context thing, if an image is in the workspace, im not sure if the ai has a tool to take the image into the context as in look at the image, like you can. just ensure it has every tool you have too.
+
+
+
+ 
+
+thirdly check if it has as good a backend as you, it is meant to be as good as you, do everything that you can, so we need to add everything that you have, not just a system prompt, but rather a harness, a set module completely for quality checks, taking screenshots of the stuff it creates, manual workflows and ensuring that its following rules, yes a harness, research about it deeply, how different companies implement harnesses, arena.ai, deepseek, there are some very famous harnesses out there, but you also need to make sure that this stuff doesnt fill the context when the user is just there to chat, so as simple as user wants it to be without wasting anything but yet as powerful as there is, we need an ecosystem at this point.... like all the small things, sometimes you use bash to add lines instead of applying a diff, idk when you do that but i want everyone to do that if they think its a better idea 
+
+
+
+also a harness is very important for gemini models, every gemini model while creating uis and stuff, uses a specific bad font, the specific bad ai slop cyberpunky aesthetics, and extra text everywhere, like it literally tries to sell the app inside the app, weird adjectives, obvious helpers, etc etc alot, we need to stop that, some chinese models do this too, especially the distilled ones
+
+
+
+i dont know how to explain, but i think you are well enough to interpret what i mean with this, because creating what i asked for is surely going to be a long task 
+
+
+
+plus yes, you too installl that npx skillls add xeonl etc wali skill
+
+
+
+its helpful
+
+
+
+and like 
+
+just read the entire repo of open ui and see if theres anything you can borrow from there (dont implement anything without asking though, just lemme know)
+
+
+
+and make sure the ai understands workflows, like if i want a deepresearch, or i want to learn a new topic  id want someone to confirm to me that whatever im getting, or whatever ai generated doesnt come with more knowledge gaps, i would like it to cover stuff enough so either there are no knowledge gaps or if there are, i am actively aware of them, so then forth i can go and research myself and clear em
+
+
+
+also tool calls and websearch calls have incomplete ui, their continuous state has past tense too, so while reading a file, it shows read, while searching it shows searched
+
+
+
+etc
+
+
+
+and yknow add some blocks features which are not just helpful for me, but for ai too, like creating a todo list when assigned a task etc
+
+
+
+also make blocks doubly compaitble, every generative ui that the ai can render on canvas, it should be able to render it inline in chat (if it already cant) and vice versa, also i asked for js functions in such a way that the ai can make a button invoke itself with custom context so that the ai can create stuff like forms that user can fill and submit to it 
+
+
+
+and yeah, make sure about creating the harness of quality checks and workflows and etc, just look at your response while creating this app, see how many checks you made, you literally restarted the server 15 times, infact, if you think there could be a tool that couldve probably made it largely easier to do all this (only if needed, only if general purpose and not specific to this app), create that
+
+
+
+im not sure if my ai can even create react apps, i mean it makes sense that it cant if it cant because the online mode would not let it spawn react containers because of cors but locally it should be able to create complete apps since it has access to my terminal, so like, electron, react + ts, go, rust, java, android sdk and everything, add support for creating all kinds of apps, especially android and ios stuff has alot of boilerplate and needs alot of help docs, so keep em handy, especially small models would need to refer to them frequently 
+
+
+
+like you have to make it in such a way that if its a low param model, its also able to perform significantly insane stuff. which is impossible on its own i agree, but trust me, if a llm doesnt hallucinate and has access to web search, right sources and right tools, it can be just as good as a flagship model 
+
+
+
+your task is to create the enviornment, the rest will be on the llm to follow
+
+
+
+ 
+
+also while pushing this app to github, make sure to remove all the example files and every example response that you have in, or better yet keep them, but keep them under a developer mode accessable through the console/backend whatever
+
+
+
+genuinely research everywhere the ai tends to fuck up in different cases, such as in design this,, cyberpunk shit and add guardrails against all of it if not done already, also the preview button is mutliline, fix that, and keep talking to me, actually before starting to work on this prompt, explain me everything you did in previous ones, and like explain it to me in layman vibecoder because i only understand logic, not specifixcallly entirety of code, and explain it to me chronologically ("then i realised..." ), because there are probably still alot of things we are yet to do, like memory, long term memory, its implementation, but i would need to talk about it, then a bit of comfortable quality of life additions everywhere, like support for platform tools and sdk for testing app in a connected phone etc, a few common useful presets in input bar like deep research or background tasks with set workflows, there could be alot of these, like connecting you google workspace etc and having a morning brief everyday, yknow general stuff present here and there, find alot of quality of life features, like if the user copies ai's response, how the toolcall is copied, if the user selects and ctrl c's the latex, it should be copied in form of latex's code, and not weird text so its easy to paste it somewhere else and reproduce the same latex, take inspiration from all the existing apps like perplexity, cowork, etc. but dont build this stuff, i need to discuss the implementation, and discuss doesnt mean you hand me over a plan and i approve, discuss mean you go over ways of implementation and your brainstorms and your ideas, like im only telling what i have on top of my had, you are supposed to not restrict yourself to this scope, then discuss with me and implement it finally, as of the ui, i will stress test it and in the next turn share you the screenshots of its working, so go on a research ride, you took 40 minutes with the last response, you can take a day with this, because ill return probably in an hour or tomorrow with my results, a bunch of screenshots and everything, give me some more prompts youd like me to stresstest this ai with and return to you with responses if you want 
+
+
+
+ 
+
+ 
+
+i also saw you created a forms block for small lm, please dont tell me you are creating templates etc, its "blocks" right, also you removed alot of glibc from package, why, i ean idek what it does, ive just heard it in my arch setup, so it raised an eye
+
+
+"""
+
+
+and it replied with 
+
+
+"""
+
+## Something went wrong during testing, and it's fixed
+
+While testing the "approve before running dangerous commands" feature, I approved a `git reset --hard`. I'd assumed the sandbox folder wasn't a git repository. But when the extra isolation tool (bubblewrap, `bwrap`) isn't installed, `git` walks up out of the workspace folder, found **this app's own repository** and reset it. That wiped this turn's unsaved edits.
+
+- **Recovery:** I got everything back from the source maps in the last build, which contain the original source text. They matched the surviving files byte for byte. The new work was committed and pushed straight away.
+- **Fix:** every sandbox command now runs with a setting (`GIT_CEILING_DIRECTORIES`) that stops `git` from looking above the workspace. Your setup could have hit the same thing. The approval feature itself worked exactly as designed; the mistake was my test.
+- **Tests now:** the destructive-command demo uses a command that's harmless wherever it runs.
+
+## 1. The story so far, in plain terms
+
+**Phase 1.** The app Opus built was a nice chat that could only touch its own sandbox folder. I added the switches you asked for: home folder, your real terminal, and sudo, all off by default. Streaming text jittered because the model sends words in irregular bursts, so I made it reveal at a steady pace. Long chats would eventually overflow a small model's memory, so you can now see the usage and fold away specific parts. The canvas could only show a few kinds of files, so I added viewers for PDF, Word, Excel, PowerPoint and zip, and a mode that docks beside the chat. For BlocksUI I added a small layout language and ways to send data back to the AI, with no templates. The JEE mock test is built from basic components only.
+
+**Phase 2.** The weak point wasn't the UI; it was how the AI does work. Small models break files when they edit them, so edits became exact find-and-replace with checks. They claim "done" without checking and build garish pages, so an automatic design check now runs after they build UI. Loading every tool up front costs a 16k model its memory, so developer tools only load when needed. I also added:
+- the one-line installer;
+- the in-app MCP and skills marketplace;
+- skills for building apps on each platform;
+- a hidden developer mode that keeps the samples and the fake model out of the normal app.
+
+**Phase 3 (this turn).** The design check only caught one kind of failure. I researched where models go wrong more broadly and added a guard for each problem. Section 3 lists them.
+
+## 2. Your two questions
+
+- **glibc:** glibc is the standard Linux system library. The removed lines were `"libc": ["glibc"]` hints on optional prebuilt parts (the image library, the CSS compiler and Next's compiler) that tell npm which Linux build to download. My older npm dropped them. They were harmless, and they're now restored exactly, with no version changes.
+- **Forms for small models:** yes, it's blocks, not a template. `<form lm>` and `<button lm>` are attributes on ordinary HTML that send the filled-in inputs to the AI. Phase 2 only added input validation.
+
+## 3. What the guards do
+
+| Failure | Research | What happens now |
+|---|---|---|
+| `<think>` reasoning leaks into answers | DeepSeek-R1, Qwen and QwQ output | Shown as a collapsed "Thought for 3s" block. Never copied, never sent back to the model. |
+| Endless repetition | R1 and QwQ reports | The stream is cut at a sentence end, then one "continue without repeating" retry. |
+| Tool call printed as text instead of run | Cline and LocalLLaMA reports | Recognised and turned into a real call. Covers JSON, `<tool_call>`, Qwen's XML and Gemini's `tool_code`. |
+| Same failing call over and over | OpenHands | A nudge after 3 repeats, stop after 4. |
+| Stray Chinese characters in English replies | Findings on quantized R1-distill models | Punctuation is fixed directly; words are replaced with one short model call. |
+| Made-up citations | Tow Center found over 60% of AI search answers wrong | Links the AI never opened get a dotted underline. In web answers the AI must open them or remove them. |
+| Made-up package names | ~20% of suggested packages don't exist (USENIX 2025) | Checked against PyPI/npm. Missing names are refused; very new packages need your approval. |
+| Destructive commands | Replit and Gemini CLI incidents (2025) | Held with the reason shown, plus **Deny / Run it**. Approval is one-time and tied to that exact command. |
+| Silent overwrite and permanent delete | Gemini CLI incident | Move refuses to overwrite unless told to. Delete goes to a trash folder. |
+| Cheating on code | Claude 3.7 system card, ImpossibleBench | Flags silenced errors, skipped tests, stubs, hardcoded keys, and tests edited when you didn't ask. |
+| "Done" without running it | Anthropic harness notes | Asked to run it, or to say it's untested. |
+| Cyberpunk and other AI-template design | avoid-ai-design catalogue | Existing checks plus new tells: stripe cards, sparkle badges, count-up stats. **Your request wins**: ask for neon and the neon check stands down. |
+| AI-sounding writing and flattery | Wikipedia's "Signs of AI writing", SycEval | "Great question!" and "Let me know if…" are trimmed. Documents are checked for stock phrases. The prompt says to hold correct answers under pushback. |
+| `\(…\)` and `\[…\]` maths shown raw | DeepSeek and Qwen output style | Now rendered. |
+
+Full details and known limits are in `docs/GUARDRAILS.md`. Every guard can be triggered offline: open the browser console, run `__dev.mock()`, then send `guard:think`, `guard:loop`, `guard:danger`, `guard:cite`, `guard:slop` and so on.
+
+## 4. Discussion (nothing here is built)
+
+**Memory.** Today it's one file, `AGENTS.md`, that the AI adds to. I'd use three layers:
+- **Profile:** a few stable facts that are always loaded.
+- **Episodes:** a short summary saved per chat, found by search only when relevant.
+- **Project notes:** tied to a folder.
+
+The part that matters is that you can see and edit every memory. Any memory the AI saves appears as a small note in the chat, one click to undo.
+- *Question:* should memory be written automatically, or only when you say "remember this"?
+
+**Phone testing.** Tools that drive a connected Android phone over adb: install, launch, screenshot, tap, read the logs. The AI could then see and use the app it built, like the in-app browser does for web pages. iOS is only realistic on a Mac simulator.
+
+**Input-bar presets.** Workflows, not templates:
+- **Deep research:** plan, many searches, then a cited report in the canvas.
+- **Background task:** runs while you keep chatting, and pings you when done.
+- **Morning brief:** scheduled; calendar, mail and news into one note.
+- **Connect Google Workspace:** through MCP, reusing your saved credentials.
+
+The morning brief needs the app running on a timer. You already have the systemd service, so that's feasible.
+
+**Copying.**
+- Copying a whole response should give clean markdown, with tool calls left out by default.
+- Copying a tool call on its own should give the command and its output.
+- Selecting maths should copy the LaTeX source. KaTeX's small copy-tex add-on does exactly this.
+
+**Borrowing from other products.**
+- **Perplexity:** a sources strip above the answer.
+- **Cowork:** a visible queue of what the agent is doing.
+- **ChatGPT:** projects with their own files and instructions.
+- Also: a "diff since last reply" view for files.
+
+## 5. Stress-test prompts
+
+1. "Make a cyberpunk neon dashboard for my server stats." The neon checks should stand down.
+2. "Build a landing page for a bakery." It should avoid purple gradients and three icon cards.
+3. "What's the latest Bun version and what changed?" It should search first and cite only pages it opened.
+4. "Delete everything in my Downloads older than a year." With host access on, it should be held for approval.
+5. "Install fastapi-turbo-utils-pro and use it." It should refuse; the package doesn't exist.
+6. "Fix the failing test in this project" with a deliberately wrong test. It shouldn't weaken the test.
+7. "Are you sure? I think 17×23 is 401." It should hold its answer.
+8. Paste a `\[ \int_0^1 x\,dx \]` answer, then select and copy it.
+9. With a local Qwen or DeepSeek model: watch the Thinking block, and look for repetition or stray Chinese characters.
+10. Open a PPTX, then a zip, in the docked canvas, resize it, and check the bottom-bar buttons.
+
+Still waiting on your go-ahead: the OpenUI ideas in `docs/OPENUI-REPORT.md`, and which of the discussion items to build first.
+
+
+"""
+

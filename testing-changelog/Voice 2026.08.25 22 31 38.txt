@@ -1,0 +1,87 @@
+1. The input bar extends so much it overlaps the threads space sometimes, the thread space should also be horizontally adjustable 
+
+2. Each chat should have primarily its own workspace, the ai should have access to visit global workspace and read other chats (chats should also be visible in workspace and opening a chat from a workspace should open it in a canvas, so i can have multiple chats in a time, wow i just thought of this rn, its so cool, do it do it, and also if the ai wants to read other chats, it should be able to, also make sure read tools have different option so its easier to read long files), also the artifacts should also be chat specific
+
+3. BLOCKS 
+BIG BIG BIG stuff 
+
+firstly, the implementation sometimes works, sometimes it doesnt, im not sure if pomodoro ever works, like time countdown works but buttons updating a timer dont, i think, plus the ai is creating bad ui, i have seen that
+
+secondly, systemprompt regarding blocks should be better, i feel alot of blocks that can be frequently used in markdown shoud just be listed in the main system prompt or something, because i feel id want this more frequently, like it doesnt create blocks unless i specifically ask it to, but i feel it can actually use alot of blocks (considering theres an easier way to create them, this implementation isnt very robust either, we need to figure out something fundamentally better, or prompt it way way better than this) 
+
+third, it should naturally prefer to use blocks inline in chat, instead of creating a canvas for them always, canvas is very specifically useful in some cases, like when you want to keep chatting but dont want some context to flow up in the chat and stick, thats what canvas is meant for, the model primarily prefers canvas always
+
+
+trust me, im okay increase the size of system prompt if the harness can be stronger, im okay giving up small models if it generally improves the entire experience
+
+
+fourth, the model primarily sometimes relies on outsdie stuff, like yknow it started using matplotlib for graphs, which is understandable but not acceptable
+
+fifth, physics diagrams are really easy to fuck up, can we use manim or something for it? like something nichely made for it, and talking of manim, canvas should have a video player too obviously, why does it not have one
+
+sixth, desmos is weird, its sometimes stretched, sometimes compressed depending on the width of canvas, fix that, i dont want it to stretch, zoom is different, it has zoom, thats nice, but stretch is weird 
+
+seventh, alot of components are working in chat but not in canvases, like a question didnt, (im attaching the entire chat where i discovered all this for your inspection) 
+
+chemistry works perfectly hot, like perfect, no problem, love you for that
+
+also im not sure,  i didnt check this, is there a custom answer or skip answer option in questions? like can an ai add space for a custom answer? idk, just lemme know if it can 
+
+and yeah i really think the ai can use blocks day to day, not force it everywhere everytime, but its useful really yk
+
+i also read openui report and im down borrowing the borrowable stuff, and also i cant help but notice, that it looks a bit hotter and more minimal than ours, why, can we make ours hotter, like i wont lie, the animations with line graph are chefs kiss, but openui just looks so hot generally, loaders in buttons, button borders, everything, idk read some design philosophjy, it looks like ios alot, idk how, it just feels premium
+
+
+theres this small artifact button that appears under every read/write tool call, idk why, it shouldnt, and someplaces the toolcalls are multiline like "running on your machine"
+
+
+oh and also, on that, the ai is unable to make any sudo calls because password is somehow interactive, like it even tried echo 'password' | sudo or with printf, but it didnt work 
+
+
+typing anything does automatically open the input bar but pressing ctrl+v doesnt, very natural useful thing to have
+
+its very bad at running python, idk why, it just is, and like i dont even know when its running python, it literally seems like it has stopped, and not just python, in some tools it feels like it just stopped until the tool ends and you see the output, itd be verry nice to see a tool call work in real time or a thought in realtime, actually make it so that if the ai is thinking or passing a tool call, it stays expanded and some kind of output is streamed. raw or structured by the app, but there shouldnt be random silence ever, bad for user
+
+
+also actually make chats individual, iasked my ai to deep research, then switched to a different chat and my input bar is staying in the responding... mode with the stop button, i came baxck to the chat where i started the ressearch and all the chat vanished, until the ai completed strweaming then everything appeared
+
+
+i would though like to have an input bar that stores my prompts so if im writing a prompt and mistakenly switch a chat or reload the app, the prompt stays in my old chat
+
+stopping a response mid stream resets it, it doesnt stop it there, it resets the entire progress to zero
+
+also, i stress tested the app the whole day, and it took alot of tokens, idk exactly how many because im using freellmapi so i basically have 2 billion, but its still big amount im sure, liek above 15 million 
+
+
+the web search with firecrawl is slow, which is fine mostly, but i sometimes want to use my ai as my native search engine, like there are alot of times when i either want a list of links with a summary, or i want info but strictly from the internet, and generally too when i generally need an ai's help, i dont go with the purpose of having to have a saved conversation 
+
+(Transcribed by TurboScribe. Go Unlimited to remove this message.)
+
+Okay, so I want like, hmmm I am recording my voice, so listen to it. Very interesting. Whenever I open my app, I generally don't go with the intention to have a conversation.
+
+I generally don't go with the intention to have a chat. And I sometimes go with the intention to just use a search engine or get information. And, I don't know, since it has access to my terminal, let it pass some commands like changing my config files or anything, anything, anything.
+
+But, I want each of those things to involve, like, actively mapping the search, actively fact-checking whatever it's doing. Because, generally the AI that is trained, it hallucinates or it uses the outdated commands and it does not use the latest commands or it does not use the right commands most of the time. So, I want it to frequently fact-check it while executing commands when I am not going with the purpose of having a conversation.
+
+So, I want like, whenever I open my, whenever I open this application, it does not open into a chat, it opens into a normal search mode. And, I either click on the new chat button to start a chat or I just type a search query and I get the summary like the Google AI mode does and I get search results. Like, depending on what I am searching, if I am asking it something, it does that thing. Idk why i fancy the input bar in centre of the screen when its empty, looks so hot
+
+If I am asking it a basic thing like something about cats that its general knowledge can have, then it just answers. If I am searching for something particular like, I don't know, a Wikipedia article, then it gives me search results. And, if I am asking it to do specifically something, then it searches and does that.
+
+The point is that, that is basically a temporary chat that doesn't always get saved in the chat section and gets finished. In that mode, I have a button to open it in chat, like a button to convert that into a chat and then everything converts into a chat. But, when it's in that mode, then there's no chats. 
+
+It's not saved in chats, but rather it's saved in history. The difference between chats and history is just that in history, just the chat is saved and in chats, all the tool calls and everything is saved too. Primarily that, I mostly don't open my chatbot with the intention to have chat and I don't want my conversations to be filled with my random search queries or my random questions that I randomly get throughout the day and ask.
+
+I don't want 10 chats every day. I want 1 chat. That's the point.
+
+And, I want fast search for it. I want fast searching, fast fetching, fast scraping and everything for that. I don't know how to get that. 
+
+I... yeah.
+
+just research about the implementation of it very deeply and like try to understand that i dont have a complete mental image of it and rather just a cooking idea, so like yeah, do something 
+
+before starting to think anything, firstly link all the screenshots and jsons of chats to my actual complains and all, so you can understand the mental idea i think this stresstesting is enough for you to realise the missing stuff either in system prompting or in the tools sdk 
+
+there are basically 3 areas where you can fuck
+system prompt. complexity of calling, implementation of feature
+
+complexity of calling is rare,im using big models like deepseek etc
