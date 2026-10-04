@@ -14,6 +14,9 @@ export type Settings = {
   firecrawlUrl: string;
   firecrawlKey: string;
   firecrawlCloudUrl: string;
+  /** When false (default), uses fast HTTP search and fetch (zero memory overhead, no headless Chrome). */
+  useFirecrawl?: boolean;
+  searxngUrl?: string;
   /** Files the agent may touch. sandbox = workspace only; home = workspace + $HOME; full = whole disk. */
   access: Access;
   /** Where shell/python run. sandbox = isolated (bubblewrap if installed), cwd workspace; host = your real terminal. */
@@ -54,6 +57,8 @@ export function defaults(): Settings {
     firecrawlUrl: process.env.FIRECRAWL_URL || "http://localhost:3002",
     firecrawlKey: process.env.FIRECRAWL_API_KEY || "",
     firecrawlCloudUrl: process.env.FIRECRAWL_CLOUD_URL || "https://api.firecrawl.dev",
+    useFirecrawl: process.env.USE_FIRECRAWL === "1",
+    searxngUrl: process.env.SEARXNG_URL || "",
     access: (process.env.ACCESS_MODE as Access) || "sandbox",
     terminal: (process.env.TERMINAL_MODE as "host") || "sandbox",
     sudo: process.env.ALLOW_SUDO === "1",
@@ -79,6 +84,8 @@ export function clampAccess(s: Settings): Settings {
   if (!["off", "warn", "fix"].includes(s.quality)) s.quality = "fix";
   if (!["auto", "all", "lean"].includes(s.toolLoading)) s.toolLoading = "auto";
   s.vision = s.vision !== false;
+  s.useFirecrawl = s.useFirecrawl === true;
+  s.searxngUrl = typeof s.searxngUrl === "string" ? s.searxngUrl : "";
   s.dev = s.dev === true || process.env.DEV_MODE === "1";
   return s;
 }

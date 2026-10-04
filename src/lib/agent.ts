@@ -262,42 +262,29 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   if (hist.trimmed) emit({ t: "notice", text: `Oldest ${hist.trimmed} messages are outside the context window. /compact keeps them as a summary.` });
   const loopMsgs: OAMsg[] = [];
 
-  // Slash workflows: "/research topic" preloads that skill for this request (saves a round trip for small models).
-  const slash = parent?.role === "user" ? parent.content.match(/^\/([\w-]+)\b/) : null;
+  // Slash workflows & skills
+  const slash = parent?.role === "user" ? parent.content.match(/^\/([\w-]+)\b(?:\s+([\s\S]*))?/) : null;
   if (slash) {
-    const sk = await findSkill(slash[1]);
-    if (sk && skillAllowed(sk, st)) {
+    const cmd = slash[1].toLowerCase();
+    const arg = (slash[2] || "").trim();
+    if (cmd === "research" || cmd === "deep-research") {
+      // Trigger deep research workflow instruction
       const last = hist.msgs[hist.msgs.length - 1];
-      const body = sk.text.replace(/^---[\s\S]*?---\n/, "");
-      const add = `\n\n<skill name="${sk.name}">\n${body}\n</skill>`;
+      const add = `\n\n[Workflow: Deep Research]\nRun the workflow_deep_research tool on "${arg || "the user's research topic"}". Provide a comprehensive cited report and overview block.`;
       if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
-      if (/\bdev\b/.test(skillMeta(sk.text).tools) && !(state.packs || []).includes("dev")) await ctx.setState({ ...state, packs: [...(state.packs || []), "dev"] });
+    } else {
+      const sk = await findSkill(cmd);
+      if (sk && skillAllowed(sk, st)) {
+        const last = hist.msgs[hist.msgs.length - 1];
+        const body = sk.text.replace(/^---[\s\S]*?---\n/, "");
+        const add = `\n\n<skill name="${sk.name}">\n${body}\n</skill>`;
+        if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
+        if (/\bdev\b/.test(skillMeta(sk.text).tools) && !(state.packs || []).includes("dev")) await ctx.setState({ ...state, packs: [...(state.packs || []), "dev"] });
+      }
     }
   }
 
-  // Search mode: the FIRST query is searched right away (no model round trip), results shown and handed
-  // to the model. Follow-ups answer from what is already here unless they are clearly a new lookup
-  // (an explicit search verb or a full new question) — re-searching on every prompt was the bug.
-  // The model keeps web_search and can look things up itself when a follow-up truly needs it.
   let presearched = false;
-  const prevUsers = hist.path.filter((m) => m.role === "user" && m.id !== parent?.id);
-  const isNewQuery = (t: string) => /\b(search|find|look ?up|google|check|latest|news|price|today|compare)\b/i.test(t) || t.trim().split(/\s+/).length >= 6;
-  if (state.mode === "search" && parent?.role === "user" && !parent.threadOf && needsSearch(parent.content) && (prevUsers.length === 0 || isNewQuery(parent.content))) {
-    const prevQ = prevUsers.slice(-1)[0]?.content || "";
-    const q = (parent.content.trim().split(/\s+/).length < 4 && prevQ ? `${prevQ.slice(0, 120)} ${parent.content}` : parent.content).replace(/\s+/g, " ").trim().slice(0, 300);
-    const id = `presearch_${Date.now()}`;
-    const part: Part = { type: "tool", id, name: "web_search", args: { query: q } };
-    parts.push(part);
-    emit({ t: "tool", id, name: "web_search", args: part.args });
-    const out = await execTool("web_search", { query: q, limit: 6 }, ctx);
-    Object.assign(part, { result: out.result, ok: out.ok, meta: { ...(out.meta || {}), presearch: true } });
-    emit({ t: "toolResult", id, result: out.result.slice(0, 20000), ok: out.ok, meta: part.meta });
-    const last = hist.msgs[hist.msgs.length - 1];
-    const add = out.ok ? `\n\n<search_results query="${q.replace(/"/g, "'")}">\n${out.result}\n</search_results>` : `\n\n<search_results query="${q.replace(/"/g, "'")}">search failed: ${out.result.slice(0, 200)}</search_results>`;
-    if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
-    presearched = out.ok;
-  }
-
   const touched = new Set<string>();
   const snapshots = new Map<string, string>(); // file content before this turn's first write (integrity diff)
   const brief = [...hist.path.filter((m) => m.role === "user").slice(-3).map((m) => m.content)].join("\n");

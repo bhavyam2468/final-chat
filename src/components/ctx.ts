@@ -39,6 +39,7 @@ export type AppApi = {
   /** current chat (null = new, unsaved) and chat titles, for per-chat folders */
   convId: string | null;
   convTitles: Record<string, string>;
+  convList: { id: string; title: string; mode?: string }[];
   openChat: (id: string) => void;
 };
 export const AppCtx = createContext<AppApi | null>(null);

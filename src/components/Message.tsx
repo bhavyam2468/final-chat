@@ -49,6 +49,10 @@ const TOOL_META: Record<string, Meta> = {
   proc_stop: M(Square, "Stopping", "Stopped", "name"), browser: M(Globe, "Opening in browser", "Viewed in browser", "target"), check: M(ShieldCheck, "Checking", "Checked", "path"),
   quality_check: M(ShieldCheck, "Checking design", "Design check"),
   remember: M(Bookmark, "Remembering", "Remembered", "text"), forget: M(Bookmark, "Forgetting", "Forgot", "id"),
+  show_web_results: M(AppWindow, "Displaying web results", "Displayed web results", "items"),
+  workflow_deep_research: M(Search, "Conducting deep research", "Deep research completed", "topic"),
+  skill_create: M(BookOpen, "Creating skill", "Created skill", "name"),
+  mcp_add: M(Plug, "Configuring MCP server", "Configured MCP server", "name"),
 };
 
 type Src = { url: string; title: string; snippet?: string };
@@ -141,6 +145,101 @@ function Elapsed() {
   return s >= 3 ? <span className="elapsed">{fmtMs(s * 1000)}</span> : null;
 }
 
+function ToolStreamCard({ p, liveOut }: { p: Extract<Part, { type: "tool" }>; liveOut?: string }) {
+  const m = TOOL_META[p.name] || { icon: Plug, live: p.name.replace(/_/g, " ") };
+  const Icon = m.icon;
+  let detail = "";
+  if (p.name === "fs_read") {
+    detail = p.args.around ? `finding "${p.args.around}"` : p.args.start ? `lines ${p.args.start}–${p.args.end || +p.args.start + 250}` : "reading lines";
+  } else if (p.name === "fs_search") {
+    detail = `query: "${p.args.pattern || ""}"`;
+  } else if (p.name === "fs_write" || p.name === "fs_edit" || p.name === "fs_insert") {
+    detail = p.name === "fs_write" ? "writing file" : "applying exact edits";
+  } else if (p.name === "web_search") {
+    detail = `"${p.args.query || ""}"`;
+  } else if (p.name === "web_fetch") {
+    let host = "";
+    try { host = new URL(String(p.args.url || "")).hostname; } catch {}
+    detail = host || String(p.args.url || "");
+  } else if (p.name === "workflow_deep_research") {
+    detail = `"${p.args.topic || ""}"`;
+  } else if (p.name === "shell" || p.name === "host_shell") {
+    detail = String(p.args.command || "").slice(0, 80);
+  }
+
+  return (
+    <div className="tool-stream-card">
+      <div className="tsc-head">
+        <span className="live-dot" />
+        <Icon />
+        <span className="tsc-live">{m.live}</span>
+        {detail && <span className="tsc-detail">{detail}</span>}
+        <Elapsed />
+      </div>
+      {liveOut && <LiveOut text={liveOut} />}
+      <div className="tsc-shimmer" />
+    </div>
+  );
+}
+
+function FsReadView({ result, path }: { result: string; path?: string }) {
+  const lines = result.split("\n");
+  const head = lines[0] && !lines[0].includes("\t") ? lines[0] : "";
+  const contentLines = head ? lines.slice(1) : lines;
+  return (
+    <div className="fs-read-view">
+      {head && <div className="fs-read-head"><FileText /><span>{head}</span></div>}
+      <div className="fs-read-code">
+        {contentLines.map((l, i) => {
+          const tab = l.indexOf("\t");
+          if (tab > 0 && tab < 8) {
+            const num = l.slice(0, tab);
+            const code = l.slice(tab + 1);
+            return <div key={i} className="code-line"><span className="ln">{num}</span><span className="lc">{code}</span></div>;
+          }
+          return <div key={i} className="code-line"><span className="lc">{l}</span></div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FsSearchView({ result }: { result: string }) {
+  const lines = result.split("\n").filter(Boolean);
+  return (
+    <div className="fs-search-view">
+      {lines.map((l, i) => {
+        const parts = l.split(":");
+        if (parts.length >= 3 && !isNaN(+parts[1])) {
+          return (
+            <div key={i} className="fs-search-hit">
+              <span className="hit-file">{parts[0]}</span>
+              <span className="hit-line">:{parts[1]}</span>
+              <span className="hit-text">{parts.slice(2).join(":")}</span>
+            </div>
+          );
+        }
+        return <div key={i} className="fs-search-hit simple">{l}</div>;
+      })}
+    </div>
+  );
+}
+
+function WebFetchView({ url, result }: { url: string; result: string }) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch {}
+  return (
+    <div className="web-fetch-view">
+      <div className="wf-head">
+        <Globe />
+        <a href={url} target="_blank" rel="noreferrer" className="wf-url">{host || url}</a>
+        <span className="wf-size">{result.length} characters</span>
+      </div>
+      <div className="wf-body">{result.slice(0, 2000) + (result.length > 2000 ? "…" : "")}</div>
+    </div>
+  );
+}
+
 const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean; mid?: string }) {
   const [openS, setOpen] = useState<boolean | null>(null); // null = automatic: open while running, folded when done
   const app = useApp();
@@ -159,37 +258,72 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   // file tools: the path itself opens the file (no extra button under the row)
   const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? String(p.args.path) : null;
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
-  const runs = ["run_python", "shell", "host_shell", "pip_install"].includes(p.name);
   const open = openS ?? pending;
+
   let body: React.ReactNode = null;
   if (open) {
-    const code = p.name === "run_python" ? String(p.args.code || "") : "";
-    if (pending) body = <>{code && <pre>{code}</pre>}<LiveOut text={liveOut || "working…"} /></>;
-    else if (meta?.sources && p.name === "web_search") body = null;
-    else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
-    else if (p.name === "run_python") body = <><pre>{code}</pre><pre>{p.result}</pre></>;
-    else body = <>{Object.keys(p.args).length > 0 && !["shell", "host_shell", "todo", "quality_check"].includes(p.name) && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
+    if (pending) {
+      body = <ToolStreamCard p={p} liveOut={liveOut} />;
+    } else if (p.name === "web_search" || p.name === "show_web_results") {
+      body = (
+        <div className="tool-search-wrap">
+          {meta?.sources && meta.sources.length > 0 && <SourceList items={meta.sources} />}
+          {p.result && <pre className="tool-body-text">{p.result}</pre>}
+        </div>
+      );
+    } else if (p.name === "fs_read") {
+      body = <FsReadView result={p.result || ""} path={p.args.path as string} />;
+    } else if (p.name === "fs_search") {
+      body = <FsSearchView result={p.result || ""} />;
+    } else if (p.name === "web_fetch") {
+      body = <WebFetchView url={String(p.args.url || "")} result={p.result || ""} />;
+    } else if (meta && "after" in meta) {
+      body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
+    } else if (p.name === "run_python") {
+      body = <><pre className="code-in">{String(p.args.code || "")}</pre><pre className="code-out">{p.result}</pre></>;
+    } else if (p.name === "shell" || p.name === "host_shell") {
+      body = <><pre className="code-in">$ {String(p.args.command || "")}</pre><pre className="code-out">{p.result}</pre></>;
+    } else {
+      const argEntries = Object.entries(p.args || {}).filter(([k]) => !["shell", "host_shell", "todo", "quality_check"].includes(k));
+      body = (
+        <div className="tool-clean-view">
+          {argEntries.length > 0 && (
+            <div className="arg-chips">
+              {argEntries.map(([k, v]) => (
+                <span key={k} className="arg-chip">
+                  <span className="arg-k">{k}:</span> <span className="arg-v">{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {p.result && <pre className="tool-body-text">{p.result}</pre>}
+        </div>
+      );
+    }
   }
+
   const copyTool = () => {
     const arg = p.args.command || p.args.code || p.args.path || p.args.query || "";
     navigator.clipboard.writeText(`$ ${p.name}${arg ? " " + arg : ""}\n${p.result || ""}`);
   };
+
   return (
     <div className={"tool" + (pending ? " live" : "")}>
       <div className="tool-line">
-      <button className="tool-row" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>
-        {target && (filePath && !pending
-          ? <span className="tgt link" role="link" title="Open" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
-          : <span className="tgt">{target}</span>)}
-        {pending ? <><Elapsed /><span className="spin" /></> : p.ok === false && !ap ? <X className="err" /> : null}
-      </button>
-      {!pending && <button className="ib sm tool-copy" aria-label="Copy tool call" title="Copy command and output" onClick={copyTool}><Copy /></button>}
+        <button className="tool-row" onClick={() => setOpen(!open)} aria-expanded={open}>
+          <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>
+          {target && (filePath && !pending
+            ? <span className="tgt link" role="link" title="Open" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
+            : <span className="tgt">{target}</span>)}
+          {pending ? <><Elapsed /><span className="spin" /></> : p.ok === false && !ap ? <X className="err" /> : null}
+        </button>
+        {!pending && <button className="ib sm tool-copy" aria-label="Copy tool call" title="Copy command and output" onClick={copyTool}><Copy /></button>}
       </div>
+      {pending && <ToolStreamCard p={p} liveOut={liveOut} />}
       {p.name === "todo" && lastTodo && meta?.todo && <TodoList items={meta.todo} />}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       {meta?.image && !pending && <img className="tool-shot" src={fileUrl(meta.image)} alt="" onClick={() => app.openFile(meta.image!)} />}
-      {open && body && <div className="tool-body">{body}</div>}
+      {!pending && open && body && <div className="tool-body">{body}</div>}
       {meta?.memory && <MemoryNote mem={meta.memory} />}
       {ap && <ApproveBar ap={ap} live={!!live} mid={mid} pid={p.id} />}
     </div>
@@ -276,29 +410,36 @@ function Changes({ parts }: { parts: Part[] }) {
 export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid, quiet }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string; quiet?: boolean }) {
   const h = useMdHandlers();
   const [animate] = useState(streaming); // messages loaded from history render instantly
-  const sources: Src[] = [];
-  const seenSrc = new Set<string>();
-  for (const p of parts) if (p.type === "tool" && (p.name === "web_search" || p.name === "web_fetch")) for (const s of ((p.meta as { sources?: Src[] } | undefined)?.sources || [])) if (s.url && !seenSrc.has(s.url)) { seenSrc.add(s.url); sources.push(s); }
-  if (!parts.length && streaming) return <div className="thinking" />;
-  if (quiet) {
-    const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
-    const reasons = parts.filter((p): p is Extract<Part, { type: "reasoning" }> => p.type === "reasoning");
-    const searching = streaming && !texts.some((p) => p.text.trim());
-    const keep = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && (p.name === "ask_user" || p.name === "remember"));
-    return <>
-      {sources.length > 0 && <SourceList items={sources} />}
-      {searching && <div className="thinking" />}
-      {reasons.map((p, i) => <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && parts[parts.length - 1] === p} />)}
-      {texts.map((p, i) => animate ? <LiveText key={i} text={p.text} streaming={streaming && i === texts.length - 1 && !keep.length} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />)}
-      {keep.map((p) => <ToolCall key={p.id} p={p} live={!!last && !streaming} mid={mid} />)}
-    </>;
+
+  if (!parts.length && streaming) {
+    return (
+      <div className="stream-thinking">
+        <span className="live-dot" />
+        <span className="shimmer">Thinking</span>
+        <Elapsed />
+      </div>
+    );
   }
+
   let lastTodo = -1;
   parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
-  return <>{sources.length > 0 && <SourceList items={sources} />}{parts.map((p, i) => p.type === "text"
-    ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />
-    : p.type === "reasoning" ? <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && i === parts.length - 1} />
-    : <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} mid={mid} />)}</>;
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.type === "text" ? (
+          animate ? (
+            <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} unverified={p.unverified} />
+          ) : (
+            <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />
+          )
+        ) : p.type === "reasoning" ? (
+          <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && i === parts.length - 1} />
+        ) : (
+          <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} mid={mid} />
+        )
+      )}
+    </>
+  );
 });
 
 /** <ui_event label="…"> from a BlocksUI form/button: shown as a compact card instead of raw XML. */

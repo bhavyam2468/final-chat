@@ -15,22 +15,11 @@ function StreamClock() {
   useEffect(() => { const t0 = Date.now(); const i = setInterval(() => setS(Math.floor((Date.now() - t0) / 1000)), 1000); return () => clearInterval(i); }, []);
   return s >= 3 ? <span className="elapsed">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null;
 }
-function DockStatus({ conv, offerBrief, streamId, msgs, onBrief, onPromote, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; msgs: Msg[]; onBrief: () => void; onPromote: () => void; onUnlink: () => void }) {
-  const live = streamId ? msgs.find((m) => m.id === streamId) : undefined;
-  const tool = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.result === undefined);
-  const reasoning = [...(live?.parts || [])].reverse().find((p) => p.type === "reasoning");
-  const todo = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.name === "todo" && p.meta && typeof p.meta === "object" && "todo" in (p.meta as object));
-  const items = (todo && todo.type === "tool" ? (todo.meta as { todo?: { text: string; status: string }[] }).todo : []) || [];
-  const doing = items.find((t) => t.status === "doing") || items.find((t) => t.status === "todo");
-  // a live activity chip whenever the model is working, so silence never reads as "stuck"
-  const act = streamId ? doing?.text || (tool && tool.type === "tool" ? tool.name.replaceAll("_", " ") : reasoning ? "Thinking" : "Working") : null;
-  const showSearch = conv?.mode === "search" && msgs.some((m) => m.role === "user");
-  if (!showSearch && !offerBrief && !conv?.state?.project && !act) return null;
+function DockStatus({ conv, offerBrief, onBrief, onUnlink }: { conv: Conv | null; offerBrief: boolean; onBrief: () => void; onUnlink: () => void }) {
+  if (!offerBrief && !conv?.state?.project) return null;
   return <div className="dock-extra">
     {conv?.state?.project && <button className="promote" onClick={onUnlink} title="Unlink project">Project {conv.state.project}</button>}
-    {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
-    {showSearch && <button className="promote" onClick={onPromote}>Open in chat</button>}
-    {act && <span className="queue-now"><i className="live-dot" />{act}<StreamClock /></span>}
+    {offerBrief && <button className="promote" onClick={onBrief}>Morning brief</button>}
   </div>;
 }
 const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
@@ -71,6 +60,9 @@ export default function App() {
   const setRunning = useCallback((fn: (r: Record<string, string>) => Record<string, string>) => setRunningS((r) => { const n = fn(r); runningRef.current = n; return n; }), []);
   const streamId = running[view] || null;
   const attached = useRef(new Set<string>()); // chats this page is currently reading a stream for
+  const [queuedPrompts, setQueuedPrompts] = useState<SendPayload[]>([]);
+  const queuedPromptsRef = useRef(queuedPrompts);
+  queuedPromptsRef.current = queuedPrompts;
   const [serverRunning, setServerRunning] = useState<string[]>([]);
   // side panel widths (drag the inner edge); persisted
   const [pw, setPw] = useState<{ l: number; r: number }>({ l: 272, r: 300 });
@@ -282,6 +274,11 @@ export default function App() {
     attached.current.delete(key);
     setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
     refreshTree(); refreshConvs(); setCtxRev((r) => r + 1);
+    if (queuedPromptsRef.current.length > 0) {
+      const [nextPrompt, ...rest] = queuedPromptsRef.current;
+      setQueuedPrompts(rest);
+      setTimeout(() => sendMainRef.current(nextPrompt), 120);
+    }
     // the server saved the final message (partial if stopped) before it reported done: take the saved copy
     if (!key.startsWith("new:")) fetch(`/api/conversations/${key}`).then((r) => r.json()).then((j) => { if (!j.messages || runningRef.current[key]) return; setMsgsFor(key, () => j.messages); if (viewRef.current === key) { const c = withMode(j.conversation); setConv(c); if (c.mode) { modeRef.current = c.mode; setSurface(c.mode); } } }).catch(() => {});
   }, [setMsgsFor, setRunning, setView, refreshConvs, refreshTree]);
@@ -324,7 +321,21 @@ export default function App() {
     fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: key }) });
   }, []);
   const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; send(p, last?.id ?? null, null); }, [mainPath, send]);
+  const sendMainRef = useRef(sendMain);
+  sendMainRef.current = sendMain;
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
+
+  const queueMain = useCallback((p: SendPayload) => {
+    setQueuedPrompts((q) => [...q, p]);
+  }, []);
+
+  const steerMain = useCallback((p: SendPayload) => {
+    stop();
+    setTimeout(() => {
+      const steerText = `[User Steering Directive]\nContinue the work you are doing, but the user wants to steer you into this direction or add this critical information:\n\n${p.content}`;
+      sendMainRef.current({ ...p, content: steerText });
+    }, 200);
+  }, [stop]);
 
   // ---- canvases
   // a window is sized around its content: a 16:9 image opens as a ~16:9 window hugging it, centred,
@@ -340,7 +351,8 @@ export default function App() {
     void contentRatio(spec).then((ratio) => {
       remember();
       setWins((ws) => {
-        const dock = !!o?.dock && innerWidth >= 760;
+        const hasActiveDocked = ws.some((w) => w.dock && !w.min && !w.dockPeek);
+        const dock = (o?.dock !== undefined ? o.dock : !hasActiveDocked) && innerWidth >= 760;
         const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
         const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
         const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
@@ -400,8 +412,9 @@ export default function App() {
     quote: (t: string) => setQuotes((q) => ({ ...q, [active.current]: t })),
     convId: conv?.id || null,
     convTitles,
+    convList: convs.map((c) => ({ id: c.id, title: c.title, mode: c.mode })),
     openChat: (id: string) => { loadConv(id); },
-  }), [openFile, openCanvas, refreshTree, tree, conv?.context, conv?.id, convTitles, loadConv, toggleContext, sendMain, setMsgs]);
+  }), [openFile, openCanvas, refreshTree, tree, conv?.context, conv?.id, convTitles, convs, loadConv, toggleContext, sendMain, setMsgs]);
 
   // ---- quote on selection
   useEffect(() => {
@@ -424,18 +437,28 @@ export default function App() {
   useEffect(() => {
     const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types || [])].includes("Files");
     const enter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setFileDrag((n) => n + 1); } };
-    const leave = (e: DragEvent) => { if (hasFiles(e)) setFileDrag((n) => Math.max(0, n - 1)); };
+    const leave = (e: DragEvent) => {
+      if (hasFiles(e)) {
+        if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+          setFileDrag(0);
+          return;
+        }
+        setFileDrag((n) => Math.max(0, n - 1));
+      }
+    };
     const over = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
     const drop = (e: DragEvent) => {
+      setFileDrag(0);
       if (!hasFiles(e)) return;
       if ((e.target as HTMLElement).closest(".composer")) return; // the input bar attaches to the message
-      e.preventDefault(); setFileDrag(0);
+      e.preventDefault();
       const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
       const dir = convRef.current ? chatDir(convRef.current.id) + "/uploads" : "uploads";
       void upload(files, dir).then(() => refreshTree());
     };
-    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop);
-    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); };
+    const dragEnd = () => setFileDrag(0);
+    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop); addEventListener("dragend", dragEnd);
+    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); removeEventListener("dragend", dragEnd); };
   }, [refreshTree]);
 
   // ---- auto-scroll while streaming
@@ -488,23 +511,23 @@ export default function App() {
   }, [chipNew]);
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
-    { name: "search", hint: "New search", run: goSearch },
-    { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
+    { name: "research", hint: "Deep research workflow: /research topic", run: (arg?: string) => sendMain({ content: `/research ${arg || ""}`.trim(), attachments: [], quote: null }) },
+    { name: "rollback", hint: "Rollback defaults (system, agents, memory, skills, mcp)", run: () => mainRef.current?.insert("/rollback ") },
+    { name: "chats", hint: "Search and switch chats", run: () => mainRef.current?.insert("/chats ") },
+    { name: "workspace", hint: "Explore workspace files", run: () => mainRef.current?.insert("/workspace ") },
     { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
-    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
+    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("chat", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
     { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
     { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
     { name: "fold", hint: "Fold old tool output", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "tools", keepLast: 2 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
-    { name: "chats", hint: "Chats", run: () => setPanels((p) => ({ ...p, chats: true })) },
-    { name: "workspace", hint: "Files", run: () => setPanels((p) => ({ ...p, ws: true })) },
     { name: "artifacts", hint: "Artifacts", run: () => setPanels((p) => ({ ...p, art: true })) },
     { name: "sources", hint: "Sources", run: () => setPanels((p) => ({ ...p, src: true })) },
     { name: "context", hint: "Clear active context", run: async () => { const c = convRef.current; if (!c) return; setConv({ ...c, context: [] }); await fetch(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ context: [] }) }); } },
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
     { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
-  ], [newChat, goSearch, runBrief, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
+  ], [newChat, linkProject, chipNew, mainPath, sendMain, loadConv, setTheme, theme]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -514,7 +537,7 @@ export default function App() {
           onCancel={() => setEditing(null)} onSend={(p) => { setEditing(null); send(p, m.parentId, m.threadOf); }} />
       </div></div>
     );
-    return <Message key={m.id} m={m} quiet={!isThread && (conv?.mode === "search" || (surface === "search" && !conv))} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
+    return <Message key={m.id} m={m} quiet={false} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
       onEdit={streamId ? undefined : () => setEditing(m.id)}
       onRegenerate={streamId ? undefined : () => send(null, m.parentId, m.threadOf)}
       onThread={isThread ? undefined : () => setThread(m.id)}
@@ -536,8 +559,10 @@ export default function App() {
         style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--lw" as string]: pw.l + "px", ["--rw" as string]: pw.r + "px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
-          <button className={"ib" + (surface === "search" && !conv ? " on" : "")} aria-label="Search" title="Search" onClick={goSearch}><Search /></button>
-          <button className={"ib" + (surface === "chat" && !conv ? " on" : "")} aria-label="New chat" title="New chat" onClick={newChat}><SquarePen /></button>
+          <button className={"ib" + (!conv ? " on" : "")} aria-label="New chat" title="New chat" onClick={newChat}><SquarePen /></button>
+          {conv?.mode === "search" && msgs.some((m) => m.role === "user") && (
+            <button className="ib sm" aria-label="Open in chat" title="Open in chat mode" onClick={promote}><SquarePen /></button>
+          )}
         </div>
         <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
@@ -552,8 +577,9 @@ export default function App() {
 
         <div className="dock">
           <div className="dock-stack">
-          <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} msgs={msgs} onBrief={runBrief} onPromote={promote} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
+          <DockStatus conv={conv} offerBrief={offerBrief} onBrief={runBrief} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
           <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
+            onQueue={queueMain} onSteer={steerMain} queued={queuedPrompts} onRemoveQueued={(i) => setQueuedPrompts((q) => q.filter((_, idx) => idx !== i))}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
           </div>
         </div>

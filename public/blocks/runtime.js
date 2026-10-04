@@ -673,6 +673,7 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   document.addEventListener("click", (e) => { const b = e.target.closest && e.target.closest("button[lm]"); if (!b || b.closest("form[lm]")) return; e.preventDefault(); const sc = b.closest("x-card,x-section,x-slide,x-tab,form,section") || root; const bad = [...sc.querySelectorAll("input,select,textarea")].find((i) => !i.checkValidity()); if (bad) { bad.reportValidity(); return; } lmSend(b, sc); }, true);
   const saveIn = (path, text) => (standalone ? Promise.resolve(false) : call("save", { path, text: typeof text === "string" ? text : JSON.stringify(text, null, 2) }));
   const py = (code) => (standalone ? Promise.resolve("(server python unavailable standalone)") : call("py", { code }));
+  const bash = (command) => (standalone ? Promise.resolve("(server bash unavailable standalone)") : call("bash", { command }));
   const open = (target) => post("open", { target });
   const every = (ms, fn) => setInterval(() => { fn(); schedule(); }, ms);
   const after = (ms, fn) => setTimeout(() => { fn(); schedule(); }, ms);
@@ -680,7 +681,7 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   const upload = (file, dir) => new Promise((res) => { const r = new FileReader(); r.onload = () => call("upload", { name: file.name, type: file.type, data: String(r.result).split(",")[1], dir }).then(res); r.readAsDataURL(file); });
   Object.assign(H, { sendToLm, saveIn, py, notify, form, every, after, open });
   Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, notify, state, every, after, open, S, render: schedule });
-  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, post, upload, standalone, H });
+  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, post, upload, standalone, H, py, bash, every, after, state });
 
   window.addEventListener("message", (e) => {
     const m = e.data || {};

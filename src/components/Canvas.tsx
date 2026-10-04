@@ -85,13 +85,20 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
   const wrap = useRef<HTMLDivElement>(null);
   const doc = useRef<{ getPage: (n: number) => Promise<unknown>; numPages: number } | null>(null);
   const renderAll = useCallback(async (dims: { w: number; h: number }[], alive: () => boolean) => {
-    const pdf = doc.current as unknown as { getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }> } | null;
+    const pdf = doc.current as unknown as { getPage: (n: number) => Promise<{ getViewport: (o: { scale: number; rotation?: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }> } | null;
     if (!pdf) return;
     for (let i = 1; i <= dims.length && alive(); i++) {
       const page = await pdf.getPage(i), c = refs.current[i - 1]; if (!c) continue;
-      const scale = (c.parentElement!.clientWidth / dims[i - 1].w) * (devicePixelRatio || 1);
-      const vp = page.getViewport({ scale }); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext("2d")!, viewport: vp, canvas: c }).promise;
+      const parentW = c.parentElement?.clientWidth || 0;
+      if (!parentW) continue;
+      const rotation = ((page as unknown as { rotate?: number }).rotate || 0);
+      const scale = (parentW / dims[i - 1].w) * (devicePixelRatio || 1);
+      const vp = page.getViewport({ scale, rotation });
+      c.width = vp.width; c.height = vp.height;
+      const ctx = c.getContext("2d");
+      if (ctx) {
+        await page.render({ canvasContext: ctx, viewport: vp, canvas: c }).promise.catch(() => {});
+      }
     }
   }, []);
   useEffect(() => {
@@ -144,13 +151,15 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
       if (!hot || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement;
       if (t.closest("input,textarea,select,[contenteditable=true]")) return;
-      const v = Math.max(80, body.clientHeight * 0.12);
-      if (e.key === "ArrowDown") body.scrollBy(0, v);
-      else if (e.key === "ArrowUp") body.scrollBy(0, -v);
-      else if (e.key === "ArrowRight") body.scrollBy(v, 0);
-      else if (e.key === "ArrowLeft") body.scrollBy(-v, 0);
-      else if (e.key === "PageDown" || e.key === " ") body.scrollBy(0, body.clientHeight * 0.9);
-      else if (e.key === "PageUp") body.scrollBy(0, -body.clientHeight * 0.9);
+      const v = Math.max(80, body.clientHeight * 0.16);
+      if (e.key === "ArrowDown") body.scrollBy({ top: v, behavior: "smooth" });
+      else if (e.key === "ArrowUp") body.scrollBy({ top: -v, behavior: "smooth" });
+      else if (e.key === "ArrowRight") body.scrollBy({ left: v, behavior: "smooth" });
+      else if (e.key === "ArrowLeft") body.scrollBy({ left: -v, behavior: "smooth" });
+      else if (e.key === "PageDown" || e.key === " ") body.scrollBy({ top: body.clientHeight * 0.85, behavior: "smooth" });
+      else if (e.key === "PageUp") body.scrollBy({ top: -body.clientHeight * 0.85, behavior: "smooth" });
+      else if (e.key === "Home") body.scrollTo({ top: 0, behavior: "smooth" });
+      else if (e.key === "End") body.scrollTo({ top: body.scrollHeight, behavior: "smooth" });
       else if (e.key === "+" || e.key === "=") zoomBy(1);
       else if (e.key === "-" || e.key === "_") zoomBy(-1);
       else if (e.key === "0") setZoom(1);

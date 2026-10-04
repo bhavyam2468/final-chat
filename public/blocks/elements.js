@@ -842,4 +842,183 @@
   define("x-state", class extends HTMLElement {
     connectedCallback() { if (this._d) return; this._d = true; this.hidden = true; for (const a of this.attributes) if (!(a.name in B.store) && a.name !== "hidden") B.setStore(a.name, parseVal(a.value)); }
   }, { void: true });
+
+  // ================================================================ interactive flowchart
+  define("x-flowchart", class extends Base {
+    static owns = true;
+    init() {
+      this._scale = 1;
+      this._panX = 0;
+      this._panY = 0;
+    }
+    render() {
+      const title = this.getAttribute("title") || "";
+      const dir = (this.getAttribute("direction") || this.getAttribute("dir") || "LR").toUpperCase();
+      let raw = (this._src || "").trim();
+      if (!raw) return;
+      if (!/^(flowchart|graph)\b/i.test(raw)) {
+        raw = `flowchart ${dir}\n` + raw;
+      }
+      this.innerHTML = `
+        <div class="x-fc-wrap">
+          <div class="x-fc-toolbar">
+            <span class="x-fc-title">${esc(title || "Flowchart")}</span>
+            <span class="x-fc-dir">${esc(dir)}</span>
+            <div class="x-fc-tools">
+              <button type="button" class="x-fc-btn zoom-out" title="Zoom Out" aria-label="Zoom Out">-</button>
+              <button type="button" class="x-fc-btn zoom-reset" title="Fit" aria-label="Reset">100%</button>
+              <button type="button" class="x-fc-btn zoom-in" title="Zoom In" aria-label="Zoom In">+</button>
+            </div>
+          </div>
+          <div class="x-fc-canvas">
+            <div class="x-fc-inner">
+              <div class="b-skel" data-k="viz"></div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      const canvas = this.querySelector(".x-fc-canvas");
+      const inner = this.querySelector(".x-fc-inner");
+      const zoomReset = this.querySelector(".zoom-reset");
+      const zoomIn = this.querySelector(".zoom-in");
+      const zoomOut = this.querySelector(".zoom-out");
+
+      const updateTransform = () => {
+        if (!inner) return;
+        inner.style.transform = `translate(${this._panX}px, ${this._panY}px) scale(${this._scale})`;
+        if (zoomReset) zoomReset.textContent = `${Math.round(this._scale * 100)}%`;
+      };
+
+      if (zoomIn) zoomIn.onclick = () => { this._scale = Math.min(2.5, +(this._scale + 0.2).toFixed(1)); updateTransform(); };
+      if (zoomOut) zoomOut.onclick = () => { this._scale = Math.max(0.4, +(this._scale - 0.2).toFixed(1)); updateTransform(); };
+      if (zoomReset) zoomReset.onclick = () => { this._scale = 1; this._panX = 0; this._panY = 0; updateTransform(); };
+
+      let dragging = false, startX = 0, startY = 0, initPanX = 0, initPanY = 0;
+      if (canvas) {
+        canvas.onpointerdown = (e) => {
+          if (e.target.closest("button, a")) return;
+          dragging = true;
+          startX = e.clientX;
+          startY = e.clientY;
+          initPanX = this._panX;
+          initPanY = this._panY;
+          canvas.setPointerCapture(e.pointerId);
+          canvas.classList.add("panning");
+        };
+        canvas.onpointermove = (e) => {
+          if (!dragging) return;
+          this._panX = initPanX + (e.clientX - startX);
+          this._panY = initPanY + (e.clientY - startY);
+          updateTransform();
+        };
+        canvas.onpointerup = (e) => {
+          dragging = false;
+          canvas.classList.remove("panning");
+        };
+      }
+
+      const dark = document.body.dataset.theme === "dark";
+      B.libImport("mermaid", "mermaid.esm.min.mjs").then(async ({ default: m }) => {
+        m.initialize({
+          startOnLoad: false,
+          theme: "base",
+          fontFamily: "inherit",
+          themeVariables: {
+            darkMode: dark,
+            background: "transparent",
+            primaryColor: css("--surface") || (dark ? "#2b2a27" : "#e8e2d7"),
+            primaryTextColor: css("--fg"),
+            primaryBorderColor: css("--line") || css("--muted"),
+            lineColor: css("--muted"),
+            secondaryColor: dark ? "#252422" : "#f6f3ec",
+            tertiaryColor: "transparent",
+            fontSize: "13.5px"
+          }
+        });
+        try {
+          const { svg: out } = await m.render("fc_" + Math.random().toString(36).slice(2), raw);
+          if (inner) {
+            inner.innerHTML = out;
+            updateTransform();
+          }
+        } catch (e) {
+          if (inner) inner.innerHTML = `<div class="err">${esc(e.message || e)}</div>`;
+        }
+      });
+    }
+  });
+
+  // ================================================================ web result cards carousel
+  define("x-web-cards", class extends Base {
+    render() {
+      this.classList.add("x-web-cards-wrap");
+    }
+  }, { container: true });
+
+  define("x-web-card", class extends Base {
+    render() {
+      const url = this.getAttribute("url") || "#";
+      const title = this.getAttribute("title") || url;
+      const snippet = this.getAttribute("snippet") || this.textContent.trim() || "";
+      const img = this.getAttribute("image") || "";
+      const site = this.getAttribute("site") || "";
+      const badge = this.getAttribute("badge") || "";
+      const price = this.getAttribute("price") || "";
+      let host = site;
+      if (!host && url !== "#") {
+        try { host = new URL(url).hostname.replace(/^www\./, ""); } catch {}
+      }
+
+      this.innerHTML = `
+        <div class="x-wc-box">
+          ${img ? `<div class="x-wc-img"><img src="${esc(img)}" alt="" loading="lazy"></div>` : ""}
+          <div class="x-wc-body">
+            <div class="x-wc-meta">
+              ${host ? `<img class="x-wc-ico" src="https://www.google.com/s2/favicons?domain=${host}&sz=32" alt="" />` : ""}
+              <span class="x-wc-host">${esc(host)}</span>
+              ${badge ? `<span class="x-wc-badge">${esc(badge)}</span>` : ""}
+              ${price ? `<span class="x-wc-price">${esc(price)}</span>` : ""}
+            </div>
+            <a class="x-wc-title" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>
+            ${snippet ? `<p class="x-wc-snip">${esc(snippet)}</p>` : ""}
+          </div>
+        </div>
+      `;
+    }
+  }, { void: true });
+
+  // ================================================================ real-time live variable integration
+  define("x-live", class extends Base {
+    init() {
+      const varName = this.getAttribute("var");
+      const pollMs = Math.max(500, this.n("poll", 2500));
+      const pyCode = this.getAttribute("py");
+      const bashCmd = this.getAttribute("bash");
+
+      if (!varName || (!pyCode && !bashCmd)) return;
+
+      const run = async () => {
+        let val = null;
+        if (pyCode) {
+          const res = await B.py(pyCode).catch(() => null);
+          val = res;
+        } else if (bashCmd) {
+          const res = await B.bash(bashCmd).catch(() => null);
+          val = res;
+        }
+        if (val !== null && val !== undefined) {
+          const trimmed = String(val).trim();
+          const parsed = !isNaN(+trimmed) && trimmed !== "" ? +trimmed : parseVal(trimmed);
+          B.setStore(varName, parsed);
+        }
+      };
+
+      run();
+      this._timer = setInterval(run, pollMs);
+    }
+    disconnectedCallback() {
+      if (this._timer) clearInterval(this._timer);
+    }
+  }, { void: true });
 })();
