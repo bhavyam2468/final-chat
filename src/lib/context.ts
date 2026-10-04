@@ -8,7 +8,7 @@ import { complete, est } from "./llm";
  * Context economics. Everything the model sees is accounted here, and every heavy piece can be
  * compacted selectively instead of summarising the whole chat:
  *   tools    -> old tool outputs become one-liners (deterministic, zero tokens spent)
- *   web      -> old web_search/web_fetch outputs become 1–2 lines of key facts (one cheap LLM call)
+ *   web      -> old web_search/web_fetch/web_fetch_many outputs become 1–2 lines of key facts (one cheap LLM call)
  *   messages -> chosen turns are summarised into one note (LLM), the rest of the chat untouched
  *   history  -> everything except the last N messages becomes a rolling summary (LLM)
  * All of it is reversible (restore) because originals are never deleted.
@@ -26,9 +26,9 @@ export function chain(all: Msg[], leafId: string | null): Msg[] {
   return out;
 }
 
-const WEB = new Set(["web_search", "web_fetch", "web_extract"]);
+const WEB = new Set(["web_search", "web_fetch", "web_fetch_many", "web_extract"]);
 const oneLine = (s: string, n: number) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
-const argLine = (p: ToolPart) => { const a = p.args || {}; const v = a.path ?? a.query ?? a.url ?? a.command ?? a.name ?? a.target ?? ""; return oneLine(Array.isArray(v) ? v.join(" ") : String(v), 90); };
+const argLine = (p: ToolPart) => { const a = p.args || {}; const v = a.path ?? a.query ?? a.url ?? a.urls ?? a.command ?? a.name ?? a.target ?? ""; return oneLine(Array.isArray(v) ? v.join(" ") : String(v), 90); };
 
 /** How a tool call appears in history. Compacted parts are one line. */
 export function toolText(p: ToolPart, short = false) {
@@ -37,10 +37,12 @@ export function toolText(p: ToolPart, short = false) {
   return `[${p.name}(${JSON.stringify(p.args).slice(0, 160)}) -> ${oneLine(p.result || "", 600)}]`;
 }
 export function assistantText(m: Msg, short = false) {
-  // reasoning is never re-sent: it is large, and replaying it degrades later answers
-  return m.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool" ? toolText(p, short) : "")).filter(Boolean).join("\n");
+  // Reasoning is never re-sent. Deep-research work stays in its inspectable run file; only the final report enters chat context.
+  const research = m.parts.some((p) => p.type === "research");
+  return m.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool" ? (research ? "" : toolText(p, short)) : "")).filter(Boolean).join("\n");
 }
 export function toolTokens(m: Msg) {
+  if (m.parts.some((p) => p.type === "research")) return 0;
   return m.parts.reduce((a, p) => a + (p.type === "tool" ? est(toolText(p)) : 0), 0);
 }
 
@@ -48,6 +50,7 @@ function deterministicSummary(p: ToolPart) {
   if (p.ok === false) return "failed";
   const meta = p.meta as { sources?: { title: string }[]; path?: string } | undefined;
   if (p.name === "web_search" && meta?.sources) return `${meta.sources.length} results: ${meta.sources.slice(0, 3).map((s) => oneLine(s.title, 40)).join("; ")}`;
+  if (p.name === "web_fetch_many" && meta?.sources) return `${meta.sources.length} pages: ${meta.sources.slice(0, 3).map((s) => oneLine(s.title, 40)).join("; ")}`;
   if (p.name.startsWith("fs_write") || p.name === "fs_edit") return "done";
   return oneLine(p.result || "ok", 80);
 }

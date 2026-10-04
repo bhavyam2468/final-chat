@@ -87,7 +87,7 @@ export const rel = (abs: string) => {
   return abs.startsWith(HOME + path.sep) ? "~/" + path.relative(HOME, abs) : abs;
 };
 
-const SKIP = new Set([".git", ".trash", ".cache", ".template.json", "node_modules", ".venv", "__pycache__", ".chroma", ".keep", ".DS_Store"]);
+const SKIP = new Set([".git", ".trash", ".cache", ".prompt-backups", ".template.json", "node_modules", ".venv", "__pycache__", ".chroma", ".keep", ".DS_Store"]);
 
 export type Node = { name: string; path: string; dir: boolean; size?: number; children?: Node[] };
 export async function tree(dir = WS, depth = 4): Promise<Node[]> {

@@ -1,8 +1,7 @@
 import type { Settings } from "./settings";
 import { fastSearch, plainFetch } from "./search-fast";
 
-/** Firecrawl: local-first (zero credits), cloud fallback for anti-bot pages, search fallback and AI extraction.
- *  A keyless fast path runs first so search mode never waits on a scraper that isn't up. */
+/** Fast direct HTTP and keyless search are preferred. Firecrawl stays available as an explicit local/cloud fallback for pages that need it. */
 
 function isAntiBotProtected(text: string): boolean {
   if (!text) return false;
@@ -20,8 +19,13 @@ function isAntiBotProtected(text: string): boolean {
 }
 
 export async function firecrawlScrape(st: Settings, url: string) {
-  const direct = plainFetch(url);
-  // 1. Try local Firecrawl first (no API key needed, zero credit cost). Short timeout — the direct fetch races it.
+  // Direct HTTP first: public docs and ordinary pages should not wait for a browser-backed scraper.
+  const plain = await plainFetch(url).catch(() => null);
+  if (plain && plain.markdown.trim().length > 80 && !isAntiBotProtected(plain.markdown)) {
+    return { data: { markdown: plain.markdown, metadata: { title: plain.title } }, _source: "fetch" };
+  }
+
+  // Local Firecrawl is opt-in and used only when direct retrieval is empty or blocked.
   if (st.firecrawlUrl) {
     try {
       const r = await fetch(st.firecrawlUrl.replace(/\/$/, "") + "/v1/scrape", {
@@ -33,22 +37,14 @@ export async function firecrawlScrape(st: Settings, url: string) {
       if (r.ok) {
         const j = await r.json();
         const md = (j.data?.markdown as string) || "";
-        if (!isAntiBotProtected(md) && md.trim().length > 80) {
-          return { ...j, _source: "local" };
-        }
+        if (!isAntiBotProtected(md) && md.trim().length > 80) return { ...j, _source: "local" };
       }
     } catch {
-      // Local failed or timed out, fall back
+      // Local scraper failed or timed out; continue to the cloud fallback only if configured.
     }
   }
 
-  // 2. Direct fetch, already in flight. Good enough for docs, wikis, and most public pages.
-  const plain = await direct.catch(() => null);
-  if (plain && plain.markdown.trim().length > 80 && !isAntiBotProtected(plain.markdown)) {
-    return { data: { markdown: plain.markdown, metadata: { title: plain.title } }, _source: "fetch" };
-  }
-
-  // 3. Cloud Firecrawl for anti-bot pages.
+  // Cloud Firecrawl is a last resort for anti-bot pages and requires an explicit API key.
   if (st.firecrawlKey) {
     const cloudEndpoint = (st.firecrawlCloudUrl || "https://api.firecrawl.dev").replace(/\/$/, "") + "/v1/scrape";
     const r = await fetch(cloudEndpoint, {

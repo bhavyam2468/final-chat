@@ -51,7 +51,7 @@ export function defaults(): Settings {
     model: process.env.LLM_MODEL || PRESETS.freellmapi.model,
     contextTokens: Number(process.env.LLM_CONTEXT_TOKENS) || 131072,
     workingTokens: Number(process.env.LLM_WORKING_TOKENS) || 64000,
-    firecrawlUrl: process.env.FIRECRAWL_URL || "http://localhost:3002",
+    firecrawlUrl: process.env.FIRECRAWL_URL || "",
     firecrawlKey: process.env.FIRECRAWL_API_KEY || "",
     firecrawlCloudUrl: process.env.FIRECRAWL_CLOUD_URL || "https://api.firecrawl.dev",
     access: (process.env.ACCESS_MODE as Access) || "sandbox",

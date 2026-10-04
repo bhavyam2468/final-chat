@@ -4,13 +4,15 @@ import { createContext, useContext } from "react";
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
   | { type: "reasoning"; text: string; ms?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
+  | { type: "steer"; text: string }
+  | { type: "research"; path?: string; status: "running" | "done" | "stopped"; stages: { id: string; label: string; status: "todo" | "doing" | "done" }[]; searches: number; pages: number; sources: number }
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; live?: string; stage?: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
 export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
   content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null;
 };
-export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null; mode?: "chat" | "search"; state?: { mode?: "chat" | "search"; project?: string } };
+export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null; mode?: "chat" | "general" | "search"; state?: { mode?: "chat" | "general" | "search"; project?: string } };
 export type TreeNode = { name: string; path: string; dir: boolean; size?: number; children?: TreeNode[] };
 export type CanvasSpec =
   | { kind: "ui"; title: string; source: string; path?: string }

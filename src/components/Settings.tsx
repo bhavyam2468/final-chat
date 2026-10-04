@@ -131,11 +131,11 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
           </>}
           {tab === "tools" && <>
             <div className="grid2">
-              {F("Local Firecrawl URL (zero-credit)", "firecrawlUrl")}
-              {F("Online Firecrawl Key (bypass / extract)", "firecrawlKey", "password")}
+              {F("Optional local Firecrawl fallback URL", "firecrawlUrl")}
+              {F("Optional Firecrawl cloud API key", "firecrawlKey", "password")}
             </div>
             <small style={{ color: "var(--muted)", fontSize: 11, marginTop: -6, marginBottom: 8, display: "block" }}>
-              Hybrid routing: standard scrape uses local Firecrawl. Cloud API key is used for Cloudflare/anti-bot bypass, AI extraction, and search fallback.
+              Web search and page reads try keyless search and direct HTTP first. Configured Firecrawl is a fallback for blocked or empty pages, and for structured extraction.
             </small>
             <div className="grid2">
               <label className="field">Quality guard<select value={s.quality} onChange={(e) => saveS({ quality: e.target.value as S["quality"] })}>

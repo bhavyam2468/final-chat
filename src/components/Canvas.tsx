@@ -78,33 +78,55 @@ type TxtItem = { s: string; x: number; y: number; w: number; h: number };
 function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Record<string, Stroke[]>; setInk?: (k: string, s: Stroke[]) => void; pen?: boolean; setBar?: (n: React.ReactNode) => void }) {
   const [pages, setPages] = useState<{ w: number; h: number }[]>([]);
   const [texts, setTexts] = useState<TxtItem[][] | null>(null);
+  const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [cur, setCur] = useState(1);
   const refs = useRef<(HTMLCanvasElement | null)[]>([]);
   const wrap = useRef<HTMLDivElement>(null);
   const doc = useRef<{ getPage: (n: number) => Promise<unknown>; numPages: number } | null>(null);
+  const renderVersion = useRef(0);
+  const renderTasks = useRef(new Map<number, { cancel?: () => void }>());
+  const cancelRenders = useCallback(() => {
+    renderVersion.current++;
+    for (const task of renderTasks.current.values()) { try { task.cancel?.(); } catch {} }
+    renderTasks.current.clear();
+  }, []);
   const renderAll = useCallback(async (dims: { w: number; h: number }[], alive: () => boolean) => {
-    const pdf = doc.current as unknown as { getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }> } | null;
+    const pdf = doc.current as unknown as { getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void>; cancel?: () => void } }> } | null;
     if (!pdf) return;
-    for (let i = 1; i <= dims.length && alive(); i++) {
-      const page = await pdf.getPage(i), c = refs.current[i - 1]; if (!c) continue;
-      const scale = (c.parentElement!.clientWidth / dims[i - 1].w) * (devicePixelRatio || 1);
-      const vp = page.getViewport({ scale }); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext("2d")!, viewport: vp, canvas: c }).promise;
+    const version = ++renderVersion.current;
+    for (const task of renderTasks.current.values()) { try { task.cancel?.(); } catch {} }
+    renderTasks.current.clear();
+    for (let i = 1; i <= dims.length; i++) {
+      if (!alive() || version !== renderVersion.current) return;
+      const page = await pdf.getPage(i), c = refs.current[i - 1];
+      if (!c || !alive() || version !== renderVersion.current) continue;
+      const width = c.parentElement?.clientWidth || dims[i - 1].w;
+      const scale = Math.max(0.25, width / dims[i - 1].w) * (devicePixelRatio || 1);
+      // getViewport includes the PDF page's own rotation; derive the actual canvas from that viewport.
+      const vp = page.getViewport({ scale }); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      const task = page.render({ canvasContext: c.getContext("2d")!, viewport: vp, canvas: c });
+      renderTasks.current.set(i, task);
+      try { await task.promise; }
+      catch (e) { if (version !== renderVersion.current || !alive()) return; throw e; }
+      finally { if (renderTasks.current.get(i) === task) renderTasks.current.delete(i); }
     }
   }, []);
   useEffect(() => {
     let dead = false;
+    cancelRenders(); refs.current = []; doc.current = null;
     (async () => {
       try {
         const { getDocumentProxy } = await import("unpdf");
-        const buf = new Uint8Array(await (await fetch(fileUrl(path))).arrayBuffer());
+        const response = await fetch(fileUrl(path)); if (!response.ok) throw new Error(`PDF request failed (${response.status})`);
+        const buf = new Uint8Array(await response.arrayBuffer());
         const pdf = await getDocumentProxy(buf);
         doc.current = pdf as never;
         const dims: { w: number; h: number }[] = [];
         for (let i = 1; i <= pdf.numPages; i++) { const vp = (await pdf.getPage(i)).getViewport({ scale: 1 }); dims.push({ w: vp.width, h: vp.height }); }
-        if (dead) return; setPages(dims);
+        if (dead) return;
+        setPages(dims); setTexts(null); setFailed(false); setCur(1); setLoadedPath(path);
         await new Promise((r) => setTimeout(r, 30));
         await renderAll(dims, () => !dead);
         // selectable text layer (first 80 pages keeps it cheap); spans are transparent but selectable
@@ -121,11 +143,22 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
           }
           if (!dead && all.length) setTexts(all);
         } catch { /* no text layer: selection falls back to snipping */ }
-      } catch (e) { console.warn(e); if (!dead) setFailed(true); }
+      } catch (e) { console.warn(e); if (!dead) { setFailed(true); setLoadedPath(path); } }
     })();
-    return () => { dead = true; };
-  }, [path, renderAll]);
-  useEffect(() => { if (!pages.length) return; let dead = false; const t = setTimeout(() => renderAll(pages, () => !dead), 120); return () => { dead = true; clearTimeout(t); }; }, [zoom, pages, renderAll]);
+    return () => { dead = true; cancelRenders(); };
+  }, [path, renderAll, cancelRenders]);
+  useEffect(() => {
+    if (!pages.length) return;
+    let dead = false;
+    const t = setTimeout(() => { void renderAll(pages, () => !dead).catch((e) => { if (!dead) { console.warn(e); setFailed(true); } }); }, 120);
+    return () => { dead = true; clearTimeout(t); };
+  }, [zoom, pages, renderAll]);
+  useEffect(() => {
+    const body = wrap.current?.closest(".win-body"); if (!body || !pages.length) return;
+    let dead = false; let timer: ReturnType<typeof setTimeout> | undefined;
+    const ro = new ResizeObserver(() => { clearTimeout(timer); timer = setTimeout(() => { if (!dead) void renderAll(pages, () => !dead).catch((e) => { if (!dead) { console.warn(e); setFailed(true); } }); }, 100); });
+    ro.observe(body); return () => { dead = true; ro.disconnect(); clearTimeout(timer); };
+  }, [pages, renderAll]);
   useEffect(() => {
     const el = wrap.current?.closest(".win-body"); if (!el) return;
     const on = () => { const mid = el.getBoundingClientRect().top + el.clientHeight / 3; let best = 1; refs.current.forEach((c, i) => { if (c && c.getBoundingClientRect().top < mid) best = i + 1; }); setCur(best); };
@@ -162,14 +195,15 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
   }, [pages, zoomBy]);
   useEffect(() => {
     if (!setBar) return;
-    setBar(pages.length ? <>
+    setBar(loadedPath === path && !failed && pages.length ? <>
       <span className="v-meta num"><input className="v-page" value={cur} onChange={(e) => { const n = +e.target.value; if (n >= 1 && n <= pages.length) go(n); }} aria-label="Page" /> / {pages.length}</span>
       <button className="ib sm" aria-label="Zoom out" title="Zoom out (-)" onClick={() => zoomBy(-1)}><ZoomOut /></button>
       <span className="v-meta num">{Math.round(zoom * 100)}%</span>
       <button className="ib sm" aria-label="Zoom in" title="Zoom in (+)" onClick={() => zoomBy(1)}><ZoomIn /></button>
       <button className={"ib sm" + (zoom === 1 ? " on" : "")} aria-label="Fit to canvas" title="Fit page to canvas (0)" onClick={() => setZoom(1)}><Scan /></button>
     </> : null);
-  }, [pages, cur, zoom, setBar, zoomBy]);
+  }, [pages, cur, zoom, setBar, zoomBy, loadedPath, path, failed]);
+  if (loadedPath !== path) return <div className="v-msg">Loading PDF…</div>;
   if (failed) return <iframe className="full" src={fileUrl(path)} title={path} />;
   return <div ref={wrap} className="pdfwrap">{pages.map((d, i) => (
     <div key={i} className="pdf-page" style={{ aspectRatio: `${d.w}/${d.h}`, width: `${zoom * 100}%` }}>

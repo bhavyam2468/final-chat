@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # One-line setup:  curl -fsSL https://raw.githubusercontent.com/bhavyam2468/final-chat/main/setup.sh | bash
-#            or:  ./setup.sh [--local|--online] [--yes] [--no-service] [--with-firecrawl] [--port N]
+#            or:  ./setup.sh [--update] [--local|--online] [--yes] [--no-service] [--with-freellmapi] [--with-firecrawl] [--port N]
 # Detects the environment and local services, writes missing .env keys (never overwrites), installs
 # dependencies, builds, and on a desktop installs a user service + launcher. Safe to re-run.
 set -euo pipefail
 
 REPO="https://github.com/bhavyam2468/final-chat.git"
-MODE=""; YES=0; SERVICE=1; FIRECRAWL=0; PORT="${PORT:-3000}"
+MODE=""; YES=0; SERVICE=1; UPDATE=0; FREELLMAPI=0; FIRECRAWL=0; PORT_SET=0
+if [ -n "${PORT:-}" ]; then PORT_SET=1; else PORT=3000; fi
 while [ $# -gt 0 ]; do
   case "$1" in
-    --local) MODE=local ;; --online) MODE=online ;; --yes|-y) YES=1 ;; --no-service) SERVICE=0 ;;
-    --with-firecrawl) FIRECRAWL=1 ;; --port) PORT="$2"; shift ;;
-    -h|--help) sed -n 2,5p "$0"; exit 0 ;;
+    --local) MODE=local ;; --online) MODE=online ;; --yes|-y) YES=1 ;; --no-service) SERVICE=0 ;; --update) UPDATE=1 ;;
+    --with-freellmapi) FREELLMAPI=1 ;; --with-firecrawl) FIRECRAWL=1 ;; --port) [ $# -ge 2 ] || { echo "--port needs a number" >&2; exit 2; }; PORT_SET=1; PORT="$2"; shift ;;
+    -h|--help) sed -n 2,5p "$0"; printf '\nOptional services: --with-freellmapi installs the OpenAI-compatible local proxy with Docker; --with-firecrawl installs Firecrawl with Docker.\n'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac; shift
 done
+if [ $PORT_SET -eq 1 ]; then
+  [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && ((10#$PORT >= 1 && 10#$PORT <= 65535)) || { echo "--port must be an integer from 1 to 65535" >&2; exit 2; }
+fi
+RUN_ARGS=(); [ -n "$MODE" ] && RUN_ARGS+=("--$MODE"); [ $YES -eq 1 ] && RUN_ARGS+=(--yes); [ $SERVICE -eq 0 ] && RUN_ARGS+=(--no-service)
+[ $FREELLMAPI -eq 1 ] && RUN_ARGS+=(--with-freellmapi); [ $FIRECRAWL -eq 1 ] && RUN_ARGS+=(--with-firecrawl); [ $PORT_SET -eq 1 ] && RUN_ARGS+=(--port "$PORT")
 
 b() { printf '\033[1m%s\033[0m\n' "$*"; }
 ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -34,9 +40,19 @@ if [ -z "$SRC" ] || [ ! -f "$(dirname "$SRC")/package.json" ]; then
   DIR="${CHAT_DIR:-$HOME/minimalist-chat}"
   has git || die "git is required"
   if [ -d "$DIR/.git" ]; then b "Updating $DIR"; git -C "$DIR" pull --ff-only; else b "Cloning into $DIR"; git clone --depth 1 "$REPO" "$DIR"; fi
-  exec bash "$DIR/setup.sh" "$@"
+  exec bash "$DIR/setup.sh" "${RUN_ARGS[@]}"
 fi
 cd "$(dirname "$SRC")"; APP="$(pwd)"
+if [ $PORT_SET -eq 0 ] && [ -f .env ]; then
+  SAVED_PORT="$(sed -n 's/^PORT=//p' .env | tail -1)"
+  if [[ "$SAVED_PORT" =~ ^[0-9]{1,5}$ ]] && ((10#$SAVED_PORT >= 1 && 10#$SAVED_PORT <= 65535)); then PORT="$SAVED_PORT"; fi
+fi
+if [ $UPDATE -eq 1 ]; then
+  [ -d "$APP/.git" ] || die "--update needs a Git checkout; install first with the one-command installer"
+  b "Updating $APP (fast-forward only; local changes are never reset)"
+  git -C "$APP" pull --ff-only
+  exec bash "$APP/setup.sh" "${RUN_ARGS[@]}"
+fi
 
 # ── 1. environment ────────────────────────────────────────────────────────
 OS="$(uname -s)"; ARCH="$(uname -m)"
@@ -79,12 +95,24 @@ if has gh && gh auth status >/dev/null 2>&1; then ok "gh logged in: reused for G
 
 # ── 3. services ───────────────────────────────────────────────────────────
 b "Local services"
-FREE=0; http_ok http://localhost:3001/v1/models -H "Authorization: Bearer x" || http_ok http://localhost:3001/ && FREE=1
+FREE=0; if http_ok http://localhost:3001/v1/models -H "Authorization: Bearer x" || http_ok http://localhost:3001/; then FREE=1; fi
 [ $FREE -eq 0 ] && [ $DOCKER -eq 1 ] && docker ps --format '{{.Names}}' | grep -qi freellmapi && FREE=1
-[ $FREE -eq 1 ] && ok "FreeLLMAPI on :3001" || no "FreeLLMAPI (:3001)"
+if [ $FREE -eq 0 ] && [ $DOCKER -eq 1 ] && [ $FREELLMAPI -eq 0 ] && [ "$(ask 'Install optional FreeLLMAPI local model proxy with Docker? [y/N]' n)" = y ]; then FREELLMAPI=1; fi
+if [ $FREELLMAPI -eq 1 ]; then
+  [ $DOCKER -eq 1 ] || die "--with-freellmapi needs Docker and a running Docker daemon"
+  b "Installing FreeLLMAPI (upstream Docker installer)"
+  curl -fsSL https://freellmapi.co/install.sh | bash || die "FreeLLMAPI installer failed"
+  for _ in $(seq 1 15); do
+    if http_ok http://localhost:3001/v1/models -H "Authorization: Bearer x" || http_ok http://localhost:3001/; then FREE=1; break; fi
+    sleep 2
+  done
+  [ $FREE -eq 1 ] || warn "FreeLLMAPI did not answer on :3001 yet; finish setup in its dashboard"
+  echo "  Create an API key in the FreeLLMAPI dashboard's Keys page. The generated encryption key is not the model API key."
+fi
+[ $FREE -eq 1 ] && ok "FreeLLMAPI on :3001" || no "FreeLLMAPI (:3001) · optional Docker proxy"
 OLLAMA=""; if http_ok http://localhost:11434/api/tags; then OLLAMA="$(curl -fsS -m 3 http://localhost:11434/api/tags | sed -n 's/.*"name":"\([^"]*\)".*/\1/p' | head -1)"; ok "Ollama${OLLAMA:+ ($OLLAMA)}"; else no "Ollama (:11434)"; fi
 FC=0; http_ok http://localhost:3002/ && FC=1
-[ $FC -eq 1 ] && ok "Firecrawl on :3002" || no "Firecrawl (:3002): web tools fall back to the cloud key, then plain fetch"
+[ $FC -eq 1 ] && ok "Firecrawl on :3002 (fallback only; direct HTTP is preferred)" || no "Firecrawl (:3002) · optional; direct HTTP is preferred"
 PG=""; if http_ok http://localhost:3000/api/health; then warn "something already serves :3000 (a running copy?)"; fi
 if [ $DOCKER -eq 1 ] && docker ps --format '{{.Names}}' | grep -q -- '-db-1$'; then PG="compose"; ok "Postgres container running"; fi
 
@@ -99,20 +127,27 @@ fi
 # ── 4. .env (only missing keys are added) ─────────────────────────────────
 b "Configuration"
 touch .env; chmod 600 .env
-setk() { grep -q "^$1=" .env || { printf '%s=%s\n' "$1" "$2" >> .env; ok "$1${3:+ ($3)}"; }; }
-if ! grep -q '^LLM_BASE_URL=' .env; then
+setk() { # Fill a missing or explicitly blank key; preserve every non-empty user value.
+  local note="${3:-}"
+  if grep -q "^$1=$" .env; then sed "/^$1=$/d" .env > .env.tmp && printf '%s=%s\n' "$1" "$2" >> .env.tmp && chmod 600 .env.tmp && mv .env.tmp .env && ok "$1${note:+ ($note)}";
+  elif ! grep -q "^$1=" .env; then printf '%s=%s\n' "$1" "$2" >> .env && ok "$1${note:+ ($note)}"; fi
+}
+setk_when_empty() { setk "$1" "$2" "${3:-}"; }
+if ! grep -q '^LLM_BASE_URL=.' .env; then
   if [ $FREE -eq 1 ]; then
     setk LLM_PROVIDER freellmapi; setk LLM_BASE_URL http://localhost:3001/v1; setk LLM_MODEL gemini-2.5-flash
-    setk LLM_API_KEY "$(secret 'FreeLLMAPI key (freellmapi-…, Enter to skip):')" "FreeLLMAPI"
+    KEY="$(secret 'FreeLLMAPI unified API key (from dashboard → Keys; Enter to set later):')"
+    if [ -n "$KEY" ]; then setk LLM_API_KEY "$KEY" "FreeLLMAPI"; else no "LLM_API_KEY not set; add the unified key from dashboard → Keys in Settings"; fi
   elif [ -n "$OLLAMA" ]; then
     setk LLM_PROVIDER ollama; setk LLM_BASE_URL http://localhost:11434/v1; setk LLM_MODEL "$OLLAMA"; setk LLM_CONTEXT_TOKENS 16000 "small-context prompts"
   else
     setk LLM_PROVIDER gemini; setk LLM_BASE_URL https://generativelanguage.googleapis.com/v1beta/openai; setk LLM_MODEL gemini-3.5-flash-lite
-    setk LLM_API_KEY "$(secret 'Gemini API key (aistudio.google.com/apikey, Enter to set later in Settings):')" "Gemini"
+    KEY="$(secret 'Gemini API key (aistudio.google.com/apikey, Enter to set later in Settings):')"
+    if [ -n "$KEY" ]; then setk LLM_API_KEY "$KEY" "Gemini"; else no "LLM_API_KEY not set; add it in Settings"; fi
   fi
 else ok "LLM already configured"; fi
-setk FIRECRAWL_URL http://localhost:3002
-grep -q '^FIRECRAWL_API_KEY=' .env || setk FIRECRAWL_API_KEY "$(secret 'Firecrawl cloud key (optional fallback, Enter to skip):')"
+# Only bind Firecrawl when it was detected or explicitly installed; retrieval uses direct HTTP first.
+if [ $FC -eq 1 ]; then setk_when_empty FIRECRAWL_URL http://localhost:3002; fi
 setk WORKSPACE_DIR ./workspace
 if [ "$PG" = compose ]; then setk DATABASE_URL postgresql://postgres:postgres@127.0.0.1:5432/app_db "docker Postgres"; fi
 grep -q '^DATABASE_URL=' .env || no "database: embedded PGlite in ./data (set DATABASE_URL for Postgres)"

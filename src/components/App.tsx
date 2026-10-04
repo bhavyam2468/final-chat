@@ -1,40 +1,28 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PanelLeft, SquarePen, Search, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
+import { PanelLeft, SquarePen, Folder, AppWindow, Settings2, X, MessageSquare } from "lucide-react";
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
 import { chatDir } from "@/lib/shared";
-import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
+import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win, contentRatio } from "./Canvas";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
-function StreamClock() {
-  const [s, setS] = useState(0);
-  useEffect(() => { const t0 = Date.now(); const i = setInterval(() => setS(Math.floor((Date.now() - t0) / 1000)), 1000); return () => clearInterval(i); }, []);
-  return s >= 3 ? <span className="elapsed">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null;
-}
-function DockStatus({ conv, offerBrief, streamId, msgs, onBrief, onPromote, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; msgs: Msg[]; onBrief: () => void; onPromote: () => void; onUnlink: () => void }) {
-  const live = streamId ? msgs.find((m) => m.id === streamId) : undefined;
-  const tool = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.result === undefined);
-  const reasoning = [...(live?.parts || [])].reverse().find((p) => p.type === "reasoning");
-  const todo = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.name === "todo" && p.meta && typeof p.meta === "object" && "todo" in (p.meta as object));
-  const items = (todo && todo.type === "tool" ? (todo.meta as { todo?: { text: string; status: string }[] }).todo : []) || [];
-  const doing = items.find((t) => t.status === "doing") || items.find((t) => t.status === "todo");
-  // a live activity chip whenever the model is working, so silence never reads as "stuck"
-  const act = streamId ? doing?.text || (tool && tool.type === "tool" ? tool.name.replaceAll("_", " ") : reasoning ? "Thinking" : "Working") : null;
-  const showSearch = conv?.mode === "search" && msgs.some((m) => m.role === "user");
-  if (!showSearch && !offerBrief && !conv?.state?.project && !act) return null;
+function DockStatus({ conv, offerBrief, streamId, onBrief, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; onBrief: () => void; onUnlink: () => void }) {
+  if (!offerBrief && !conv?.state?.project) return null;
   return <div className="dock-extra">
     {conv?.state?.project && <button className="promote" onClick={onUnlink} title="Unlink project">Project {conv.state.project}</button>}
     {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
-    {showSearch && <button className="promote" onClick={onPromote}>Open in chat</button>}
-    {act && <span className="queue-now"><i className="live-dot" />{act}<StreamClock /></span>}
   </div>;
 }
-const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
+const withMode = (c: Conv): Conv & { mode: "chat" | "general" } => {
+  const mode = c.state?.mode || c.mode || "chat";
+  return { ...c, mode: mode === "search" ? "general" : mode } as Conv & { mode: "chat" | "general" };
+};
 const NONE: Msg[] = [];
+type QueuedSend = { id: string; payload: SendPayload; parentId: string | null; threadOf: string | null; preview: string };
 const keyOf = (parentId: string | null, threadOf: string | null) => parentId ?? `root:${threadOf ?? ""}`;
 const toXml = (d: unknown): string => typeof d !== "object" || d === null ? String(d) : Object.entries(d as Record<string, unknown>).map(([k, v]) => `<${k}>${typeof v === "object" ? toXml(v) : String(v)}</${k}>`).join("\n");
 
@@ -48,8 +36,8 @@ export default function App() {
   const [view, setViewS] = useState(() => "new:" + rid());
   const viewRef = useRef(view);
   const winsCache = useRef<Record<string, Win[]>>({});
-  const [surface, setSurface] = useState<"search" | "chat">("search");
-  const modeRef = useRef<"chat" | "search">("search");
+  const [surface, setSurface] = useState<"general" | "chat">("general");
+  const modeRef = useRef<"chat" | "general">("general");
   const pendingProject = useRef<string | null>(null);
   const [offerBrief, setOfferBrief] = useState(false);
   // canvases live per chat: switching chats parks this chat's windows and restores that chat's
@@ -68,9 +56,20 @@ export default function App() {
   const [sel, setSel] = useState<Record<string, string>>({});
   const [running, setRunningS] = useState<Record<string, string>>({}); // chat key → assistant message id
   const runningRef = useRef(running);
-  const setRunning = useCallback((fn: (r: Record<string, string>) => Record<string, string>) => setRunningS((r) => { const n = fn(r); runningRef.current = n; return n; }), []);
+  const setRunning = useCallback((fn: (r: Record<string, string>) => Record<string, string>) => {
+    const next = fn(runningRef.current); runningRef.current = next; setRunningS(next);
+  }, []);
   const streamId = running[view] || null;
+  const [queuedByChat, setQueuedByChat] = useState<Record<string, QueuedSend[]>>({});
+  const queuedRef = useRef(queuedByChat); queuedRef.current = queuedByChat;
+  const updateQueued = useCallback((fn: (q: Record<string, QueuedSend[]>) => Record<string, QueuedSend[]>) => {
+    const next = fn(queuedRef.current); queuedRef.current = next; setQueuedByChat(next);
+  }, []);
+  const sendNextRef = useRef<(p: SendPayload | null, parentId: string | null, threadOf: string | null, key?: string) => Promise<void>>(async () => {});
   const attached = useRef(new Set<string>()); // chats this page is currently reading a stream for
+  const runThreadRef = useRef<Record<string, string | null>>({});
+  const finishRef = useRef<(key: string, assistantId: string, threadOf: string | null) => void>(() => {});
+  const attachRef = useRef<(id: string) => void>(() => {});
   const [serverRunning, setServerRunning] = useState<string[]>([]);
   // side panel widths (drag the inner edge); persisted
   const [pw, setPw] = useState<{ l: number; r: number }>({ l: 272, r: 300 });
@@ -82,7 +81,7 @@ export default function App() {
     const up = () => { document.body.classList.remove("dragging"); window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); localStorage.setItem("panelW", JSON.stringify(last)); };
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
   };
-  const [panels, setPanels] = useState({ chats: false, ws: false, art: false, src: false });
+  const [panels, setPanels] = useState({ chats: false, ws: false, art: false });
   const [thread, setThread] = useState<string | null>(null);
   const [wins, setWins] = useState<Win[]>([]);
   const winsRef = useRef(wins); winsRef.current = wins;
@@ -202,12 +201,16 @@ export default function App() {
     const loaded = withMode(j.conversation); modeRef.current = loaded.mode || "chat"; setSurface(loaded.mode || "chat"); setConv(loaded); setMsgsFor(id, () => ms); setSel((x) => ({ ...x, ...s }));
     if (!target) setThread(null);
     if (!live) attachRef.current(id); // re-attach if the server is still answering (e.g. after a reload)
-    if (focusMsg) setTimeout(() => document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" }), 80);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (viewRef.current !== id) return;
+      const sc = scroller.current;
+      if (focusMsg) document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" });
+      else if (sc) sc.scrollTop = sc.scrollHeight;
+    }));
   }, [setView, setMsgsFor]);
 
-  const setMode = useCallback((m: "search" | "chat") => { modeRef.current = m; setSurface(m); }, []);
-  const goSearch = useCallback(() => { setMode("search"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
-  const newChat = useCallback(() => { setMode("chat"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
+  const setMode = useCallback((m: "general" | "chat") => { modeRef.current = m; setSurface(m); }, []);
+  const newChat = useCallback(() => { setMode("general"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
   const promote = useCallback(async () => {
     const c = convRef.current; if (!c) return;
     await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "chat" }) });
@@ -217,8 +220,18 @@ export default function App() {
   // ---- streaming (one reader per chat; events patch that chat's messages wherever the user is)
   const storeRef = useRef(store); storeRef.current = store;
   const stopAsked = useRef(new Set<string>()); // Stop pressed before a new chat got its id
+  const enqueue = useCallback((payload: SendPayload, parentId: string | null, threadOf: string | null) => {
+    const key = viewRef.current;
+    const files = payload.attachments.length ? ` · ${payload.attachments.length} attachment${payload.attachments.length === 1 ? "" : "s"}` : "";
+    const entry: QueuedSend = { id: rid(), payload, parentId, threadOf, preview: (payload.content || "Attached files") + files };
+    updateQueued((q) => ({ ...q, [key]: [...(q[key] || []), entry] }));
+  }, [updateQueued]);
+  const removeQueued = useCallback((id: string) => {
+    const key = viewRef.current;
+    updateQueued((q) => { const n = { ...q }; const items = (n[key] || []).filter((x) => x.id !== id); if (items.length) n[key] = items; else delete n[key]; return n; });
+  }, [updateQueued]);
   const consume = useCallback(async (res: Response, key0: string, ids: { ta: string; tu?: string }, attach = false) => {
-    let key = key0, ta = ids.ta; const tu = ids.tu;
+    let key = key0, ta = ids.ta, activeThread: string | null = null, completed = false; const tu = ids.tu;
     const patchA = (fn: (parts: Part[]) => Part[]) => setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, parts: fn(m.parts) } : m)));
     attached.current.add(key);
     try {
@@ -230,8 +243,11 @@ export default function App() {
         for (const line of lines) {
           if (!line.trim()) continue;
           const e = JSON.parse(line);
+          if (e.t === "done") { completed = true; continue; }
           if (e.t === "meta") {
             const cid = e.conversationId as string;
+            activeThread = e.threadOf ?? null;
+            runThreadRef.current[key] = activeThread;
             if (attach) {
               // re-attached to a run started elsewhere: the user message is saved, the answer is not yet
               ta = e.assistantId;
@@ -242,8 +258,17 @@ export default function App() {
             }
             const map: Record<string, string> = { [ta]: e.assistantId, ...(e.userId && tu ? { [tu]: e.userId } : {}) };
             const r = (x: string | null) => (x && map[x]) || x;
+            updateQueued((q) => {
+              const n = { ...q };
+              const items = key0 === cid ? (q[key0] || []) : [...(q[cid] || []), ...(q[key0] || [])];
+              if (key0 !== cid) delete n[key0];
+              const moved = items.map((item) => ({ ...item, parentId: r(item.parentId), threadOf: r(item.threadOf) }));
+              if (moved.length) n[cid] = moved; else delete n[cid];
+              return n;
+            });
             if (key !== cid) { // a new chat got its id: move its messages, stream and view over
               const old = key; key = cid; attached.current.delete(old); attached.current.add(cid);
+              delete runThreadRef.current[old]; runThreadRef.current[cid] = activeThread;
               setStore((st) => { const n = { ...st, [cid]: st[old] || [] }; delete n[old]; return n; });
               setRunning((x) => { const n = { ...x, [cid]: x[old] }; delete n[old]; return n; });
               if (viewRef.current === old) {
@@ -260,6 +285,12 @@ export default function App() {
             ta = e.assistantId; setRunning((x) => ({ ...x, [key]: ta }));
             if (stopAsked.current.has(key0)) { stopAsked.current.delete(key0); fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: cid }) }); }
           } else if (e.t === "reasoning") patchA((p) => { const l = p[p.length - 1]; return l?.type === "reasoning" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "reasoning", text: e.d }]; });
+          else if (e.t === "steer") patchA((p) => [...p, { type: "steer", text: String(e.text || "") }]);
+          else if (e.t === "research") patchA((p) => {
+            const research = e.research as Extract<Part, { type: "research" }>;
+            const i = p.findIndex((x) => x.type === "research");
+            return i < 0 ? [research, ...p] : p.map((x, n) => n === i ? research : x);
+          });
           else if (e.t === "retext") patchA((p) => {
             // the server rewrote the current text part (reasoning retracted, loop cut, printed tool call removed)
             let i = p.length - 1; while (i >= 0 && p[i].type === "reasoning") i--;
@@ -269,53 +300,101 @@ export default function App() {
           else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
           else if (e.t === "toolStart") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p : [...p, { type: "tool", id: e.id, name: e.name, args: {} }]));
           else if (e.t === "tool") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, name: e.name, args: e.args } : x)) : [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]));
-          else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: ((x as { live?: string }).live || "") + e.chunk } as Part : x)));
+          else if (e.t === "toolProgress") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, stage: String(e.text || "") } : x)));
+          else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: (x.live || "") + e.chunk } : x)));
           else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, { dock: e.dock }); }
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
-          else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, live: undefined } as Part : x))); refreshTree(); }
+          else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, live: undefined, stage: undefined } : x))); refreshTree(); }
           else if (e.t === "context") { if (viewRef.current === key) setConv((c) => (c ? { ...c, context: e.context } : c)); }
           else if (e.t === "artifact") refreshTree(); // canvas cards open themselves
           else if (e.t === "error" || e.t === "notice") patchA((p) => [...p, { type: "text", text: `\n\n> ${e.text}\n` }]);
         }
       }
     } catch { /* connection dropped: the run continues on the server; loadConv re-attaches */ }
-    attached.current.delete(key);
+    if (!completed) {
+      attached.current.delete(key);
+      if (key.startsWith("new:")) {
+        setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
+        setMsgsFor(key, (ms) => ms.map((m) => m.id === ta ? { ...m, pending: false, parts: [{ type: "text", text: "\n\n> Connection lost before this new chat could be resumed. Please send again.\n" }] } : m));
+      } else setTimeout(() => { if (runningRef.current[key] && !attached.current.has(key)) void attachRef.current(key); }, 500);
+      return;
+    }
+    finishRef.current(key, ta, activeThread);
+  }, [setMsgsFor, setRunning, setView, refreshConvs, refreshTree, updateQueued]);
+
+  const finishStream = useCallback((key: string, assistantId: string, activeThread: string | null) => {
+    attached.current.delete(key); delete runThreadRef.current[key];
     setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
+    const nextQueued = queuedRef.current[key]?.[0];
+    if (nextQueued) {
+      updateQueued((q) => { const n = { ...q }; const rest = (n[key] || []).slice(1); if (rest.length) n[key] = rest; else delete n[key]; return n; });
+      const parent = nextQueued.threadOf === activeThread ? assistantId : nextQueued.parentId;
+      setTimeout(() => { void sendNextRef.current(nextQueued.payload, parent, nextQueued.threadOf, key); }, 0);
+    }
     refreshTree(); refreshConvs(); setCtxRev((r) => r + 1);
     // the server saved the final message (partial if stopped) before it reported done: take the saved copy
     if (!key.startsWith("new:")) fetch(`/api/conversations/${key}`).then((r) => r.json()).then((j) => { if (!j.messages || runningRef.current[key]) return; setMsgsFor(key, () => j.messages); if (viewRef.current === key) { const c = withMode(j.conversation); setConv(c); if (c.mode) { modeRef.current = c.mode; setSurface(c.mode); } } }).catch(() => {});
-  }, [setMsgsFor, setRunning, setView, refreshConvs, refreshTree]);
+  }, [setMsgsFor, setRunning, refreshConvs, refreshTree, updateQueued]);
+  finishRef.current = finishStream;
 
   const attachTo = useCallback(async (id: string) => {
-    if (attached.current.has(id) || runningRef.current[id]) return;
+    if (attached.current.has(id)) return;
     const res = await fetch(`/api/chat?conversationId=${encodeURIComponent(id)}`).catch(() => null);
-    if (!res || res.status !== 200 || attached.current.has(id)) return;
+    if (!res) { if (runningRef.current[id]) setTimeout(() => void attachRef.current(id), 1000); return; }
+    if (res.status === 204) { if (runningRef.current[id]) finishRef.current(id, runningRef.current[id], runThreadRef.current[id] ?? null); return; }
+    if (res.status !== 200 || attached.current.has(id)) return;
     consume(res, id, { ta: "" }, true);
   }, [consume]);
-  const attachRef = useRef(attachTo); attachRef.current = attachTo;
+  attachRef.current = attachTo;
 
-  const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
-    const key = viewRef.current;
+  const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null, keyOverride?: string) => {
+    const key = keyOverride || viewRef.current;
     if (runningRef.current[key]) return;
     const tu = rid(); const ta = rid();
     const now = new Date().toISOString();
-    const cid = convRef.current?.id || "";
+    const cid = key.startsWith("new:") ? (viewRef.current === key ? convRef.current?.id || "" : "") : key;
     const aParent = payload ? tu : parentId;
     setMsgsFor(key, (ms) => [...ms,
       ...(payload ? [{ id: tu, conversationId: cid, parentId, threadOf, role: "user" as const, content: payload.content, parts: [], attachments: payload.attachments, quote: payload.quote, createdAt: now }] : []),
       { id: ta, conversationId: cid, parentId: aParent, threadOf, role: "assistant" as const, content: "", parts: [], attachments: [], quote: null, createdAt: now, pending: true }]);
     setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
     setRunning((r) => ({ ...r, [key]: ta }));
-    requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
+    if (viewRef.current === key) requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
     const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: modeRef.current }) }).catch(() => null);
     if (!res || !res.ok) {
       const err = res ? ((await res.json().catch(() => ({}))) as { error?: string }).error : "Network error";
       setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, pending: false, parts: [{ type: "text", text: `> ${err || "Request failed"}` }] } : m)));
       setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
+      const queued = queuedRef.current[key] || [];
+      const next = queued[0];
+      if (next) {
+        // The failed placeholder never received a server ID; continue from the last persisted parent instead.
+        const baseParent = key.startsWith("new:") ? null : parentId;
+        const baseThread = key.startsWith("new:") ? null : threadOf;
+        updateQueued((q) => {
+          const n = { ...q }; const rest = (n[key] || []).slice(1);
+          if (rest.length) n[key] = rest.map((item) => ({ ...item, parentId: baseParent, threadOf: baseThread })); else delete n[key];
+          return n;
+        });
+        setTimeout(() => { void sendNextRef.current(next.payload, baseParent, baseThread, key); }, 0);
+      }
       return;
     }
     consume(res, key, { ta, tu: payload ? tu : undefined });
-  }, [consume, setMsgsFor, setRunning]);
+  }, [consume, setMsgsFor, setRunning, updateQueued]);
+  sendNextRef.current = send;
+  const steer = useCallback(async (payload: SendPayload, parentId: string | null, threadOf: string | null) => {
+    const key = viewRef.current;
+    const cid = key.startsWith("new:") ? "" : key;
+    if (!cid) { enqueue(payload, parentId, threadOf); return; }
+    const instruction = [payload.quote ? `Quoted context: ${payload.quote}` : "", payload.content || (payload.attachments.length ? "Please inspect the attached files and use them in the current task." : ""), payload.attachments.length ? `Newly attached files: ${payload.attachments.map((a) => a.path).join(", ")}` : ""].filter(Boolean).join("\n\n");
+    const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: cid, steer: instruction }) }).catch(() => null);
+    const j = res?.ok ? await res.json().catch(() => ({})) as { accepted?: boolean } : null;
+    if (!j?.accepted) {
+      if (runningRef.current[key]) enqueue(payload, parentId, threadOf);
+      else void send(payload, parentId, threadOf, key);
+    }
+  }, [enqueue, send]);
 
   // Stop: the server stops the run, saves what was written so far, then ends the stream
   const stop = useCallback(() => {
@@ -323,8 +402,12 @@ export default function App() {
     if (key.startsWith("new:")) { stopAsked.current.add(key); return; }
     fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: key }) });
   }, []);
-  const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; send(p, last?.id ?? null, null); }, [mainPath, send]);
-  const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
+  const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; void send(p, last?.id ?? null, null); }, [mainPath, send]);
+  const queueMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; enqueue(p, last?.id ?? null, null); }, [mainPath, enqueue]);
+  const steerMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; void steer(p, last?.id ?? null, null); }, [mainPath, steer]);
+  const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; void send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
+  const queueThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; enqueue(p, last?.id ?? null, thread); }, [threadPath, enqueue, thread]);
+  const steerThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; void steer(p, last?.id ?? null, thread); }, [threadPath, steer, thread]);
 
   // ---- canvases
   // a window is sized around its content: a 16:9 image opens as a ~16:9 window hugging it, centred,
@@ -340,7 +423,8 @@ export default function App() {
     void contentRatio(spec).then((ratio) => {
       remember();
       setWins((ws) => {
-        const dock = !!o?.dock && innerWidth >= 760;
+        const wantsDock = o?.dock ?? true;
+        const dock = wantsDock && !ws.some((w) => w.dock) && innerWidth >= 760;
         const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
         const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
         const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
@@ -420,22 +504,23 @@ export default function App() {
   }, []);
 
   // ---- drag & drop: over the chat = save to uploads, over the input bar = attach
-  const [fileDrag, setFileDrag] = useState(0);
+  const [fileDrag, setFileDrag] = useState(false);
   useEffect(() => {
     const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types || [])].includes("Files");
-    const enter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setFileDrag((n) => n + 1); } };
-    const leave = (e: DragEvent) => { if (hasFiles(e)) setFileDrag((n) => Math.max(0, n - 1)); };
+    const enter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setFileDrag(true); } };
+    const leave = (e: DragEvent) => { if (hasFiles(e) && !e.relatedTarget) setFileDrag(false); };
     const over = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
     const drop = (e: DragEvent) => {
       if (!hasFiles(e)) return;
+      e.preventDefault(); setFileDrag(false);
       if ((e.target as HTMLElement).closest(".composer")) return; // the input bar attaches to the message
-      e.preventDefault(); setFileDrag(0);
       const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
       const dir = convRef.current ? chatDir(convRef.current.id) + "/uploads" : "uploads";
       void upload(files, dir).then(() => refreshTree());
     };
-    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop);
-    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); };
+    const end = () => setFileDrag(false);
+    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop); addEventListener("dragend", end);
+    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); removeEventListener("dragend", end); };
   }, [refreshTree]);
 
   // ---- auto-scroll while streaming
@@ -452,19 +537,12 @@ export default function App() {
       else if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); setPanels((p) => ({ ...p, chats: !p.chats })); }
       else if (mod && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(); }
       else if (mod && e.key === ".") { e.preventDefault(); setPanels((p) => ({ ...p, ws: !p.ws })); }
-      else if (e.key === "Escape" && !(e.target as HTMLElement).closest("input,textarea")) { if (thread) setThread(null); else setPanels({ chats: false, ws: false, art: false, src: false }); }
+      else if (e.key === "Escape" && !(e.target as HTMLElement).closest("input,textarea")) { if (thread) setThread(null); else setPanels({ chats: false, ws: false, art: false }); }
     };
     addEventListener("keydown", k); return () => removeEventListener("keydown", k);
   }, [newChat, thread]);
 
-  const sources = useMemo(() => {
-    const seen = new Set<string>(); const out: { url: string; title: string; snippet?: string }[] = [];
-    for (const m of [...mainPath, ...threadPath]) for (const p of m.parts) if (p.type === "tool" && p.meta && (p.meta as { sources?: unknown[] }).sources)
-      for (const s of (p.meta as { sources: { url: string; title: string; snippet?: string }[] }).sources) if (!seen.has(s.url)) { seen.add(s.url); out.push(s); }
-    return out;
-  }, [mainPath, threadPath]);
-
-  const chipNew = useCallback((mode: "chat" | "search", text: string) => {
+  const chipNew = useCallback((mode: "chat" | "general", text: string) => {
     const id = "new:" + rid();
     try { localStorage.setItem("draft:" + id, JSON.stringify({ text, chips: [] })); } catch { /* ignore quota */ }
     setMode(mode); setView(id); setConv(null); setThread(null); setEditing(null);
@@ -484,14 +562,13 @@ export default function App() {
   const runBrief = useCallback(() => {
     localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10));
     setOfferBrief(false);
-    chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
+    chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
   }, [chipNew]);
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
-    { name: "search", hint: "New search", run: goSearch },
-    { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
-    { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
-    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
+    { name: "research", hint: "Deep research in a new general conversation", run: (arg?: string) => chipNew("general", "/research " + (arg || "")) },
+    { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("general", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
+    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
     { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
     { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
@@ -499,12 +576,11 @@ export default function App() {
     { name: "chats", hint: "Chats", run: () => setPanels((p) => ({ ...p, chats: true })) },
     { name: "workspace", hint: "Files", run: () => setPanels((p) => ({ ...p, ws: true })) },
     { name: "artifacts", hint: "Artifacts", run: () => setPanels((p) => ({ ...p, art: true })) },
-    { name: "sources", hint: "Sources", run: () => setPanels((p) => ({ ...p, src: true })) },
     { name: "context", hint: "Clear active context", run: async () => { const c = convRef.current; if (!c) return; setConv({ ...c, context: [] }); await fetch(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ context: [] }) }); } },
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
     { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
-  ], [newChat, goSearch, runBrief, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
+  ], [newChat, runBrief, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -514,7 +590,7 @@ export default function App() {
           onCancel={() => setEditing(null)} onSend={(p) => { setEditing(null); send(p, m.parentId, m.threadOf); }} />
       </div></div>
     );
-    return <Message key={m.id} m={m} quiet={!isThread && (conv?.mode === "search" || (surface === "search" && !conv))} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
+    return <Message key={m.id} m={m} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
       onEdit={streamId ? undefined : () => setEditing(m.id)}
       onRegenerate={streamId ? undefined : () => send(null, m.parentId, m.threadOf)}
       onThread={isThread ? undefined : () => setThread(m.id)}
@@ -522,9 +598,9 @@ export default function App() {
   };
 
   const anchor = thread ? msgs.find((m) => m.id === thread) : null;
-  const rightCount = [!!thread, panels.ws, panels.art, panels.src].filter(Boolean).length;
+  const rightCount = [!!thread, panels.ws, panels.art].filter(Boolean).length;
   const tog = (k: keyof typeof panels) => setPanels((p) => ({ ...p, [k]: !p[k] }));
-  const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
+  const hasOpenPanel = panels.chats || panels.ws || panels.art || settings || !!thread;
   const chromeIdle = idle && !hasOpenPanel;
   const docked = wins.some((w) => w.dock);
   const leaf = (thread ? threadPath : mainPath).filter((m) => !m.id.startsWith("tmp")).slice(-1)[0];
@@ -536,13 +612,12 @@ export default function App() {
         style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--lw" as string]: pw.l + "px", ["--rw" as string]: pw.r + "px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
-          <button className={"ib" + (surface === "search" && !conv ? " on" : "")} aria-label="Search" title="Search" onClick={goSearch}><Search /></button>
-          <button className={"ib" + (surface === "chat" && !conv ? " on" : "")} aria-label="New chat" title="New chat" onClick={newChat}><SquarePen /></button>
+          <button className={"ib" + (surface === "general" && !conv ? " on" : "")} aria-label="New chat" title="New chat · General mode" onClick={newChat}><SquarePen /></button>
         </div>
         <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
+          {conv?.mode === "general" && <button className="open-chat" onClick={promote}><MessageSquare />Open in chat</button>}
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
           <button className={"ib" + (panels.art ? " on" : "")} aria-label="Artifacts" onClick={() => tog("art")}><AppWindow /></button>
-          {sources.length > 0 && <button className={"ib" + (panels.src ? " on" : "")} aria-label="Sources" onClick={() => tog("src")}><Link2 /></button>}
           <button className="ib" aria-label="Settings" onClick={() => setSettings(true)}><Settings2 /></button>
         </div>
 
@@ -552,30 +627,29 @@ export default function App() {
 
         <div className="dock">
           <div className="dock-stack">
-          <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} msgs={msgs} onBrief={runBrief} onPromote={promote} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
-          <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
+          <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} onBrief={runBrief} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
+          <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} onQueue={queueMain} onSteer={steerMain} queued={(queuedByChat[view] || []).map(({ id, preview }) => ({ id, preview }))} onRemoveQueued={removeQueued} streaming={!!streamId} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
           </div>
         </div>
 
         {panels.chats && <div className="lstack"><div className="rsz" onPointerDown={resize("l")} aria-hidden /><ChatsPanel convs={convs} current={conv?.id || null} running={runningIds}
           onOpen={(id, leaf, msg) => { loadConv(id, leaf, msg); }} onClose={() => setPanels((p) => ({ ...p, chats: false }))}
-          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) (conv.mode === "search" ? goSearch() : newChat()); refreshConvs(); }} /></div>}
+          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) newChat(); refreshConvs(); }} /></div>}
 
         {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}><div className="rsz" onPointerDown={resize("r")} aria-hidden />
           {thread && anchor && <div className="panel thread">
             <div className="panel-head"><span>Thread</span><span className="sp" /><button className="ib sm" aria-label="Close thread" onClick={() => setThread(null)}><X /></button></div>
             <div className="anchor">{anchor.content.replace(/<[^>]+>/g, "").slice(0, 300)}</div>
             <div className="panel-body">{threadPath.map((m, i) => renderTurn(m, true, i === threadPath.length - 1))}</div>
-            <Composer inline draftKey={view + ":t:" + thread} onSend={sendThread} streaming={!!streamId && threadPath.some((m) => m.id === streamId)} onStop={stop}
+            <Composer inline draftKey={view + ":t:" + thread} onSend={sendThread} onQueue={queueThread} onSteer={steerThread} queued={(queuedByChat[view] || []).map(({ id, preview }) => ({ id, preview }))} onRemoveQueued={removeQueued} streaming={!!streamId} onStop={stop}
               quote={quotes.thread} onClearQuote={() => setQuotes((q) => ({ ...q, thread: null }))} onFocus={() => (active.current = "thread")} autoFocus />
           </div>}
           {panels.ws && <WorkspacePanel onClose={() => tog("ws")} ctx={ctxRef} />}
           {panels.art && <ArtifactsPanel onClose={() => tog("art")} recent={recent} />}
-          {panels.src && <SourcesPanel sources={sources} onClose={() => tog("src")} />}
         </div>}
 
-        {fileDrag > 0 && <div className="dropveil" aria-hidden>
+        {fileDrag && <div className="dropveil" aria-hidden>
           <div className="dz">Drop to save into <b>{conv ? "this chat's uploads" : "workspace uploads"}</b></div>
           <div className="dz sub">…or onto the input bar to attach</div>
         </div>}

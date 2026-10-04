@@ -40,22 +40,9 @@ export function packsFor(st: Settings, state: ConvState | null | undefined): Pac
 }
 
 type Sys = { text: string; sections: CtxSection[] };
-/** Search conversations (History): an answer engine, not a chat. Results for the query arrive in <search_results>. */
-const SEARCH_MODE = `# Search mode
-The user is searching, not chatting. Answer the way a search engine's AI mode does: the answer in the first sentence, then only the detail that helps. Short paragraphs, a table for comparisons, no preamble, no closing offers.
-- Results for their query are attached in <search_results>. The result cards are shown above your answer, so never list the links again; cite claims inline as [n](url) using those results.
-- Stable general knowledge (definitions, math, history, how something works): answer directly, citations optional.
-- A specific lookup (a product, person, place, price, version, schedule, news): give the facts that answer it, each cited. If the results don't answer it, search again with a better query or web_fetch the best page. Never guess.
-- A task (compare, find me, plan, fix, how do I …): search and fetch as much as it needs, then do it. Check every command, flag and API against current docs before giving it.`;
-
-/** Search mode skips the pre-search for small talk and plain arithmetic. */
-export function needsSearch(q: string) {
-  const t = q.trim();
-  if (!t || t.length > 2000) return false;
-  if (/^(hi|hello|hey|yo|thanks?|thank you|ok(ay)?|cool|nice|good (morning|afternoon|evening|night))\b[\s!.?]*$/i.test(t)) return false;
-  if (/^[\d\s+\-*/^().,=x×÷%]+\??$/.test(t)) return false;
-  return true;
-}
+/** General mode is conversational by default: use retrieval when the task calls for it, never just because a new chat started. */
+const GENERAL_MODE = `# General mode
+Answer naturally and directly. Do not automatically search the web or turn every question into a research task. Use tools when they materially help: web_search for current, niche, source-backed, or explicitly requested lookups; web_fetch to inspect a page before relying on it; workspace and integration tools for concrete actions. Stable knowledge and simple questions usually need no tools. When you do search, cite claims with links from the results you actually inspected, and keep the sources inside the relevant search tool card.`;
 
 async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number, query = ""): Promise<Sys> {
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
@@ -82,7 +69,7 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
     ["system", "System prompt", base],
     ["memory", "Memory", [memory && `# ${memory}`, recall && `# Remembered\n${recall}\nremember only when the user asks, or a decision that will matter in a later chat. forget(id) undoes one.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
-    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, conv.state?.mode === "search" ? SEARCH_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
+    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, conv.state?.mode === "general" || conv.state?.mode === "search" ? GENERAL_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
     ["tree", "Workspace tree", tree],
     ["files", "Files in context", files && `# Active context files\n${files}`],
   ];
@@ -190,9 +177,9 @@ async function fixForeign(st: Settings, parts: Part[], userText: string) {
   }
 }
 
-export async function runAgent(opts: { conv: Conv; assistantId: string; parentId: string; threadOf: string | null; emit: Emit; signal: AbortSignal }) {
+export async function runAgent(opts: { conv: Conv; assistantId: string; parentId: string; threadOf: string | null; emit: Emit; signal: AbortSignal; takeSteers?: () => string[]; setModelAbort?: (abort: (() => void) | null) => void }) {
   await ensureWorkspace();
-  const { assistantId, parentId, threadOf, emit, signal } = opts;
+  const { assistantId, parentId, threadOf, emit, signal, takeSteers, setModelAbort } = opts;
   let conv = opts.conv;
   const st = await getSettings();
   const budget = budgetOf(st);
@@ -200,6 +187,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
 
   // @mentions and attachments pull files into context once; later mentions are no-ops
   const parent = all.find((m) => m.id === parentId);
+  const researchRequested = parent?.role === "user" && /^\/research\b/i.test(parent.content.trim());
   if (parent?.role === "user") {
     const mentioned = [...parent.content.matchAll(/@((?:~\/|\/)?[\w./~-]+\.[\w]+|[\w-]+\/[\w./-]+)/g)].map((x) => x[1]);
     const add: string[] = [];
@@ -221,6 +209,27 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   let toolDefTok = est(JSON.stringify(tools));
 
   const parts: Part[] = [];
+  const researchStartedAt = new Date().toISOString();
+  const researchPart: Extract<Part, { type: "research" }> | null = researchRequested ? {
+    type: "research", status: "running", searches: 0, pages: 0, sources: 0,
+    stages: [
+      { id: "frame", label: "Frame the question and scope", status: "doing" },
+      { id: "search", label: "Gather relevant sources", status: "todo" },
+      { id: "inspect", label: "Read primary sources", status: "todo" },
+      { id: "verify", label: "Cross-check evidence and gaps", status: "todo" },
+      { id: "synthesize", label: "Write a cited report", status: "todo" },
+    ],
+  } : null;
+  if (researchPart) parts.push(researchPart);
+  const updateResearch = () => { if (researchPart) emit({ t: "research", research: { ...researchPart, stages: researchPart.stages.map((s) => ({ ...s })) } }); };
+  const setResearchStage = (id: string) => {
+    if (!researchPart) return;
+    const at = researchPart.stages.findIndex((s) => s.id === id);
+    if (at < 0) return;
+    researchPart.stages = researchPart.stages.map((s, i) => ({ ...s, status: i < at ? "done" : i === at ? "doing" : "todo" }));
+    updateResearch();
+  };
+  if (researchPart) updateResearch();
   const lastText = () => { for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; if (p.type === "text") return p; if (p.type === "tool") return null; } return null; };
   let thinkStart = 0;
   const endThink = () => { const r = parts[parts.length - 1]; if (r?.type === "reasoning" && r.ms === undefined) r.ms = Date.now() - thinkStart; };
@@ -242,10 +251,8 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     },
   };
 
-  // General/search chats stay light: no big context window. Old tool output is always folded, and
-  // once a search chat passes 30 exchanged messages, everything beyond the last 15 becomes a rolling
-  // summary block instead of raw history.
-  if (state.mode === "search") {
+  // General-mode chats stay light: fold older tool output and summarize very long histories.
+  if (state.mode === "general" || state.mode === "search") {
     const pre = chain(all, parentId);
     if (pre.length > 30) { await compactHistory(conv, pre, st, 15); await reload(); }
     else if (pre.length > 8) { const n = await compactTools(pre, { keepLast: 6 }); if (n) await reload(); }
@@ -261,6 +268,20 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   hist = await buildHistory(conv, all, parentId, threadOf, st, budget - est(sys.text) - toolDefTok);
   if (hist.trimmed) emit({ t: "notice", text: `Oldest ${hist.trimmed} messages are outside the context window. /compact keeps them as a summary.` });
   const loopMsgs: OAMsg[] = [];
+  const steerGuidance: string[] = [];
+  const applySteers = (incoming = takeSteers?.() || []) => {
+    if (!incoming.length) return false;
+    for (const direction of incoming) {
+      const text = direction.slice(0, 4000);
+      steerGuidance.push(text);
+      parts.push({ type: "steer", text });
+    }
+    if (steerGuidance.length > 6) steerGuidance.splice(0, steerGuidance.length - 6);
+    return true;
+  };
+  const systemText = () => steerGuidance.length
+    ? `${sys.text}\n\n# Live user direction\nContinue the original task rather than restarting or abandoning it. Fold each direction below into the current plan, revise next actions if needed, preserve useful completed work, and verify the final result. These are explicit instructions from the user while you were working.\n\n${steerGuidance.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
+    : sys.text;
 
   // Slash workflows: "/research topic" preloads that skill for this request (saves a round trip for small models).
   const slash = parent?.role === "user" ? parent.content.match(/^\/([\w-]+)\b/) : null;
@@ -275,28 +296,6 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     }
   }
 
-  // Search mode: the FIRST query is searched right away (no model round trip), results shown and handed
-  // to the model. Follow-ups answer from what is already here unless they are clearly a new lookup
-  // (an explicit search verb or a full new question) — re-searching on every prompt was the bug.
-  // The model keeps web_search and can look things up itself when a follow-up truly needs it.
-  let presearched = false;
-  const prevUsers = hist.path.filter((m) => m.role === "user" && m.id !== parent?.id);
-  const isNewQuery = (t: string) => /\b(search|find|look ?up|google|check|latest|news|price|today|compare)\b/i.test(t) || t.trim().split(/\s+/).length >= 6;
-  if (state.mode === "search" && parent?.role === "user" && !parent.threadOf && needsSearch(parent.content) && (prevUsers.length === 0 || isNewQuery(parent.content))) {
-    const prevQ = prevUsers.slice(-1)[0]?.content || "";
-    const q = (parent.content.trim().split(/\s+/).length < 4 && prevQ ? `${prevQ.slice(0, 120)} ${parent.content}` : parent.content).replace(/\s+/g, " ").trim().slice(0, 300);
-    const id = `presearch_${Date.now()}`;
-    const part: Part = { type: "tool", id, name: "web_search", args: { query: q } };
-    parts.push(part);
-    emit({ t: "tool", id, name: "web_search", args: part.args });
-    const out = await execTool("web_search", { query: q, limit: 6 }, ctx);
-    Object.assign(part, { result: out.result, ok: out.ok, meta: { ...(out.meta || {}), presearch: true } });
-    emit({ t: "toolResult", id, result: out.result.slice(0, 20000), ok: out.ok, meta: part.meta });
-    const last = hist.msgs[hist.msgs.length - 1];
-    const add = out.ok ? `\n\n<search_results query="${q.replace(/"/g, "'")}">\n${out.result}\n</search_results>` : `\n\n<search_results query="${q.replace(/"/g, "'")}">search failed: ${out.result.slice(0, 200)}</search_results>`;
-    if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
-    presearched = out.ok;
-  }
 
   const touched = new Set<string>();
   const snapshots = new Map<string, string>(); // file content before this turn's first write (integrity diff)
@@ -308,7 +307,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const stuck = new StuckDetector();
   let opener = new OpenerGate();
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
-  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched;
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
@@ -319,17 +318,12 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     if (!lt.text) parts.splice(parts.indexOf(lt), 1);
     emit({ t: "retext", text: lt.text });
   };
+  let runFailed = false;
   try {
     for (let step = 0; step < maxSteps(); step++) {
+      applySteers();
       tools = allTools(st, packsFor(st, state), mcp);
       toolDefTok = est(JSON.stringify(tools));
-      const res = await fetch(endpoint(st), {
-        method: "POST", signal, headers: headers(st),
-        body: JSON.stringify({ model: st.model, stream: true, messages: [{ role: "system", content: sys.text }, ...hist.msgs, ...loopMsgs], tools }),
-      });
-      if (!res.ok || !res.body) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 400)}`);
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
       const split = new ReasoningSplitter();
       let buf = "", text = "", thought = "", checkedAt = 0, thoughtAt = 0, looped = false;
       const stepStart = Date.now();
@@ -346,38 +340,71 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         if (r.reasoning) { thought += r.reasoning; pushReasoning(r.reasoning); if (r.orphan) thinkStart = stepStart; }
         if (r.text) visible(r.text);
       };
-      read: for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n"); buf = lines.pop() || "";
-        for (const line of lines) {
-          const l = line.trim();
-          if (!l.startsWith("data:")) continue;
-          const data = l.slice(5).trim();
-          if (data === "[DONE]") continue;
-          let j; try { j = JSON.parse(data); } catch { continue; }
-          const d = j.choices?.[0]?.delta;
-          if (!d) continue;
-          const rc = d.reasoning_content ?? d.reasoning;
-          if (typeof rc === "string" && rc) { thought += rc; pushReasoning(rc); }
-          if (d.content) onContent(d.content);
-          for (const tc of d.tool_calls || []) {
-            endThink();
-            const i = tc.index ?? calls.length;
-            const fresh = !calls[i];
-            calls[i] ??= { id: tc.id || `call_${i}_${Date.now()}`, type: "function", function: { name: "", arguments: "" } };
-            if (tc.id) calls[i].id = tc.id;
-            if (tc.function?.name) calls[i].function.name += tc.function.name;
-            if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
-            if (tc.extra_content) calls[i].extra_content = tc.extra_content;
-            if (fresh && calls[i].function.name) emit({ t: "toolStart", id: calls[i].id, name: calls[i].function.name });
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      const generation = new AbortController();
+      setModelAbort?.(() => generation.abort());
+      try {
+        const requestSignal = AbortSignal.any([signal, generation.signal]);
+        const res = await fetch(endpoint(st), {
+          method: "POST", signal: requestSignal, headers: headers(st),
+          body: JSON.stringify({ model: st.model, stream: true, messages: [{ role: "system", content: systemText() }, ...hist.msgs, ...loopMsgs], tools }),
+        });
+        if (!res.ok || !res.body) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 400)}`);
+        reader = res.body.getReader();
+        const dec = new TextDecoder();
+        read: for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split("\n"); buf = lines.pop() || "";
+          for (const line of lines) {
+            const l = line.trim();
+            if (!l.startsWith("data:")) continue;
+            const data = l.slice(5).trim();
+            if (data === "[DONE]") continue;
+            let j; try { j = JSON.parse(data); } catch { continue; }
+            const d = j.choices?.[0]?.delta;
+            if (!d) continue;
+            const rc = d.reasoning_content ?? d.reasoning;
+            if (typeof rc === "string" && rc) { thought += rc; pushReasoning(rc); }
+            if (d.content) onContent(d.content);
+            for (const tc of d.tool_calls || []) {
+              endThink();
+              const i = tc.index ?? calls.length;
+              const fresh = !calls[i];
+              calls[i] ??= { id: tc.id || `call_${i}_${Date.now()}`, type: "function", function: { name: "", arguments: "" } };
+              if (tc.id) calls[i].id = tc.id;
+              if (tc.function?.name) calls[i].function.name += tc.function.name;
+              if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
+              if (tc.extra_content) calls[i].extra_content = tc.extra_content;
+              if (fresh && calls[i].function.name) emit({ t: "toolStart", id: calls[i].id, name: calls[i].function.name });
+            }
+            // Degenerate repetition: cut the stream instead of burning the whole output budget.
+            if (text.length - checkedAt > 240) { checkedAt = text.length; const k = findLoop(text); if (k >= 0) { rewriteStep(text, text.slice(0, k)); text = text.slice(0, k); looped = true; } }
+            if (thought.length - thoughtAt > 600) { thoughtAt = thought.length; if (findLoop(thought) >= 0) looped = true; }
+            if (looped) { await reader.cancel().catch(() => {}); break read; }
           }
-          // Degenerate repetition: cut the stream instead of burning the whole output budget.
-          if (text.length - checkedAt > 240) { checkedAt = text.length; const k = findLoop(text); if (k >= 0) { rewriteStep(text, text.slice(0, k)); text = text.slice(0, k); looped = true; } }
-          if (thought.length - thoughtAt > 600) { thoughtAt = thought.length; if (findLoop(thought) >= 0) looped = true; }
-          if (looped) { await reader.cancel().catch(() => {}); break read; }
         }
+      } catch (e) {
+        setModelAbort?.(null);
+        if (signal.aborted) throw e;
+        const incoming = takeSteers?.() || [];
+        if (incoming.length) {
+          const ending = split.end();
+          if (ending.reasoning) pushReasoning(ending.reasoning);
+          if (ending.text) visible(ending.text);
+          const held = opener.flush();
+          if (held) { text += held; pushText(held); emit({ t: "text", d: held }); }
+          endThink();
+          if (reader) await reader.cancel().catch(() => {});
+          if (text.trim()) loopMsgs.push({ role: "assistant", content: text });
+          applySteers(incoming);
+          sep = true;
+          continue;
+        }
+        throw e;
+      } finally {
+        setModelAbort?.(null);
       }
       if (!looped) { const e = split.end(); if (e.reasoning) pushReasoning(e.reasoning); if (e.text) visible(e.text); }
       { const held = opener.flush(); if (held) { text += held; pushText(held); emit({ t: "text", d: held }); } }
@@ -441,7 +468,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             continue;
           }
         }
-        if (state.mode === "search" && st.quality === "fix" && cmdRounds < 1 && text && !signal.aborted) {
+        if ((state.mode === "general" || state.mode === "search") && st.quality === "fix" && cmdRounds < 1 && text && !signal.aborted) {
           const bad = unseenCommandFlags(text, seenText());
           if (bad) {
             cmdRounds++;
@@ -462,6 +489,12 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             continue;
           }
         }
+        if (applySteers()) {
+          if (text.trim()) loopMsgs.push({ role: "assistant", content: text });
+          sep = true;
+          continue;
+        }
+        if (researchPart) setResearchStage("synthesize");
         break;
       }
       loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
@@ -475,12 +508,23 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         parts.push(part);
         emit({ t: "tool", id: c.id, name: part.name, args });
         const name = c.function.name;
+        if (researchPart && (name === "web_search" || /^mcp__.*search/i.test(name))) {
+          researchPart.searches++;
+          setResearchStage(researchPart.pages ? "verify" : "search");
+        } else if (researchPart && name === "web_fetch_many") {
+          researchPart.pages += Math.max(1, Math.min(8, Array.isArray(args.urls) ? args.urls.length : 1));
+          setResearchStage(researchPart.pages > 1 ? "verify" : "inspect");
+        } else if (researchPart && (name === "web_fetch" || name === "web_extract" || /^mcp__.*(fetch|browse)/i.test(name))) {
+          researchPart.pages++;
+          setResearchStage(researchPart.pages > 1 ? "verify" : "inspect");
+        }
         if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
         // live output: batched every 120ms so a chatty process doesn't flood the stream; last 6 KB is what the row shows
         let buf = "", timer: ReturnType<typeof setTimeout> | null = null;
         const flush = () => { timer = null; if (buf) { emit({ t: "toolOutput", id: c.id, chunk: buf }); buf = ""; } };
         const output = (chunk: string) => { buf = (buf + chunk).slice(-6000); if (!timer) timer = setTimeout(flush, 120); };
-        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, signal });
+        const progress = (text: string) => emit({ t: "toolProgress", id: c.id, text });
+        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, progress, signal });
         if (timer) { clearTimeout(timer); flush(); }
         callNo++;
         if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }
@@ -490,6 +534,12 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         if (out.stop) stop = true;
         Object.assign(part, { result: out.result, ok: out.ok, meta: out.meta });
         emit({ t: "toolResult", id: c.id, result: out.result.slice(0, 20000), ok: out.ok, meta: out.meta });
+        if (researchPart) {
+          const urls = new Set<string>();
+          for (const item of parts) if (item.type === "tool") for (const source of ((item.meta as { sources?: { url?: string }[] } | undefined)?.sources || [])) if (source.url) urls.add(source.url);
+          researchPart.sources = urls.size;
+          updateResearch();
+        }
         loopMsgs.push({ role: "tool", tool_call_id: c.id, content: out.result });
         stuck.add({ name, args, result: out.result, ok: out.ok });
         const s = stuck.check();
@@ -521,7 +571,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
       }
     }
   } catch (e) {
-    if (!signal.aborted) { const msg = e instanceof Error ? e.message : String(e); pushText(`\n\n> ${msg}`); emit({ t: "error", text: msg }); }
+    if (!signal.aborted) { runFailed = true; const msg = e instanceof Error ? e.message : String(e); pushText(`\n\n> ${msg}`); emit({ t: "error", text: msg }); }
   }
 
   // End-of-turn text hygiene. The client refetches the saved message right after the stream, so fixes show up there.
@@ -537,6 +587,29 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   // stopped mid-call: no spinner forever on reload; the partial answer itself is kept as-is
   if (signal.aborted) for (const p of parts) if (p.type === "tool" && p.result === undefined) Object.assign(p, { result: "(stopped by the user)", ok: false });
   const content = parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
+  if (researchPart) {
+    const status = signal.aborted || runFailed ? "stopped" : "done";
+    researchPart.status = status;
+    if (status === "done") researchPart.stages = researchPart.stages.map((s) => ({ ...s, status: "done" }));
+    const urls = new Set<string>();
+    const tools = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool");
+    for (const item of tools) for (const source of ((item.meta as { sources?: { url?: string }[] } | undefined)?.sources || [])) if (source.url) urls.add(source.url);
+    researchPart.sources = urls.size;
+    for (const item of tools) item.compact = "inspect the saved deep-research run for full details";
+    const rel = `${chatDir(conv.id)}/research/${assistantId}.json`;
+    try {
+      await fs.mkdir(path.dirname(path.join(WS, rel)), { recursive: true });
+      await fs.writeFile(path.join(WS, rel), JSON.stringify({
+        version: 1, id: assistantId, conversationId: conv.id, status, startedAt: researchStartedAt, completedAt: new Date().toISOString(),
+        request: parent?.content.replace(/^\/research\s*/i, "") || "", stages: researchPart.stages,
+        stats: { searches: researchPart.searches, pages: researchPart.pages, sources: researchPart.sources },
+        tools, finalReport: content,
+      }, null, 2));
+      researchPart.path = rel;
+      emit({ t: "artifact", path: rel });
+    } catch (e) { emit({ t: "error", text: `Could not save deep-research details: ${e instanceof Error ? e.message : String(e)}` }); }
+    updateResearch();
+  }
   await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts });
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));
 

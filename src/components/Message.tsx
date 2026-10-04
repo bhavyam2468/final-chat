@@ -1,7 +1,7 @@
 "use client";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { youtubeId } from "@/lib/shared";
-import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send, Bookmark } from "lucide-react";
+import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, ChevronDown, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send, Bookmark, ExternalLink } from "lucide-react";
 import { StreamMarkdown, SMComponents } from "@/lib/streammark/StreamMarkdown";
 import { Block } from "./Block";
 import { useSmoothText } from "@/lib/streammark/useSmoothText";
@@ -42,8 +42,8 @@ const TOOL_META: Record<string, Meta> = {
   fs_delete: M(Trash2, "Deleting", "Deleted", "path"), fs_move: M(FilePen, "Moving to", "Moved to", "to"),
   run_python: M(Code2, "Running Python", "Ran Python"), pip_install: M(Package, "Installing", "Installed", "packages"),
   shell: M(Terminal, "Running", "Ran", "command"), host_shell: M(Monitor, "Running on your machine", "Ran on your machine", "command"),
-  web_search: M(Search, "Searching", "Searched", "query"), web_fetch: M(Globe, "Reading", "Read", "url"), web_extract: M(Globe, "Extracting from", "Extracted from", "url"),
-  view_image: M(ImageIcon, "Looking at", "Looked at", "path"), todo: M(ListChecks, "Updating plan", "Plan"), ask_user: M(MessageSquare, "Asking", "Asked", "question"),
+  web_search: M(Search, "Searching", "Searched", "query"), web_fetch: M(Globe, "Reading", "Read", "url"), web_fetch_many: M(Globe, "Reading pages in parallel", "Read pages in parallel"), web_extract: M(Globe, "Extracting from", "Extracted from", "url"),
+  view_image: M(ImageIcon, "Looking at", "Looked at", "path"), todo: M(ListChecks, "Updating plan", "Updated plan"), ask_user: M(MessageSquare, "Asking", "Asked", "question"),
   canvas_open: M(AppWindow, "Opening", "Opened", "target"), ui_search: M(AppWindow, "Looking up components", "Looked up components", "query"),
   proc_start: M(Play, "Starting", "Started", "name"), proc_logs: M(ScrollText, "Reading logs of", "Read logs of", "name"), proc_restart: M(RotateCw, "Restarting", "Restarted", "name"),
   proc_stop: M(Square, "Stopping", "Stopped", "name"), browser: M(Globe, "Opening in browser", "Viewed in browser", "target"), check: M(ShieldCheck, "Checking", "Checked", "path"),
@@ -52,15 +52,28 @@ const TOOL_META: Record<string, Meta> = {
 };
 
 type Src = { url: string; title: string; snippet?: string };
-/** Compact source rail: numbered pills (favicon · host · title) that sit quietly above the answer,
-    in the same order the model cites them as [n]. */
-export function SourceList({ items }: { items: Src[] }) {
-  return <div className="srcs">{items.map((s, i) => { let host = ""; try { host = new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
-    return <a key={i} className="src" href={s.url} target="_blank" rel="noreferrer" title={s.snippet || s.title}>
-      <span className="n">{i + 1}</span>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" />
-      <span className="t"><b>{host}</b><small>{s.title}</small></span></a>; })}</div>;
+const humanizeTool = (s: string) => s.replace(/([a-z\d])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+
+function SearchCards({ items, source }: { items: Src[]; source?: string }) {
+  if (!items.length) return null;
+  const sourceLabel = source === "fast" ? "Direct search" : source === "fetch" ? "Direct HTTP" : source === "local" ? "Local Firecrawl fallback" : source === "cloud" ? "Firecrawl fallback" : source === "mixed" ? "Direct HTTP and Firecrawl" : source;
+  return <div className="search-results">
+    {sourceLabel && <div className="search-source">{sourceLabel}</div>}
+    {items.map((s, i) => { let host = ""; try { host = new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
+      return <a key={s.url + i} className="search-result" href={s.url} target="_blank" rel="noreferrer">
+        <span className="search-result-no">{i + 1}</span><span className="search-result-copy"><small>{host || s.url}</small><b>{s.title || s.url}</b>{s.snippet && <span>{s.snippet}</span>}</span><ExternalLink />
+      </a>;
+    })}
+  </div>;
+}
+
+function StructuredResult({ text }: { text: string }) {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return <pre className="tool-result-text">{text}</pre>; }
+  if (!value || typeof value !== "object") return <pre className="tool-result-text">{String(value ?? text)}</pre>;
+  if (Array.isArray(value)) return <div className="tool-result-list">{value.slice(0, 40).map((item, i) => <div key={i}>{typeof item === "string" ? item : <pre>{JSON.stringify(item, null, 2)}</pre>}</div>)}{value.length > 40 && <small>{value.length - 40} more results</small>}</div>;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return <dl className="tool-result-fields">{entries.slice(0, 40).map(([k, v]) => <div key={k}><dt>{humanizeTool(k)}</dt><dd>{typeof v === "string" ? v : <pre>{JSON.stringify(v, null, 2)}</pre>}</dd></div>)}</dl>;
 }
 
 type Todo = { text: string; status: "todo" | "doing" | "done" };
@@ -135,9 +148,9 @@ function LiveOut({ text }: { text: string }) {
 }
 function Elapsed() {
   const [t0] = useState(() => Date.now());
-  const [, tick] = useState(0);
-  useEffect(() => { const i = setInterval(() => tick((x) => x + 1), 1000); return () => clearInterval(i); }, []);
-  const s = Math.floor((Date.now() - t0) / 1000);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => { const i = setInterval(() => setElapsed(Date.now() - t0), 1000); return () => clearInterval(i); }, [t0]);
+  const s = Math.floor(elapsed / 1000);
   return s >= 3 ? <span className="elapsed">{fmtMs(s * 1000)}</span> : null;
 }
 
@@ -147,28 +160,34 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   const mcp = p.name.match(/^mcp__(.+?)__(.+)$/);
   const pending = p.result === undefined;
   const liveOut = (p as { live?: string }).live;
-  const m = TOOL_META[p.name] || { icon: Plug, live: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name, done: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name };
+  const m = TOOL_META[p.name] || { icon: Plug, live: mcp ? `${humanizeTool(mcp[1])} · ${humanizeTool(mcp[2])}` : humanizeTool(p.name), done: mcp ? `${humanizeTool(mcp[1])} · ${humanizeTool(mcp[2])}` : humanizeTool(p.name) };
   const Icon = m.icon;
   const argv = m.arg ? p.args[m.arg] : undefined;
   let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
-  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean; memory?: { id: string; text: string; scope: string } } | undefined;
+  const meta = p.meta as { before?: string; after?: string; sources?: Src[]; source?: string; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean; memory?: { id: string; text: string; scope: string } } | undefined;
   const ap = (p.meta as { approval?: Approval } | undefined)?.approval;
   if (ap) target = ""; // the approval bar shows the full command
   if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
+  if (p.name === "web_fetch_many") target = `${Array.isArray(p.args.urls) ? p.args.urls.length : 0} pages`;
   if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
   // file tools: the path itself opens the file (no extra button under the row)
   const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? String(p.args.path) : null;
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
   const runs = ["run_python", "shell", "host_shell", "pip_install"].includes(p.name);
-  const open = openS ?? pending;
+  const autoOpen = pending || p.name === "web_search" || p.name === "web_fetch" || p.name === "web_fetch_many";
+  const open = openS ?? autoOpen;
   let body: React.ReactNode = null;
   if (open) {
     const code = p.name === "run_python" ? String(p.args.code || "") : "";
-    if (pending) body = <>{code && <pre>{code}</pre>}<LiveOut text={liveOut || "working…"} /></>;
-    else if (meta?.sources && p.name === "web_search") body = null;
-    else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
-    else if (p.name === "run_python") body = <><pre>{code}</pre><pre>{p.result}</pre></>;
-    else body = <>{Object.keys(p.args).length > 0 && !["shell", "host_shell", "todo", "quality_check"].includes(p.name) && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
+    if (pending) body = <>{code && <pre className="tool-code">{code}</pre>}{p.stage && <div className="tool-stage">{p.stage}</div>}{liveOut ? <LiveOut text={liveOut} /> : !p.stage && <div className="tool-stage">Waiting for the tool to return…</div>}</>;
+    else if (p.name === "web_search") body = <><SearchCards items={meta?.sources || []} source={meta?.source} />{!meta?.sources?.length && <StructuredResult text={p.result || "No search results."} />}</>;
+    else if (p.name === "web_fetch") body = <><SearchCards items={meta?.sources || []} source={meta?.source} />{p.result && <details className="tool-page"><summary>Page text</summary><pre>{p.result}</pre></details>}</>;
+    else if (p.name === "web_fetch_many") body = <><SearchCards items={meta?.sources || []} source={meta?.source} />{p.result && <details className="tool-page"><summary>Fetched page excerpts</summary><pre>{p.result}</pre></details>}</>;
+    else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").slice(0, 160).map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
+    else if (p.name === "fs_read") body = <pre className="tool-file-result">{p.result}</pre>;
+    else if (p.name === "run_python") body = <><pre className="tool-code">{code}</pre><StructuredResult text={p.result || "(no output)"} /></>;
+    else if (p.name === "shell" || p.name === "host_shell") body = <><pre className="tool-code">{String(p.args.command || "")}</pre><StructuredResult text={p.result || "(no output)"} /></>;
+    else body = <>{Object.keys(p.args).length > 0 && !["todo", "quality_check"].includes(p.name) && <pre className="tool-args">{JSON.stringify(p.args, null, 2)}</pre>}{p.result && <StructuredResult text={p.result} />}</>;
   }
   const copyTool = () => {
     const arg = p.args.command || p.args.code || p.args.path || p.args.query || "";
@@ -183,6 +202,7 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
           ? <span className="tgt link" role="link" title="Open" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
           : <span className="tgt">{target}</span>)}
         {pending ? <><Elapsed /><span className="spin" /></> : p.ok === false && !ap ? <X className="err" /> : null}
+        <ChevronDown className={"tool-chevron" + (open ? " open" : "")} />
       </button>
       {!pending && <button className="ib sm tool-copy" aria-label="Copy tool call" title="Copy command and output" onClick={copyTool}><Copy /></button>}
       </div>
@@ -201,15 +221,16 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
 function CanvasCard({ title, body, done, attrs }: { title: string; body: string; done: boolean; attrs: Record<string, string> }) {
   const app = useApp();
   const liveAtMount = useRef(!done);
-  const dock = attrs.dock !== undefined && attrs.dock !== "false";
+  const dock = attrs.dock === undefined ? undefined : attrs.dock !== "false";
+  const opts = useMemo(() => dock === undefined ? undefined : { dock }, [dock]);
   const open = useCallback(() => {
     const t = body.trim();
     const yt = youtubeId(t);
     const onlyUi = /^<ui[\s>]/.test(t) && /<\/ui>$/.test(t) && t.indexOf("<ui", 1) < 0;
-    if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, { dock });
-    else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, { dock });
-    else app.openCanvas({ kind: "md", title, body }, { dock });
-  }, [app, title, body, dock]);
+    if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, opts);
+    else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, opts);
+    else app.openCanvas({ kind: "md", title, body }, opts);
+  }, [app, title, body, opts]);
   useEffect(() => { if (done && liveAtMount.current) { liveAtMount.current = false; open(); } }, [done, open]);
   return <div className="canvas-card" onClick={done ? open : undefined} role="button"><AppWindow /><span className="t">{title}</span><small>{done ? "Open" : "Building…"}</small></div>;
 }
@@ -254,31 +275,52 @@ function MemoryNote({ mem }: { mem: { id: string; text: string; scope: string } 
   const [gone, setGone] = useState(false);
   const [edit, setEdit] = useState(false);
   const [text, setText] = useState(mem.text);
-  if (gone) return <div className="mem-note">Forgotten</div>;
+  const [savedText, setSavedText] = useState(mem.text);
+  const [previous, setPrevious] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const label = mem.scope === "profile" ? "Profile" : mem.scope === "project" ? "Project" : "Noted";
+  const change = async (next: string, keepUndo = true) => {
+    if (busy || !next.trim()) return;
+    setBusy(true);
+    try {
+      const r = await fetch("/api/memory", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id, text: next }) });
+      const j = await r.json(); if (!r.ok || !j.ok) throw new Error(j.error || "Could not update memory");
+      setSavedText(next.trim()); setText(next.trim()); setPrevious(keepUndo ? savedText : null); setEdit(false);
+    } catch { /* keep the editor open so the user can retry or cancel */ }
+    finally { setBusy(false); }
+  };
+  if (gone) return <div className="mem-note"><Bookmark /><span>Forgotten</span><span className="sp" /><button type="button" disabled={busy} onClick={async () => {
+    setBusy(true); try { const r = await fetch("/api/memory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id }) }); const j = await r.json(); if (r.ok && j.ok) setGone(false); } finally { setBusy(false); }
+  }}>{busy ? "Restoring…" : "Restore"}</button></div>;
   return <div className="mem-note"><Bookmark /><span>{label}</span>
-    {edit ? <input className="tx" value={text} aria-label="Edit memory" onChange={(e) => setText(e.target.value)} onKeyDown={async (e) => { if (e.key === "Enter") { await fetch("/api/memory", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id, text }) }); setEdit(false); } if (e.key === "Escape") setEdit(false); }} />
-      : <span className="tx" onClick={() => setEdit(true)} title="Edit">{text}</span>}
-    <button type="button" onClick={async () => { const r = await fetch("/api/memory", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id }) }); if (r.ok) setGone(true); }}>Undo</button></div>;
+    {edit ? <><input className="tx" value={text} aria-label="Edit memory" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void change(text); } if (e.key === "Escape") { setText(savedText); setEdit(false); } }} />
+      <button type="button" disabled={busy || !text.trim()} onClick={() => void change(text)}>{busy ? "Saving…" : "Save"}</button>
+      <button type="button" disabled={busy} onClick={() => { setText(savedText); setEdit(false); }}>Cancel</button></>
+      : <><span className="tx" role="button" tabIndex={0} onClick={() => { setText(savedText); setEdit(true); }} onKeyDown={(e) => e.key === "Enter" && setEdit(true)} title="Edit memory">{savedText}</span>
+        {previous !== null && <button type="button" disabled={busy} title="Restore the previous wording" onClick={() => void change(previous, false)}>Undo edit</button>}
+        <button type="button" disabled={busy} onClick={async () => { if (!confirm(`Forget this ${label.toLowerCase()} note? You can restore it from here.`)) return; setBusy(true); try { const r = await fetch("/api/memory", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id }) }); const j = await r.json(); if (r.ok && j.ok) setGone(true); } finally { setBusy(false); } }}>{busy ? "…" : "Forget"}</button></>}
+  </div>;
 }
 
-function Changes({ parts }: { parts: Part[] }) {
-  const files = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && !!p.meta && typeof p.meta === "object" && "after" in (p.meta as object));
-  if (!files.length) return null;
-  return <details className="changes"><summary>Changed {files.length} file{files.length > 1 ? "s" : ""}</summary>
-    {files.map((p) => {
-      const meta = p.meta as { before?: string; after?: string; path?: string };
-      return <div key={p.id} className="diff"><div className="tgt">{String(p.args.path || meta.path || p.name)}</div>{lineDiff(meta.before || "", meta.after || "").slice(0, 80).map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
-    })}
-  </details>;
+function SteerNote({ text }: { text: string }) {
+  return <div className="steer-note"><MessageSquare /><span><b>Direction received</b><small>{text}</small></span></div>;
+}
+
+function ResearchWorkflow({ p }: { p: Extract<Part, { type: "research" }> }) {
+  const app = useApp();
+  const complete = p.status === "done";
+  return <section className={"research-run" + (p.status === "running" ? " active" : "")}>
+    <header><BookOpen /><span><b>Deep research</b><small>{complete ? "Report ready" : p.status === "stopped" ? "Run stopped · partial findings saved" : "Research in progress"}</small></span>
+      <span className="research-stats">{p.searches} searches · {p.pages} pages · {p.sources} sources</span>
+      {p.path && <button className="txt-btn" onClick={() => app.openFile(p.path!)}>Run details</button>}
+    </header>
+    <ol>{p.stages.map((s) => <li key={s.id} className={"stage-" + s.status}><i>{s.status === "done" ? <Check /> : s.status === "doing" ? <span className="spin" /> : null}</i><span>{s.label}</span></li>)}</ol>
+  </section>;
 }
 
 export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid, quiet }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string; quiet?: boolean }) {
   const h = useMdHandlers();
   const [animate] = useState(streaming); // messages loaded from history render instantly
-  const sources: Src[] = [];
-  const seenSrc = new Set<string>();
-  for (const p of parts) if (p.type === "tool" && (p.name === "web_search" || p.name === "web_fetch")) for (const s of ((p.meta as { sources?: Src[] } | undefined)?.sources || [])) if (s.url && !seenSrc.has(s.url)) { seenSrc.add(s.url); sources.push(s); }
   if (!parts.length && streaming) return <div className="thinking" />;
   if (quiet) {
     const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
@@ -286,7 +328,6 @@ export const AssistantBody = memo(function AssistantBody({ parts, streaming, las
     const searching = streaming && !texts.some((p) => p.text.trim());
     const keep = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && (p.name === "ask_user" || p.name === "remember"));
     return <>
-      {sources.length > 0 && <SourceList items={sources} />}
       {searching && <div className="thinking" />}
       {reasons.map((p, i) => <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && parts[parts.length - 1] === p} />)}
       {texts.map((p, i) => animate ? <LiveText key={i} text={p.text} streaming={streaming && i === texts.length - 1 && !keep.length} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />)}
@@ -295,9 +336,11 @@ export const AssistantBody = memo(function AssistantBody({ parts, streaming, las
   }
   let lastTodo = -1;
   parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
-  return <>{sources.length > 0 && <SourceList items={sources} />}{parts.map((p, i) => p.type === "text"
+  return <>{parts.map((p, i) => p.type === "text"
     ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />
     : p.type === "reasoning" ? <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && i === parts.length - 1} />
+    : p.type === "steer" ? <SteerNote key={"s" + i} text={p.text} />
+    : p.type === "research" ? <ResearchWorkflow key="research" p={p} />
     : <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} mid={mid} />)}</>;
 });
 
@@ -341,7 +384,7 @@ export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit,
   const text = m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   return (
     <div className="turn ai" data-mid={m.id}>
-      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} quiet={quiet} />{!streaming && !quiet && <Changes parts={m.parts} />}</div>
+      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} quiet={quiet} /></div>
       {!streaming && <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={text} />

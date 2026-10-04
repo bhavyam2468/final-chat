@@ -7,13 +7,14 @@ export type RunEvent = Record<string, unknown>;
 type Run = {
   convId: string; assistantId: string; startedAt: number;
   events: RunEvent[]; listeners: Set<(e: RunEvent) => void>; ctrl: AbortController; done: boolean;
+  steers: string[]; modelAbort: (() => void) | null; emit?: (e: RunEvent) => void;
 };
 
 const g = globalThis as unknown as { __runs?: Map<string, Run> };
 const runs: Map<string, Run> = (g.__runs ||= new Map());
 
 export function startRun(convId: string, assistantId: string) {
-  const run: Run = { convId, assistantId, startedAt: Date.now(), events: [], listeners: new Set(), ctrl: new AbortController(), done: false };
+  const run: Run = { convId, assistantId, startedAt: Date.now(), events: [], listeners: new Set(), ctrl: new AbortController(), done: false, steers: [], modelAbort: null };
   runs.set(convId, run);
   const emit = (e: RunEvent) => {
     // live tool output is only useful while it runs: keep the buffer small by folding output chunks per call
@@ -21,6 +22,7 @@ export function startRun(convId: string, assistantId: string) {
     run.events.push(e);
     run.listeners.forEach((l) => l(e));
   };
+  run.emit = emit;
   const finish = () => {
     run.done = true;
     run.listeners.forEach((l) => l({ t: "done" }));
@@ -28,13 +30,28 @@ export function startRun(convId: string, assistantId: string) {
     // keep the finished run briefly so a viewer that re-attaches right now still gets the tail
     setTimeout(() => { if (runs.get(convId) === run) runs.delete(convId); }, 15_000);
   };
-  return { run, emit, finish, signal: run.ctrl.signal };
+  return {
+    run, emit, finish, signal: run.ctrl.signal,
+    takeSteers: () => run.steers.splice(0),
+    setModelAbort: (abort: (() => void) | null) => { run.modelAbort = abort; if (abort && run.steers.length) abort(); },
+  };
 }
 
 export const activeRun = (convId: string) => { const r = runs.get(convId); return r && !r.done ? r : undefined; };
 export const anyRun = (convId: string) => runs.get(convId);
 export const activeIds = () => [...runs.values()].filter((r) => !r.done).map((r) => r.convId);
 export function stopRun(convId: string) { const r = activeRun(convId); if (!r) return false; r.ctrl.abort(); return true; }
+
+/** Add a live direction to an active run and interrupt the current model stream so it can adapt immediately. */
+export function steerRun(convId: string, text: string) {
+  const r = activeRun(convId);
+  const instruction = text.trim().slice(0, 8000);
+  if (!r || !instruction) return false;
+  r.steers.push(instruction);
+  r.emit?.({ t: "steer", text: instruction });
+  r.modelAbort?.();
+  return true;
+}
 
 /** NDJSON stream of a run: everything so far, then live events until `done`. Detaching never stops the run. */
 export function attach(run: Run, detach: AbortSignal) {
