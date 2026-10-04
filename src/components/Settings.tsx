@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { X, Plus } from "lucide-react";
 import { Mcp, Skills } from "./Extensions";
 
-type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; phone?: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
+type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; useFirecrawl?: boolean; searxngUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; phone?: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
 type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
@@ -28,6 +28,17 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
   const reloadSrv = () => fetch("/api/mcp").then((r) => r.json()).then(setServers);
   const saveSrv = async (next: Record<string, Srv>) => { setServers(next); await fetch("/api/mcp", { method: "PUT", body: JSON.stringify(next) }); flash("Saved"); };
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 1400); };
+
+  const restoreScope = async (scope: string) => {
+    if (!confirm(`Are you sure you want to rollback ${scope}? Any custom edits will be replaced with defaults.`)) return;
+    const res = await fetch("/api/workspace/restore", { method: "POST", body: JSON.stringify({ scope }) });
+    const j = await res.json().catch(() => ({}));
+    if (j.ok) {
+      flash(`Restored ${scope} defaults`);
+    } else {
+      flash(j.error || "Rollback failed");
+    }
+  };
 
   const fetchModels = async () => {
     if (!s) return;
@@ -130,13 +141,15 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
             <label className="field">Theme<select value={theme} onChange={(e) => setTheme(e.target.value)}><option value="dark">Dark</option><option value="light">Light</option></select></label>
           </>}
           {tab === "tools" && <>
-            <div className="grid2">
-              {F("Local Firecrawl URL (zero-credit)", "firecrawlUrl")}
-              {F("Online Firecrawl Key (bypass / extract)", "firecrawlKey", "password")}
-            </div>
-            <small style={{ color: "var(--muted)", fontSize: 11, marginTop: -6, marginBottom: 8, display: "block" }}>
-              Hybrid routing: standard scrape uses local Firecrawl. Cloud API key is used for Cloudflare/anti-bot bypass, AI extraction, and search fallback.
-            </small>
+            <div className="srv"><div className="t">Use Firecrawl Scraper<small>{s.useFirecrawl ? "On: uses local/cloud Firecrawl with headless Chrome (heavy memory use)." : "Off (default): uses ultra-fast direct HTTP fetching & metasearch (zero memory overhead, no Chromium)."}</small></div>
+              <button className={"sw" + (s.useFirecrawl ? " on" : "")} aria-label="Use Firecrawl" onClick={() => saveS({ useFirecrawl: !s.useFirecrawl })} /></div>
+            {s.useFirecrawl && (
+              <div className="grid2">
+                {F("Local Firecrawl URL", "firecrawlUrl")}
+                {F("Online Firecrawl Key", "firecrawlKey", "password")}
+              </div>
+            )}
+            {F("SearXNG URL (optional local metasearch)", "searxngUrl")}
             <div className="grid2">
               <label className="field">Quality guard<select value={s.quality} onChange={(e) => saveS({ quality: e.target.value as S["quality"] })}>
                 <option value="fix">Check and repair</option><option value="warn">Check only</option><option value="off">Off</option></select></label>
@@ -144,6 +157,22 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
                 <option value="auto">Auto (on demand below 48k context)</option><option value="lean">On demand</option><option value="all">Always loaded</option></select></label>
             </div>
             <small className="note">Quality guard lints UI files the agent writes (generic AI styling, broken syntax) and lets it repair once. Developer tools (processes, browser, checks) load when a build, debug or design skill opens.</small>
+            
+            <div className="field">
+              <span>Rollback to Defaults</span>
+              <small style={{ color: "var(--muted)", fontSize: 12, display: "block", marginBottom: 8 }}>
+                Restore system prompts, agents, memory, skills, or MCP back to pristine defaults if you ever need a clean reset.
+              </small>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                <button type="button" className="mini" onClick={() => restoreScope("all")}>Rollback All</button>
+                <button type="button" className="mini" onClick={() => restoreScope("system")}>Rollback SYSTEM.md</button>
+                <button type="button" className="mini" onClick={() => restoreScope("agents")}>Rollback AGENTS.md</button>
+                <button type="button" className="mini" onClick={() => restoreScope("memory")}>Reset Memory</button>
+                <button type="button" className="mini" onClick={() => restoreScope("skills")}>Rollback Skills</button>
+                <button type="button" className="mini" onClick={() => restoreScope("mcp")}>Rollback MCP</button>
+              </div>
+            </div>
+
             <div className="field">Secrets: name and value, used as ${"{NAME}"} in MCP configs
               {Object.keys(s.secrets).map((k) => <div key={k} className="srv"><span className="t">{k}</span><small>••••</small></div>)}
               <div className="grid2"><input value={secretK} onChange={(e) => setSecretK(e.target.value.toUpperCase())} aria-label="Secret name" /><div style={{ display: "flex", gap: 6 }}><input type="password" value={secretV} onChange={(e) => setSecretV(e.target.value)} aria-label="Secret value" style={{ flex: 1 }} /><button className="ib" aria-label="Add secret" onClick={() => { if (secretK && secretV) { saveS({ secrets: { [secretK]: secretV } }); setSecretK(""); setSecretV(""); } }}><Plus /></button></div></div>

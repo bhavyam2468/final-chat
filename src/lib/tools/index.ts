@@ -20,6 +20,8 @@ import { forget, remember } from "../memory";
 import { banPackages, installNames, noteMissing, shellPreflight } from "../harness/shell-preflight";
 import { ensureProject, projectSlug } from "../projects";
 import { adb, adbShot, phoneOff } from "../phone";
+import { runDeepResearch } from "../workflows/deep-research";
+import { writeServers, readServers } from "../mcp";
 import { createHash } from "crypto";
 import os from "os";
 
@@ -73,6 +75,10 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("project_open", "Create or link a project. Its PROJECT.md is loaded in every later turn of this chat. Pass the project name", { name: s() }, ["name"]),
     T("diff_since", "Files changed in this chat's folder (and the linked project) in the last N hours", { hours: n("default 24") }),
     T("canvas_open", "Show a workspace file, web page or YouTube URL in a canvas window", { target: s("path or URL"), title: s(), dock: b("dock beside chat") }, ["target"]),
+    T("show_web_results", "Display curated web search results as rich interactive cards with inline scroll carousel in chat. Pass cards with url, title, snippet, image/thumbnail, site, badge, price", { items: arr({ type: "object", properties: { title: s(), url: s(), snippet: s(), image: s(), site: s(), badge: s(), price: s() }, required: ["title", "url"] }) }, ["items"]),
+    T("workflow_deep_research", "Run a deep research workflow on a topic. Conducts parallel multi-angle searches and page reading outside context, saves the full research dossier to artifacts, and produces a comprehensive cited report with an interactive overview block", { topic: s("research topic or question"), focus: s("specific angle or priority questions") }, ["topic"]),
+    T("skill_create", "Create or update a skill in system/skills/<name>/SKILL.md", { name: s("skill name e.g. web-scraper"), description: s(), content: s("markdown body with guidelines and examples") }, ["name", "description", "content"]),
+    T("mcp_add", "Add or configure an MCP server in system/mcp/servers.json", { name: s("server identifier"), command_or_url: s("command (e.g. uvx, npx) or HTTP/SSE endpoint URL"), args: arr({ type: "string" }), env: { type: "object" } }, ["name", "command_or_url"]),
     T("ui_search", "Find BlocksUI components. Do not invent a tag; if it is not in the system prompt, search here", { query: s() }, ["query"]),
   ];
   const phone: ToolDef[] = st.phone ? [
@@ -413,6 +419,68 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
         ctx.emit({ t: "canvas", spec, dock: !!a.dock });
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
+      }
+      case "show_web_results": {
+        const items = (Array.isArray(a.items) ? a.items : []).filter((it: any) => it && (it.url || it.title));
+        if (!items.length) return { ok: false, result: "No items provided" };
+        const cards = items.map((it: any) => {
+          const u = String(it.url || "#").replace(/"/g, "&quot;");
+          const t = String(it.title || "").replace(/"/g, "&quot;");
+          const sn = String(it.snippet || "").replace(/"/g, "&quot;");
+          const img = it.image ? ` image="${String(it.image).replace(/"/g, "&quot;")}"` : "";
+          const site = it.site ? ` site="${String(it.site).replace(/"/g, "&quot;")}"` : "";
+          const pr = it.price ? ` price="${String(it.price).replace(/"/g, "&quot;")}"` : "";
+          const bg = it.badge ? ` badge="${String(it.badge).replace(/"/g, "&quot;")}"` : "";
+          return `  <x-web-card url="${u}" title="${t}" snippet="${sn}"${img}${site}${pr}${bg}></x-web-card>`;
+        }).join("\n");
+        const block = `<ui>\n<x-web-cards>\n${cards}\n</x-web-cards>\n</ui>`;
+        return {
+          ok: true,
+          result: `Displayed ${items.length} web card${items.length > 1 ? "s" : ""} in chat.\n${block}`,
+          meta: { webCards: items, sources: items.map((x: any) => ({ url: x.url, title: x.title, snippet: x.snippet })) }
+        };
+      }
+      case "workflow_deep_research": {
+        const topic = String(a.topic || "").trim();
+        if (!topic) return { ok: false, result: "topic required" };
+        const focus = a.focus ? String(a.focus) : undefined;
+        ctx.output?.(`Starting Deep Research on: ${topic}...\n`);
+        const res = await runDeepResearch(topic, focus, ctx.conversationId, st, (p) => {
+          ctx.output?.(`[${p.step}] ${p.message} (${p.percent}%)\n`);
+        });
+        return {
+          ok: res.ok,
+          result: `${res.uiBlock}\n\n${res.report}`,
+          meta: { deepResearch: { topic: res.topic, artifactPath: res.artifactPath, stats: res.stats, sources: res.sources } }
+        };
+      }
+      case "skill_create": {
+        const name = String(a.name || "").replace(/[^\w.-]/g, "-").toLowerCase();
+        if (!name) return { ok: false, result: "name required" };
+        const dir = path.join(WS, "system/skills", name);
+        await fs.mkdir(dir, { recursive: true });
+        const desc = String(a.description || name);
+        const body = String(a.content || "");
+        const md = `---\nname: ${name}\ndescription: ${desc}\n---\n\n${body}\n`;
+        await fs.writeFile(path.join(dir, "SKILL.md"), md);
+        return { ok: true, result: `Created skill "${name}" in system/skills/${name}/SKILL.md. Active for future requests.` };
+      }
+      case "mcp_add": {
+        const name = String(a.name || "").replace(/[^\w.-]/g, "-").toLowerCase();
+        const target = String(a.command_or_url || "").trim();
+        if (!name || !target) return { ok: false, result: "name and command_or_url required" };
+        const servers = await readServers();
+        const isUrl = /^https?:\/\//i.test(target);
+        if (isUrl) {
+          servers[name] = { url: target, enabled: true };
+        } else {
+          const parts = target.split(/\s+/);
+          const cmd = parts[0];
+          const args = Array.isArray(a.args) ? a.args.map(String) : parts.slice(1);
+          servers[name] = { command: cmd, args, env: a.env || undefined, enabled: true };
+        }
+        await writeServers(servers);
+        return { ok: true, result: `Configured MCP server "${name}". It will connect and supply tools on the next request.` };
       }
       case "web_search": {
         const j = await firecrawlSearch(st, a.query, Math.min(Number(a.limit) || 5, 8));

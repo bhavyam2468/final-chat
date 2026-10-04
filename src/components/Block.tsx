@@ -72,6 +72,10 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
           const r = await fetch("/api/python", { method: "POST", body: JSON.stringify({ code: m.code }) }).then((r) => r.json()).catch((err) => ({ out: String(err) }));
           reply(r.out); app.refreshTree(); break;
         }
+        case "bash": {
+          const r = await fetch("/api/bash", { method: "POST", body: JSON.stringify({ command: m.command }) }).then((r) => r.json()).catch((err) => ({ out: String(err) }));
+          reply(r.out); break;
+        }
         case "upload": {
           const bin = Uint8Array.from(atob(m.data), (c) => c.charCodeAt(0));
           const fd = new FormData(); fd.append("dir", m.dir || "uploads"); fd.append("files", new File([bin], m.name, { type: m.type }));
