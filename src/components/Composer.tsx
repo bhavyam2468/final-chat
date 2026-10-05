@@ -4,7 +4,7 @@ import { Plus, ArrowUp, ListPlus, Send, Square, X, FileText, Hash, File as FileI
 import { Attachment, flatFiles, fileUrl, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 
-export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
+export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null; uiTest?: boolean };
 export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
 export type Command = { name: string; hint: string; run: (arg?: string) => void };
 

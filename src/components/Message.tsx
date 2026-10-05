@@ -174,7 +174,8 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? String(p.args.path) : null;
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
   const runs = ["run_python", "shell", "host_shell", "pip_install"].includes(p.name);
-  const autoOpen = pending || p.name === "web_search" || p.name === "web_fetch" || p.name === "web_fetch_many";
+  // TEMPORARY /test fixtures stay expanded so the user can inspect the simulated output.
+  const autoOpen = pending || p.id.startsWith("test_") || p.name === "web_search" || p.name === "web_fetch" || p.name === "web_fetch_many";
   const open = openS ?? autoOpen;
   let body: React.ReactNode = null;
   if (open) {

@@ -222,8 +222,13 @@ export default function App() {
   const stopAsked = useRef(new Set<string>()); // Stop pressed before a new chat got its id
   const enqueue = useCallback((payload: SendPayload, parentId: string | null, threadOf: string | null) => {
     const key = viewRef.current;
+    const messages = storeRef.current[key] || [];
+    const active = messages.find((m) => m.id === runningRef.current[key]);
+    const activeUser = active?.parentId ? messages.find((m) => m.id === active.parentId) : undefined;
+    const localTest = /^\/test(?:\s|$)/i.test(activeUser?.content.trim() || "") || !!active?.parts.some((p) => p.type === "tool" && p.id.startsWith("test_"));
+    const queuedPayload = localTest ? { ...payload, uiTest: true } : payload;
     const files = payload.attachments.length ? ` · ${payload.attachments.length} attachment${payload.attachments.length === 1 ? "" : "s"}` : "";
-    const entry: QueuedSend = { id: rid(), payload, parentId, threadOf, preview: (payload.content || "Attached files") + files };
+    const entry: QueuedSend = { id: rid(), payload: queuedPayload, parentId, threadOf, preview: (payload.content || "Attached files") + files };
     updateQueued((q) => ({ ...q, [key]: [...(q[key] || []), entry] }));
   }, [updateQueued]);
   const removeQueued = useCallback((id: string) => {
@@ -360,7 +365,7 @@ export default function App() {
     setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
     setRunning((r) => ({ ...r, [key]: ta }));
     if (viewRef.current === key) requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
-    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: modeRef.current }) }).catch(() => null);
+    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: modeRef.current, uiTest: payload?.uiTest === true }) }).catch(() => null);
     if (!res || !res.ok) {
       const err = res ? ((await res.json().catch(() => ({}))) as { error?: string }).error : "Network error";
       setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, pending: false, parts: [{ type: "text", text: `> ${err || "Request failed"}` }] } : m)));
@@ -566,6 +571,8 @@ export default function App() {
   }, [chipNew]);
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
+    // TEMPORARY: deterministic local demo path for smoke-testing the UI without an LLM key.
+    { name: "test", hint: "Long local UI smoke test · no model API key needed", run: () => sendMain({ content: "/test", attachments: [], quote: null }) },
     { name: "research", hint: "Deep research in a new general conversation", run: (arg?: string) => chipNew("general", "/research " + (arg || "")) },
     { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("general", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
     { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
@@ -580,7 +587,7 @@ export default function App() {
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
     { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
-  ], [newChat, runBrief, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
+  ], [newChat, runBrief, linkProject, chipNew, mainPath, loadConv, sendMain, setTheme, theme]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
