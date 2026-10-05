@@ -10,8 +10,10 @@ import { projectSlug } from "./projects";
 const dir = () => path.join(WS, "system", "memory");
 const profilePath = () => path.join(dir(), "profile.md");
 const episodesPath = () => path.join(dir(), "episodes.jsonl");
+const trashPath = () => path.join(dir(), "trash.jsonl");
 
 export type Episode = { id: string; text: string; at: string; scope: "profile" | "episode" | "project" };
+type Forgotten = { id: string; text: string; scope: Episode["scope"]; file: string; raw: string; at: string };
 
 async function ready() {
   await ensureWorkspace();
@@ -90,26 +92,70 @@ export async function revise(id: string, text: string): Promise<boolean> {
   return hit;
 }
 
+async function archiveForgotten(entry: Forgotten) { await fs.appendFile(trashPath(), JSON.stringify(entry) + "\n"); }
+
 export async function forget(id: string): Promise<boolean> {
   await ready();
   const safe = id.replace(/[^\w-]/g, "");
   if (!safe) return false;
   let hit = false;
+  const now = new Date().toISOString();
   const prof = await fs.readFile(profilePath(), "utf8").catch(() => "");
-  if (prof.includes(`[${safe}]`)) {
+  const profileLines = prof.split("\n");
+  for (const line of profileLines) if (line.includes(`[${safe}]`)) {
     hit = true;
-    await fs.writeFile(profilePath(), prof.split("\n").filter((l) => !l.includes(`[${safe}]`)).join("\n").replace(/\n{3,}/g, "\n\n"));
+    await archiveForgotten({ id: safe, text: line.replace(/^.*\]\s*/, ""), scope: "profile", file: "system/memory/profile.md", raw: line, at: now });
   }
+  if (hit) await fs.writeFile(profilePath(), profileLines.filter((l) => !l.includes(`[${safe}]`)).join("\n").replace(/\n{3,}/g, "\n\n"));
+
   const projects = path.join(WS, "projects");
   for (const name of await fs.readdir(projects).catch(() => [] as string[])) {
     const file = path.join(projects, name, "NOTES.md");
     const cur = await fs.readFile(file, "utf8").catch(() => "");
-    if (!cur.includes(`[${safe}]`)) continue;
-    hit = true;
-    await fs.writeFile(file, cur.split("\n").filter((l) => !l.includes(`[${safe}]`)).join("\n"));
+    const lines = cur.split("\n");
+    for (const line of lines) if (line.includes(`[${safe}]`)) {
+      hit = true;
+      await archiveForgotten({ id: safe, text: line.replace(/^.*\]\s*/, ""), scope: "project", file: `projects/${name}/NOTES.md`, raw: line, at: now });
+    }
+    if (lines.some((l) => l.includes(`[${safe}]`))) await fs.writeFile(file, lines.filter((l) => !l.includes(`[${safe}]`)).join("\n"));
   }
+
   const lines = (await fs.readFile(episodesPath(), "utf8").catch(() => "")).split("\n").filter(Boolean);
-  const keep = lines.filter((l) => { try { return JSON.parse(l).id !== safe; } catch { return true; } });
-  if (keep.length !== lines.length) { hit = true; await fs.writeFile(episodesPath(), keep.length ? keep.join("\n") + "\n" : ""); }
+  const keep: string[] = [];
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line) as Episode;
+      if (row.id === safe) { hit = true; await archiveForgotten({ id: safe, text: row.text, scope: row.scope, file: "system/memory/episodes.jsonl", raw: line, at: now }); }
+      else keep.push(line);
+    } catch { keep.push(line); }
+  }
+  if (keep.length !== lines.length) await fs.writeFile(episodesPath(), keep.length ? keep.join("\n") + "\n" : "");
   return hit;
+}
+
+export async function restoreForgotten(id: string): Promise<boolean> {
+  await ready();
+  const safe = id.replace(/[^\w-]/g, "");
+  if (!safe) return false;
+  const rows = (await fs.readFile(trashPath(), "utf8").catch(() => "")).split("\n").filter(Boolean);
+  let index = -1, entry: Forgotten | null = null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    try { const row = JSON.parse(rows[i]) as Forgotten; if (row.id === safe) { index = i; entry = row; break; } } catch { /* skip damaged history lines */ }
+  }
+  if (!entry || index < 0) return false;
+  if (entry.file === "system/memory/episodes.jsonl" && entry.scope === "episode") {
+    const current = await fs.readFile(episodesPath(), "utf8").catch(() => "");
+    if (current.includes(`\"id\":\"${safe}\"`)) return false;
+    await fs.appendFile(episodesPath(), entry.raw + "\n");
+  } else if (entry.file === "system/memory/profile.md" || /^projects\/[\w-]+\/NOTES\.md$/.test(entry.file)) {
+    const abs = path.resolve(WS, entry.file);
+    if (!abs.startsWith(path.resolve(WS) + path.sep)) return false;
+    const current = await fs.readFile(abs, "utf8").catch(() => "");
+    if (current.includes(`[${safe}]`)) return false;
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.appendFile(abs, (current && !current.endsWith("\n") ? "\n" : "") + entry.raw + "\n");
+  } else return false;
+  rows.splice(index, 1);
+  await fs.writeFile(trashPath(), rows.length ? rows.join("\n") + "\n" : "");
+  return true;
 }

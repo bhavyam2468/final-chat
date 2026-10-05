@@ -4,13 +4,25 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 > **Live instance** runs as a systemd user service at `http://localhost:3000`. Open it from the **"Minimalist AI Workspace"** desktop launcher (Zen Browser).
 
+## Install and update
+
+On Linux or macOS with `curl`, run the installer once; repeat the same command to update. It clones or fast-forwards `~/minimalist-chat`, installs dependencies, builds the app, and installs a user service on local desktops by default (`--no-service` disables it). It never resets local changes.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bhavyam2468/final-chat/main/setup.sh | bash
+```
+
+For an existing checkout, update and rebuild with `./setup.sh --update` (or `minimalist-chat update`). Use `--with-freellmapi` to explicitly install the optional Docker-based OpenAI-compatible proxy, or `--with-firecrawl` for optional local Firecrawl. Both require Docker; neither is enabled by default. The FreeLLMAPI encryption key is not an API key: create a unified API key in its dashboard's Keys page and add it in Settings. A normal install uses PGlite and direct HTTP retrieval; Firecrawl is only a configured fallback.
+
 ---
 
 ## What This App Does
 
 | Capability | Description |
 |---|---|
-| **Search home** | The app opens on a centered search box, not a chat. A search is an answer with sources (History). New chat starts a real chat, which keeps its tool calls. "Open in chat" promotes a search. `/research`, `/background`, `/brief`, `/project`, `/google` are composer workflows |
+| **General mode** | New chat starts a conversational general workspace; it does not search automatically. Promote a useful general conversation with "Open in chat". `/research`, `/background`, `/brief`, `/project`, `/google` are composer workflows |
+| **Deep research** | `/research` runs staged framing, search, source reading, cross-checking, and synthesis. Intermediate tool history is saved as an inspectable run file and excluded from later chat context; the report remains in the conversation |
+| **Queue & steer** | Enter queues a follow-up while a response is running; Alt+Enter sends a live direction. Queued messages drain in order when the current run finishes |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
@@ -19,7 +31,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | **Streaming** | Rate-adaptive smoothing for text, markdown and every Blocks component: no jitter, no re-render flashes, stable skeletons while a component streams |
 | **MCP Servers** | Add any stdio or HTTP MCP server via Settings → MCP |
 | **Skills** | Progressive-disclosure skill system (SKILL.md files teach the agent new capabilities on demand) |
-| **Hybrid Firecrawl** | Smart routing: local Firecrawl for free scraping, cloud key only for anti-bot bypass / AI extraction |
+| **Web retrieval** | Direct HTTP and keyless search are preferred; Firecrawl remains an optional local/cloud fallback for blocked or structured pages |
 | **FreeLLMAPI** | Local proxy to 200+ AI models; dynamic model picker in Settings |
 
 ---
@@ -31,8 +43,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 - **Database**: Drizzle ORM on PostgreSQL (`DATABASE_URL`) or embedded **PGlite** (default, zero setup)  
 - **Styling**: Tailwind CSS v4  
 - **Markdown**: Custom `streammark` streaming renderer (KaTeX math, highlight.js, footnotes, embeds)  
-- **AI**: OpenAI-compatible API (configured to FreeLLMAPI)  
-- **Web Scraping**: Firecrawl (hybrid local + cloud)  
+- **AI**: Any OpenAI-compatible API; optional local FreeLLMAPI proxy
+- **Web Retrieval**: Direct HTTP first; optional local/cloud Firecrawl fallback
 
 ---
 
@@ -75,6 +87,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `api/skills/route.ts` | GET/POST — list installed skills; install from GitHub URL |
 | `api/workspace/route.ts` | GET/POST/DELETE/PUT — workspace file CRUD |
 | `api/workspace/upload` | POST — upload files into workspace |
+| `api/workspace/prompts` | GET/POST — compare shipped prompt/skill defaults and restore one file or all shipped defaults |
 | `api/python/route.ts` | POST — run Python snippet in workspace |
 | `api/search/route.ts` | GET — search conversations |
 | `api/health/route.ts` | GET — liveness probe (checks DB connection) |
@@ -100,7 +113,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `agent.ts` | Agent loop: system prompt, history, tool packs per step, image hand-off, todo recitation, quality guard |
 | `tools/index.ts` | Tool schemas (core + dev pack) and the `execTool()` dispatcher |
 | `tools/edit.ts` / `tools/syntax.ts` | Robust edits (exact → whitespace-tolerant → indentation-shifted matching, placeholder rejection) and the syntax guard |
-| `web.ts` | Hybrid Firecrawl search/scrape/extract (local first, cloud fallback, plain fetch last) |
+| `web.ts` | Keyless search and direct HTTP first; optional Firecrawl fallback for blocked pages or AI extraction |
 | `procs.ts` | Background processes for the agent (dev servers): start, logs, wait for port/pattern, restart, stop |
 | `browser.ts` | Headless Chrome via puppeteer-core: screenshots, console errors, scripted steps |
 | `harness/check.ts` / `harness/slop.ts` | `check` tool (types, lint, tests, build, design lint + screenshot) and the AI-styling linter |
@@ -134,7 +147,7 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | FreeLLMAPI | Any OpenAI-compatible endpoint (Gemini, OpenRouter, OpenAI, Ollama, FreeLLMAPI) |
 | `LLM_CONTEXT_TOKENS` | model preset | Context window; prompts are budgeted to fit (16k works) |
 | `LLM_WORKING_TOKENS` | 64000 | What one request may use even if the window is bigger; trimming, folding and auto-compaction work against it (Settings → Working context) |
-| `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Local-first search/scrape with cloud fallback |
+| `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | unset | Optional Firecrawl fallback; configure explicitly in Settings or the environment |
 | `WORKSPACE_DIR` | `./workspace` | Agent root |
 | `ACCESS_MODE` | `sandbox` | Initial file access: `sandbox`, `home`, `full` |
 | `TERMINAL_MODE` | `sandbox` | Initial terminal: `sandbox` or `host` |

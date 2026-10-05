@@ -34,7 +34,7 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "search"; project?: string };
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "general" | "search"; project?: string };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in
@@ -63,7 +63,8 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("shell", "Run bash in YOUR sandbox. Not for reading or searching files (fs_read, fs_search, fs_list). Quote paths that contain spaces. A missing binary is not retried", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
     ...(host ? [T("host_shell", "Run bash on the USER'S machine. Quote paths with spaces. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password. Not for adb (use the phone tools)", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
     T("web_search", "Current or niche facts only. Do not search for stable knowledge you already have. Open a page with web_fetch before citing it", { query: s(), limit: n() }, ["query"]),
-    T("web_fetch", "Fetch a URL as markdown", { url: s() }, ["url"]),
+    T("web_fetch", "Fetch one URL as readable markdown", { url: s() }, ["url"]),
+    T("web_fetch_many", "Fetch up to 8 independent URLs concurrently and return readable excerpts. Prefer for deep research source batches.", { urls: arr(s("http or https URL"), "up to 8 pages fetched in parallel") }, ["urls"]),
     ...(st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (Firecrawl AI)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
     T("view_image", "Look at an image (workspace path or URL)", { path: s() }, ["path"]),
     T("todo", "Set the task checklist shown to the user (full list each call). Use for tasks with 3+ steps", { items: arr({ type: "object", properties: { text: s(), status: { type: "string", enum: ["todo", "doing", "done"] } }, required: ["text", "status"] }) }, ["items"]),
@@ -99,8 +100,9 @@ export type ToolCtx = {
   settings: Settings; conversationId: string; pinned: string[]; emit: (e: Record<string, unknown>) => void;
   setPinned: (p: string[]) => Promise<void>; compact: (scope?: string, keepLast?: number) => Promise<string>;
   state: ConvState; setState: (s: ConvState) => Promise<void>;
-  /** live stdout/stderr of the running call (shown in the tool row while it runs) */
+  /** live stdout/stderr and human-readable stage updates for the running call */
   output?: (chunk: string) => void;
+  progress?: (stage: string) => void;
   signal?: AbortSignal;
 };
 export type ToolOut = { result: string; ok: boolean; meta?: unknown; images?: string[]; stop?: boolean };
@@ -199,6 +201,19 @@ async function guardAndWrite(f: string, before: string, after: string, spans: [n
 export async function execTool(name: string, a: Record<string, any>, ctx: ToolCtx): Promise<ToolOut> {
   const st = ctx.settings;
   const P = (p: string) => resolvePath(String(p ?? "."), st.access);
+  const target = String(a.path ?? a.query ?? a.url ?? a.command ?? a.name ?? a.target ?? "").slice(0, 160);
+  const stage = name === "web_search" ? "Searching the web; trying fast keyless results first…"
+    : name === "web_fetch_many" ? `Fetching ${Array.isArray(a.urls) ? Math.min(a.urls.length, 8) : 0} pages in parallel…`
+    : name === "web_fetch" ? "Fetching the page and extracting its readable content…"
+    : name.startsWith("mcp__") ? "Waiting for the connected integration…"
+    : name === "fs_read" ? "Opening the file and preparing a readable excerpt…"
+    : name === "fs_search" ? "Scanning workspace files for matches…"
+    : name === "fs_list" ? "Reading directory contents…"
+    : name === "fs_write" || name === "fs_edit" || name === "fs_insert" ? "Applying the file change and checking it…"
+    : name === "shell" || name === "host_shell" || name === "run_python" ? "Running the command; output will appear here as it arrives…"
+    : name === "todo" ? "Updating the task checklist…"
+    : `Working${target ? ` on ${target}` : ""}…`;
+  ctx.progress?.(stage);
   try {
     switch (name) {
       case "skill_open": {
@@ -277,12 +292,12 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         let before = "", exists = false;
         try { before = await fs.readFile(f, "utf8"); exists = true; } catch {}
         const L = ledger(ctx.conversationId);
-        if (a.mode === "append") { await fs.appendFile(f, (before && !before.endsWith("\n") ? "\n" : "") + content); L.set(f, mtime(f)); return { ok: true, result: `Appended to ${a.path}`, meta: { path: a.path, before: "", after: content.slice(0, 20000) } }; }
+        if (a.mode === "append") { const after = before + (before && !before.endsWith("\n") ? "\n" : "") + content; await fs.appendFile(f, (before && !before.endsWith("\n") ? "\n" : "") + content); L.set(f, mtime(f)); return { ok: true, result: `Appended to ${a.path}`, meta: { path: a.path, before: before.slice(0, 100000), after: after.slice(0, 100000) } }; }
         if (exists && before.trim() && !L.has(f) && before !== content) return { ok: false, result: `${a.path} exists (${before.split("\n").length} lines) and you have not read it in this chat. fs_read it first, then fs_edit (or fs_write again to replace it).` , meta: { path: a.path } };
         if (exists && hasPlaceholder(content, before)) return { ok: false, result: "content contains an elision placeholder (\"... rest of code\"); writing it would delete code. Write the full file or use fs_edit." };
         await fs.writeFile(f, content); L.set(f, mtime(f));
         const syn = syntaxError(f, content);
-        return { ok: true, result: `Wrote ${a.path} (${content.split("\n").length} lines)${syn ? `\nwarning: syntax error ${syn}` : ""}`, meta: { path: a.path, before: before.slice(0, 20000), after: content.slice(0, 20000) } };
+        return { ok: true, result: `Wrote ${a.path} (${content.split("\n").length} lines)${syn ? `\nwarning: syntax error ${syn}` : ""}`, meta: { path: a.path, before: before.slice(0, 100000), after: content.slice(0, 100000) } };
       }
       case "fs_edit": {
         const f = P(a.path);
@@ -295,7 +310,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const stale = L.has(f) && L.get(f) !== mtime(f) ? ["note: file changed on disk since you read it"] : [];
         const out = await guardAndWrite(f, src, r.text, r.changed, [...stale, ...r.notes]);
         if (out.ok) L.set(f, mtime(f));
-        return { ...out, result: out.ok ? `Edited ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: edits.map((e) => e.find).join("\n…\n"), after: edits.map((e) => e.replace).join("\n…\n") } };
+        return { ...out, result: out.ok ? `Edited ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: src.slice(0, 100000), after: r.text.slice(0, 100000) } };
       }
       case "fs_insert": {
         const f = P(a.path);
@@ -303,7 +318,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const r = insertLines(src, Number(a.line ?? -1), String(a.text ?? ""));
         const out = await guardAndWrite(f, src, r.text, [r.span]);
         if (out.ok) ledger(ctx.conversationId).set(f, mtime(f));
-        return { ...out, result: out.ok ? `Inserted ${r.span[1] - r.span[0] + 1} lines into ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: "", after: String(a.text ?? "") } };
+        return { ...out, result: out.ok ? `Inserted ${r.span[1] - r.span[0] + 1} lines into ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: src.slice(0, 100000), after: r.text.slice(0, 100000) } };
       }
       case "fs_delete": {
         const f = P(a.path);
@@ -411,7 +426,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         if (yt) spec = { kind: "youtube", id: yt, title: title || "YouTube" };
         else if (/^https?:\/\//.test(t)) spec = { kind: "web", url: t, title: title || new URL(t).hostname };
         else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
-        ctx.emit({ t: "canvas", spec, dock: !!a.dock });
+        ctx.emit({ t: "canvas", spec, ...(typeof a.dock === "boolean" ? { dock: a.dock } : {}) });
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
       }
       case "web_search": {
@@ -457,6 +472,23 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const j = await firecrawlScrape(st, a.url);
         const md = (j.data?.markdown as string) || "";
         return { ok: true, result: cut(md, 12000), meta: { sources: [{ url: a.url, title: j.data?.metadata?.title || a.url, snippet: md.slice(0, 200) }], source: j._source } };
+      }
+      case "web_fetch_many": {
+        const urls = [...new Set((Array.isArray(a.urls) ? a.urls : []).map((u: unknown) => String(u).trim()).filter((u: string) => /^https?:\/\//i.test(u)))].slice(0, 8);
+        if (!urls.length) return { ok: false, result: "Provide one to eight http(s) URLs." };
+        let completed = 0;
+        const pages = await Promise.all(urls.map(async (url) => {
+          try {
+            const j = await firecrawlScrape(st, url);
+            const markdown = (j.data?.markdown as string) || "";
+            return { url, title: j.data?.metadata?.title || url, markdown, source: j._source as string | undefined, error: "" };
+          } catch (e) { return { url, title: url, markdown: "", source: undefined, error: e instanceof Error ? e.message : String(e) }; }
+          finally { completed++; ctx.progress?.(`Read ${completed} of ${urls.length} pages…`); }
+        }));
+        const sources = pages.filter((p) => p.markdown).map((p) => ({ url: p.url, title: p.title, snippet: p.markdown.slice(0, 200) }));
+        const kinds = [...new Set(pages.map((p) => p.source).filter(Boolean))];
+        const result = pages.map((p) => `## ${p.title}\n${p.url}\n\n${p.error ? `Fetch failed: ${p.error}` : cut(p.markdown, 4500)}`).join("\n\n---\n\n");
+        return { ok: sources.length > 0, result: cut(result, 36000), meta: { sources, source: kinds.length === 1 ? kinds[0] : kinds.length ? "mixed" : "none" } };
       }
       case "web_extract": {
         const x = await firecrawlExtract(st, a.url, String(a.prompt));
