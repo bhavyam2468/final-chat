@@ -21,6 +21,22 @@ const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "general" |
 const NONE: Msg[] = [];
 const keyOf = (parentId: string | null, threadOf: string | null) => parentId ?? `root:${threadOf ?? ""}`;
 const toXml = (d: unknown): string => typeof d !== "object" || d === null ? String(d) : Object.entries(d as Record<string, unknown>).map(([k, v]) => `<${k}>${typeof v === "object" ? toXml(v) : String(v)}</${k}>`).join("\n");
+const normalizeQuoteText = (s: string) => s.replace(/[\u00a0\u200b]/g, " ").replace(/\s+/g, " ").trim();
+function pdfQuote(path: string, page: string, selected: string, pageText: string) {
+  const full = normalizeQuoteText(pageText), needle = normalizeQuoteText(selected);
+  let at = full.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase()), matched = needle;
+  if (at < 0 && needle) {
+    const probe = needle.split(" ").slice(0, 6).join(" ");
+    at = full.toLocaleLowerCase().indexOf(probe.toLocaleLowerCase()); matched = at < 0 ? "" : full.slice(at, at + probe.length);
+  }
+  let nearby = "";
+  if (at >= 0 && matched) {
+    const before = full.slice(Math.max(0, at - 360), at).trim();
+    const after = full.slice(at + matched.length, Math.min(full.length, at + matched.length + 360)).trim();
+    nearby = `${before ? `…${before} ` : ""}⟦${matched}⟧${after ? ` ${after}…` : ""}`;
+  } else nearby = full.slice(0, 720) + (full.length > 720 ? "…" : "");
+  return `PDF source: ${path}\nPage: ${page}\n\nSelected passage:\n${selected}\n\nNearby text on the same page:\n${nearby || "(No surrounding selectable text was available.)"}`;
+}
 
 export default function App() {
   const [convs, setConvs] = useState<ConvItem[]>([]);
@@ -42,8 +58,16 @@ export default function App() {
   const setView = useCallback((k: string) => {
     const prev = viewRef.current;
     if (prev !== k) {
-      winsCache.current[prev] = winsRef.current;
-      const load = winsCache.current[k] ?? (() => { try { const v = JSON.parse(localStorage.getItem("wins:" + k) || "null"); return Array.isArray(v) ? v as Win[] : null; } catch { return null; } })();
+      winsCache.current[prev] = winsRef.current.filter((w) => !w.closing).map((w) => ({ ...w, min: w.min || !!w.minimizing, minimizing: false, closing: false, entering: false }));
+      const load = winsCache.current[k] ?? (() => { try {
+        const v = JSON.parse(localStorage.getItem("wins:" + k) || "null");
+        if (!Array.isArray(v)) return null;
+        return (v as (Win & { peek?: { x: number; y: number; w: number; h: number }; dockPeek?: boolean; prevDockW?: number })[]).filter((w) => !w.closing).map((w) => {
+          const { peek, dockPeek: _dockPeek, prevDockW: _prevDockW, ...rest } = w;
+          const clean = { ...rest, min: w.min || !!w.minimizing, minimizing: false, closing: false, entering: false };
+          return peek ? { ...clean, ...peek, snap: w.x > innerWidth / 2 ? "right" as const : "left" as const } : clean;
+        });
+      } catch { return null; } })();
       setWins(load || []);
     }
     viewRef.current = k; setViewS(k);
@@ -87,14 +111,18 @@ export default function App() {
   const [dockW, setDockWS] = useState(560);
   const [ctxRev, setCtxRev] = useState(0);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
-  useEffect(() => { const v = Number(localStorage.getItem("dockW")); setDockWS(v >= 320 ? Math.min(v, innerWidth - 380) : Math.round(Math.min(720, Math.max(380, innerWidth * 0.42)))); }, []);
-  const setDockW = useCallback((w: number) => { setDockWS(w); localStorage.setItem("dockW", String(w)); }, []);
+  useEffect(() => { const max = Math.max(280, innerWidth - 360), min = Math.min(320, max); const v = Number(localStorage.getItem("dockW")); const base = v >= 280 ? v : Math.round(Math.min(720, Math.max(380, innerWidth * 0.42))); setDockWS(Math.max(min, Math.min(max, base))); }, []);
+  const setDockW = useCallback((w: number) => { const max = Math.max(280, innerWidth - 360), min = Math.min(300, max); const next = Math.max(min, Math.min(max, Math.round(w))); setDockWS(next); localStorage.setItem("dockW", String(next)); }, []);
+  useEffect(() => {
+    const fitDock = () => { if (innerWidth >= 760) { const max = Math.max(320, innerWidth - 360); setDockWS((w) => Math.min(w, max)); } };
+    window.addEventListener("resize", fitDock); return () => window.removeEventListener("resize", fitDock);
+  }, []);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [theme, setThemeS] = useState("dark");
   const [settings, setSettings] = useState(false);
   const [quotes, setQuotes] = useState<{ main: string | null; thread: string | null }>({ main: null, thread: null });
   const [editing, setEditing] = useState<string | null>(null);
-  const [qpop, setQpop] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [qpop, setQpop] = useState<{ x: number; y: number; text: string; quote: string; label: string } | null>(null);
   const active = useRef<"main" | "thread">("main");
   const mainRef = useRef<ComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -283,7 +311,7 @@ export default function App() {
           });
           else if (e.t === "toolStatus") patchA((p) => p.map((x) => x.type === "tool" && x.id === e.id ? { ...x, status: String(e.status || "") } : x));
           else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: (x.live || "") + e.chunk } : x)));
-          else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, { dock: e.dock }); }
+          else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, e.dock ? { dock: true } : undefined); }
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
           else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, status: undefined, live: undefined } : x))); refreshTree(); }
           else if (e.t === "context") { if (viewRef.current === key) setConv((c) => (c ? { ...c, context: e.context } : c)); }
@@ -350,29 +378,55 @@ export default function App() {
         localStorage.setItem("recent:" + k, JSON.stringify(l)); setRecent(l);
       } catch { /* quota */ }
     };
-    void contentRatio(spec).then((ratio) => {
-      remember();
+    remember();
+    const existing = winsRef.current.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
+    const id = existing ? existing.id : rid();
+    const openDock = innerWidth >= 760 && o?.dock !== false;
+    const activeDock = winsRef.current.some((w) => w.dock && !w.min);
+    const floating = winsRef.current.filter((w) => !w.dock && !w.min).length;
+    const rightBound = innerWidth - (activeDock ? dockW + 16 : 0);
+    const area = Math.max(280, rightBound - 32);
+    const width = Math.min(620, Math.max(Math.min(300, area), Math.round(area * 0.78)));
+    const height = Math.max(180, Math.min(innerHeight - 48, Math.round(innerHeight * 0.72)));
+    const seed = {
+      x: Math.max(16, Math.round((rightBound - width) / 2) + (floating % 5) * 18),
+      y: Math.max(16, Math.min(innerHeight - height - 16, Math.round((innerHeight - height) / 2) + (floating % 5) * 18)),
+      w: width, h: height,
+    };
+    setWins((ws) => {
+      const found = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
+      const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
+      if (found) {
+        const otherDock = ws.some((w) => w.id !== found.id && w.dock && !w.min);
+        return ws.map((w) => w.id === found.id
+          ? { ...w, z, min: false, minimizing: false, closing: false, dock: w.dock && !otherDock, entering: w.min || w.minimizing || w.closing ? true : w.entering }
+          : w);
+      }
+      const dock = openDock && !ws.some((w) => w.dock && !w.min);
+      return [...ws, { id, spec, ...seed, z, min: false, pinned: false, dock, entering: true }];
+    });
+    // Open immediately at a stable default size. If natural dimensions arrive, refine the initial
+    // floating window only if the user hasn't moved/resized it or changed the sidebar meanwhile.
+    if (!existing && (!openDock || activeDock)) void contentRatio(spec).then((ratio) => {
+      if (!ratio) return;
       setWins((ws) => {
-        const dock = !!o?.dock && innerWidth >= 760;
-        const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
-        const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
-        const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
-        if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock, peek: null } : undock(w)));
-        const floating = ws.filter((w) => !w.dock).length;
-        let w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72);
-        let x = innerWidth - w - 24 - floating * 24, y = 56 + floating * 24;
-        if (ratio) {
-          const pad = 24; // a little breathing room around the content
-          const maxW = Math.min(innerWidth - 48, 1280), maxH = innerHeight - 64;
-          w = Math.round(Math.max(340, Math.min(maxW, ratio.pw ? ratio.pw + pad : maxW * 0.66)));
-          h = Math.round(w / ratio.ratio);
-          if (h > maxH) { h = maxH; w = Math.round(h * ratio.ratio); }
-          x = Math.round((innerWidth - w) / 2); y = Math.max(20, Math.round((innerHeight - h) / 2));
-        }
-        return [...ws.map(undock), { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock }];
+        const sidebarNow = ws.some((w) => w.dock && !w.min);
+        if (sidebarNow !== activeDock) return ws;
+        return ws.map((w) => {
+          if (w.id !== id || w.dock || w.x !== seed.x || w.y !== seed.y || w.w !== seed.w || w.h !== seed.h) return w;
+          const bound = innerWidth - (sidebarNow ? dockW + 16 : 0);
+          const maxW = Math.max(260, Math.min(1280, bound - 32)), maxH = Math.max(160, innerHeight - 48);
+          let w2 = Math.min(maxW, ratio.pw ? ratio.pw + 24 : maxW * 0.82);
+          w2 = Math.max(Math.min(300, maxW), w2);
+          let h2 = w2 / ratio.ratio;
+          if (h2 > maxH) { h2 = maxH; w2 = Math.min(maxW, h2 * ratio.ratio); }
+          const x2 = Math.max(16, Math.round((bound - w2) / 2));
+          const y2 = Math.max(16, Math.round((innerHeight - h2) / 2));
+          return { ...w, x: x2, y: y2, w: Math.round(w2), h: Math.round(h2) };
+        });
       });
     });
-  }, []);
+  }, [dockW]);
   const openCanvasRef = useRef(openCanvas); openCanvasRef.current = openCanvas;
   // while something runs in the background, keep the Chats dots current
   useEffect(() => { if (!serverRunning.length) return; const t = setInterval(refreshConvs, 4000); return () => clearInterval(t); }, [serverRunning.length, refreshConvs]);
@@ -426,7 +480,15 @@ export default function App() {
       if (!node?.closest(".ai-content, .txtlayer, .docview, .reader")) { setQpop(null); return; }
       if (node.closest(".thread")) active.current = "thread"; else active.current = "main";
       const r = s.getRangeAt(0).getBoundingClientRect();
-      setQpop({ x: r.left + r.width / 2, y: r.top - 8, text: t });
+      const page = node?.closest(".txtlayer") as HTMLElement | null;
+      const source = page?.dataset.pdfPath;
+      const pageNo = page?.dataset.pdfPage;
+      const quote = source && pageNo ? pdfQuote(source, pageNo, t, page?.dataset.pdfText || "") : t;
+      setQpop({
+        x: Math.max(64, Math.min(innerWidth - 64, r.left + r.width / 2)),
+        y: Math.max(44, Math.min(innerHeight - 24, r.top - 8)),
+        text: t, quote, label: source && pageNo ? `Quote · p. ${pageNo}` : "Quote",
+      });
     }, 0);
     document.addEventListener("mouseup", up);
     return () => document.removeEventListener("mouseup", up);
@@ -542,7 +604,7 @@ export default function App() {
   const tog = (k: keyof typeof panels) => setPanels((p) => ({ ...p, [k]: !p[k] }));
   const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
   const chromeIdle = idle && !hasOpenPanel;
-  const docked = wins.some((w) => w.dock);
+  const docked = wins.some((w) => w.dock && !w.min);
   const leaf = (thread ? threadPath : mainPath).filter((m) => !m.id.startsWith("tmp")).slice(-1)[0];
   const ctxRef: CtxRef | null = useMemo(() => (conv ? { convId: conv.id, leafId: leaf?.id || null, thread, rev: ctxRev + (streamId ? 0 : 1000), reload: () => { const c = convRef.current; if (c) loadConv(c.id, leaf?.id); } } : null), [conv, leaf?.id, thread, ctxRev, streamId, loadConv]);
 
@@ -598,7 +660,7 @@ export default function App() {
         </div>}
         <CanvasLayer wins={wins} setWins={setWins} dockW={dockW} setDockW={setDockW} />
         {qpop && <button className="qpop" style={{ left: qpop.x, top: qpop.y }} onMouseDown={(e) => e.preventDefault()}
-          onClick={() => { setQuotes((q) => ({ ...q, [active.current]: qpop.text })); setQpop(null); window.getSelection()?.removeAllRanges(); }}>Quote</button>}
+          onClick={() => { setQuotes((q) => ({ ...q, [active.current]: qpop.quote })); setQpop(null); window.getSelection()?.removeAllRanges(); }}>{qpop.label}</button>}
       </div>
     </AppCtx.Provider>
   );
