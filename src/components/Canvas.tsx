@@ -84,14 +84,25 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
   const refs = useRef<(HTMLCanvasElement | null)[]>([]);
   const wrap = useRef<HTMLDivElement>(null);
   const doc = useRef<{ getPage: (n: number) => Promise<unknown>; numPages: number } | null>(null);
+  const renderGeneration = useRef(0);
   const renderAll = useCallback(async (dims: { w: number; h: number }[], alive: () => boolean) => {
+    const generation = ++renderGeneration.current;
     const pdf = doc.current as unknown as { getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }> } | null;
     if (!pdf) return;
-    for (let i = 1; i <= dims.length && alive(); i++) {
-      const page = await pdf.getPage(i), c = refs.current[i - 1]; if (!c) continue;
-      const scale = (c.parentElement!.clientWidth / dims[i - 1].w) * (devicePixelRatio || 1);
-      const vp = page.getViewport({ scale }); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext("2d")!, viewport: vp, canvas: c }).promise;
+    for (let i = 1; i <= dims.length && alive() && generation === renderGeneration.current; i++) {
+      const page = await pdf.getPage(i), c = refs.current[i - 1];
+      const host = c?.parentElement; if (!c || !host || !host.clientWidth) continue;
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      const scale = (host.clientWidth / dims[i - 1].w) * dpr;
+      const vp = page.getViewport({ scale });
+      // Render away from the visible page, then swap the finished bitmap in.
+      // Resizing a live PDF.js canvas is what caused intermittent white/rotated pages.
+      const buffer = document.createElement("canvas");
+      buffer.width = Math.max(1, Math.ceil(vp.width)); buffer.height = Math.max(1, Math.ceil(vp.height));
+      await page.render({ canvasContext: buffer.getContext("2d")!, viewport: vp, canvas: buffer }).promise;
+      if (!alive() || generation !== renderGeneration.current) return;
+      c.width = buffer.width; c.height = buffer.height;
+      c.getContext("2d")!.drawImage(buffer, 0, 0);
     }
   }, []);
   useEffect(() => {
@@ -117,7 +128,7 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
             const d = dims[i - 1];
             all.push((tc.items as { str?: string; transform?: number[]; width?: number; height?: number }[])
               .filter((it) => it.str && it.transform)
-              .map((it) => ({ s: it.str!, x: it.transform![4] / d.w, y: (d.h - it.transform![5]) / d.h, w: (it.width || 0) / d.w, h: (it.height || Math.abs(it.transform![3]) || 10) / d.h })));
+              .map((it) => { const h = it.height || Math.abs(it.transform![3]) || 10; return { s: it.str!, x: it.transform![4] / d.w, y: (d.h - it.transform![5] - h) / d.h, w: (it.width || 0) / d.w, h: h / d.h }; }));
           }
           if (!dead && all.length) setTexts(all);
         } catch { /* no text layer: selection falls back to snipping */ }
@@ -125,7 +136,15 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
     })();
     return () => { dead = true; };
   }, [path, renderAll]);
-  useEffect(() => { if (!pages.length) return; let dead = false; const t = setTimeout(() => renderAll(pages, () => !dead), 120); return () => { dead = true; clearTimeout(t); }; }, [zoom, pages, renderAll]);
+  useEffect(() => {
+    if (!pages.length) return;
+    let dead = false, timer: ReturnType<typeof setTimeout>;
+    const render = () => { clearTimeout(timer); timer = setTimeout(() => void renderAll(pages, () => !dead), 90); };
+    render();
+    const body = wrap.current?.closest(".win-body");
+    const ro = new ResizeObserver(render); if (body) ro.observe(body);
+    return () => { dead = true; clearTimeout(timer); ro.disconnect(); };
+  }, [zoom, pages, renderAll]);
   useEffect(() => {
     const el = wrap.current?.closest(".win-body"); if (!el) return;
     const on = () => { const mid = el.getBoundingClientRect().top + el.clientHeight / 3; let best = 1; refs.current.forEach((c, i) => { if (c && c.getBoundingClientRect().top < mid) best = i + 1; }); setCur(best); };
@@ -145,12 +164,15 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
       const t = e.target as HTMLElement;
       if (t.closest("input,textarea,select,[contenteditable=true]")) return;
       const v = Math.max(80, body.clientHeight * 0.12);
-      if (e.key === "ArrowDown") body.scrollBy(0, v);
-      else if (e.key === "ArrowUp") body.scrollBy(0, -v);
-      else if (e.key === "ArrowRight") body.scrollBy(v, 0);
-      else if (e.key === "ArrowLeft") body.scrollBy(-v, 0);
-      else if (e.key === "PageDown" || e.key === " ") body.scrollBy(0, body.clientHeight * 0.9);
-      else if (e.key === "PageUp") body.scrollBy(0, -body.clientHeight * 0.9);
+      const scroll = (top: number, left = body.scrollLeft) => body.scrollTo({ top, left, behavior: "smooth" });
+      if (e.key === "ArrowDown") scroll(body.scrollTop + v);
+      else if (e.key === "ArrowUp") scroll(body.scrollTop - v);
+      else if (e.key === "ArrowRight") scroll(body.scrollTop, body.scrollLeft + v);
+      else if (e.key === "ArrowLeft") scroll(body.scrollTop, body.scrollLeft - v);
+      else if (e.key === "PageDown" || e.key === " ") scroll(body.scrollTop + body.clientHeight * 0.88);
+      else if (e.key === "PageUp") scroll(body.scrollTop - body.clientHeight * 0.88);
+      else if (e.key === "Home") scroll(0);
+      else if (e.key === "End") scroll(body.scrollHeight);
       else if (e.key === "+" || e.key === "=") zoomBy(1);
       else if (e.key === "-" || e.key === "_") zoomBy(-1);
       else if (e.key === "0") setZoom(1);
@@ -174,8 +196,8 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
   return <div ref={wrap} className="pdfwrap">{pages.map((d, i) => (
     <div key={i} className="pdf-page" style={{ aspectRatio: `${d.w}/${d.h}`, width: `${zoom * 100}%` }}>
       <canvas ref={(el) => { refs.current[i] = el; }} style={{ width: "100%", height: "100%" }} />
-      {texts?.[i] && <div className="txtlayer" aria-label="PDF text">{texts[i].map((t, k) => (
-        <span key={k} style={{ left: `${t.x * 100}cqw`, top: `${t.y * 100}cqh`, fontSize: `${t.h * 100}cqh`, width: `${t.w * 100}cqw` }}>{t.s}</span>))}</div>}
+      {texts?.[i] && <div className="txtlayer" aria-label={`PDF text, page ${i + 1}`} data-page={i + 1} data-path={path}>{texts[i].map((t, k) => (
+        <span key={k} style={{ left: `${t.x * 100}cqw`, top: `${t.y * 100}cqh`, fontSize: `${t.h * 100}cqh`, width: `${t.w * 100}cqw`, height: `${t.h * 100}cqh` }}>{t.s}</span>))}</div>}
       {setInk && <Ink strokes={ink?.[i + 1] || []} onChange={(s) => setInk(String(i + 1), s)} active={!!pen} />}
     </div>))}</div>;
 }
@@ -318,85 +340,95 @@ const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; wi
 });
 
 export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; setWins: React.Dispatch<React.SetStateAction<Win[]>>; dockW: number; setDockW: (w: number) => void }) {
-  // which floating bars are revealed (hover zones); hidden = immersive fullscreen content
   const [show, setShow] = useState<Record<string, { t: boolean; b: boolean }>>({});
+  const [edge, setEdge] = useState<Record<string, string | null>>({});
+  const [snap, setSnap] = useState<"left" | "right" | null>(null);
   const timers = useRef<Record<string, NodeJS.Timeout>>({});
   const reveal = (id: string, zone: "t" | "b" | null) => {
-    if (timers.current[id]) { clearTimeout(timers.current[id]); delete timers.current[id]; }
-    setShow((s) => { const c = s[id] || { t: false, b: false }; const n = zone === null ? { t: false, b: false } : { ...c, [zone]: true }; if (n.t === c.t && n.b === c.b) return s; return { ...s, [id]: n }; });
-    if (zone) timers.current[id] = setTimeout(() => setShow((s) => ({ ...s, [id]: { t: false, b: false } })), 900);
+    if (timers.current[id]) clearTimeout(timers.current[id]);
+    setShow((s) => ({ ...s, [id]: zone === null ? { t: false, b: false } : { ...(s[id] || { t: false, b: false }), [zone]: true } }));
+    if (zone) timers.current[id] = setTimeout(() => setShow((s) => ({ ...s, [id]: { t: false, b: false } })), 1100);
   };
-  const upd = (id: string, p: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? { ...w, ...p } : w)));
-  const front = (id: string) => setWins((ws) => { const top = Math.max(0, ...ws.map((w) => w.z)); const me = ws.find((w) => w.id === id); if (me && me.z === top) return ws; return ws.map((w) => (w.id === id ? { ...w, z: top + 1 } : w)); });
-  const setDock = (id: string, dock: boolean) => setWins((ws) => ws.map((w) => (w.id === id ? { ...w, dock, min: false, dockPeek: false } : dock && w.dock ? { ...w, dock: false, min: true } : w)));
-  const dragEnd = useRef(0); // the click that ends a drag must not restore; later clicks do
-  const hoverT = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restore = (w: Win) => {
-    if (hoverT.current) { clearTimeout(hoverT.current); hoverT.current = null; }
-    if (w.peek) upd(w.id, { ...w.peek, peek: null });
-    else if (w.dockPeek) { upd(w.id, { dockPeek: false }); setDockW(w.prevDockW || 560); }
-  };
-  const drag = (e: React.PointerEvent, w: Win, kind: "move" | "resize" | "dock") => {
-    if ((e.target as HTMLElement).closest("button") && kind === "move") return;
+  const upd = (id: string, p: Partial<Win>) => setWins((ws) => ws.map((w) => w.id === id ? { ...w, ...p } : w));
+  const front = (id: string) => setWins((ws) => { const top = Math.max(0, ...ws.map((w) => w.z)); return ws.map((w) => w.id === id ? { ...w, z: top + 1 } : w); });
+  const setDock = (id: string, dock: boolean) => setWins((ws) => ws.map((w) => {
+    if (w.id === id) return { ...w, dock, min: false, peek: null, dockPeek: false };
+    // A side canvas has one deliberate occupant. Its predecessor returns to the
+    // exact floating geometry it already owns instead of being mysteriously minimised.
+    return dock && w.dock ? { ...w, dock: false, min: false } : w;
+  }));
+
+  type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+  const drag = (e: React.PointerEvent, w: Win, kind: "move" | "dock" | ResizeDir) => {
+    if (kind === "move" && (e.target as HTMLElement).closest("button")) return;
     if (w.dock && kind === "move") return;
-    e.preventDefault(); front(w.id); document.body.classList.add("dragging");
+    e.preventDefault(); e.stopPropagation(); front(w.id);
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    document.body.classList.add("dragging", kind === "move" ? "moving-window" : "resizing-window");
     const sx = e.clientX, sy = e.clientY, o = { ...w }, ow = dockW;
-    let movedNow = false, live = ow;
+    let moved = false;
     const mv = (ev: PointerEvent) => {
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
-      if (Math.abs(dx) + Math.abs(dy) > 4) movedNow = true;
-      if (kind === "dock") { live = Math.round(Math.min(innerWidth - 380, Math.max(24, ow - dx))); setDockW(live); }
-      else if (kind === "resize") upd(w.id, { w: Math.max(260, o.w + dx), h: Math.max(160, o.h + dy) });
-      else upd(w.id, { x: Math.min(innerWidth - 40, Math.max(-o.w + 40, o.x + dx)), y: Math.min(innerHeight - 40, Math.max(0, o.y + dy)), peek: null });
-    };
-    const up = (ev: PointerEvent) => {
-      removeEventListener("pointermove", mv); removeEventListener("pointerup", up); document.body.classList.remove("dragging");
-      if (movedNow) dragEnd.current = Date.now();
-      if (kind === "dock") { // dragged thinner than the snap point: park as a peek at the edge
-        if (live < 120 && !w.dockPeek) { upd(w.id, { dockPeek: true, prevDockW: ow >= 120 ? ow : w.prevDockW || 560 }); setDockW(16); }
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      if (kind === "dock") { setDockW(Math.round(Math.min(innerWidth - 360, Math.max(320, ow - dx)))); return; }
+      if (kind === "move") {
+        upd(w.id, { x: Math.min(innerWidth - 72, Math.max(-o.w + 72, o.x + dx)), y: Math.min(innerHeight - 52, Math.max(8, o.y + dy)), peek: null });
+        setSnap(ev.clientX > innerWidth - 34 ? "right" : null);
         return;
       }
-      if (kind !== "move" || !movedNow) return;
-      if (ev.clientX > innerWidth - 28) upd(w.id, { peek: { x: o.x, y: o.y, w: o.w, h: o.h }, x: innerWidth - 14, y: Math.min(o.y, innerHeight - 120), w: 14, h: Math.max(120, o.h) });
-      else if (ev.clientX < 28) upd(w.id, { peek: { x: o.x, y: o.y, w: o.w, h: o.h }, x: -o.w + 14, y: Math.min(o.y, innerHeight - 120) });
+      const west = kind.includes("w"), east = kind.includes("e"), north = kind.includes("n"), south = kind.includes("s");
+      const minW = 300, minH = 190;
+      let x = o.x, y = o.y, width = o.w, height = o.h;
+      if (east) width = Math.max(minW, o.w + dx);
+      if (south) height = Math.max(minH, o.h + dy);
+      if (west) { width = Math.max(minW, o.w - dx); x = o.x + (o.w - width); }
+      if (north) { height = Math.max(minH, o.h - dy); y = o.y + (o.h - height); }
+      upd(w.id, { x, y, w: width, h: height });
+    };
+    const up = (ev: PointerEvent) => {
+      removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
+      document.body.classList.remove("dragging", "moving-window", "resizing-window");
+      if (kind === "move" && moved && ev.clientX > innerWidth - 34) setDock(w.id, true);
+      setSnap(null); setEdge((x) => ({ ...x, [w.id]: null }));
     };
     addEventListener("pointermove", mv); addEventListener("pointerup", up);
   };
-  // minimised windows park as a tray along the top of the chat column; double-click or the button restores them
-  const tray = wins.filter((w) => w.min && !w.dock).map((w) => w.id);
-  const trayIdx = (id: string) => tray.indexOf(id);
-  const trayPos = (i: number) => {
-    const chatW = (typeof window === "undefined" ? 1200 : innerWidth) - (wins.some((w) => w.dock) ? dockW + 16 : 0);
-    const per = Math.max(1, Math.floor((chatW - 96 - 150) / 180)); // keep clear of the top-left and top-right icons
-    return { left: 96 + (i % per) * 180, top: 8 + Math.floor(i / per) * 42, width: 172 };
-  };
+
+  const dirs: ResizeDir[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+  const minimized = wins.filter((w) => w.min);
   return <>
-    {wins.map((w) => (
-      <div key={w.id} data-win={w.id} className={`win${w.min && !w.dock ? " min" : ""}${w.pinned ? " pinned" : ""}${w.dock ? " docked" : ""}${w.peek ? " peek" + (w.peek.x > w.x ? " peek-r" : " peek-l") : ""}${w.dockPeek ? " dockpeek" : ""}${(show[w.id]?.t) ? " show-t" : ""}${(show[w.id]?.b) ? " show-b" : ""}`}
-        style={w.dock ? { zIndex: 30 } : w.min ? { ...trayPos(trayIdx(w.id)), zIndex: 40 + w.z } : { left: w.x, top: w.y, width: w.w, height: w.h, zIndex: 40 + w.z }}
+    {snap && <div className={`dock-preview ${snap}`} aria-hidden><div /></div>}
+    {wins.filter((w) => !w.min).map((w) => (
+      <div key={w.id} data-win={w.id} className={`win${w.pinned ? " pinned" : ""}${w.dock ? " docked" : ""}${show[w.id]?.t ? " show-t" : ""}${show[w.id]?.b ? " show-b" : ""}${edge[w.id] ? " edge-hot" : ""}`}
+        style={w.dock ? { zIndex: 30 } : { left: w.x, top: w.y, width: w.w, height: w.h, zIndex: 40 + w.z }}
         onPointerDown={() => front(w.id)}
-        onClick={() => { if (Date.now() - dragEnd.current < 400) return; restore(w); }}
-        onPointerEnter={() => { if (w.dockPeek) { if (hoverT.current) clearTimeout(hoverT.current); hoverT.current = setTimeout(() => restore(w), 450); } }}
         onPointerMove={(e) => {
-          if (w.pinned || w.min || w.peek || w.dockPeek) return;
-          const r = e.currentTarget.getBoundingClientRect();
-          const y = e.clientY - r.top;
-          reveal(w.id, y < 52 ? "t" : r.height - y < 52 ? "b" : null);
+          if (w.pinned || w.dock) return;
+          const r = e.currentTarget.getBoundingClientRect(), y = e.clientY - r.top;
+          if (!(e.target as HTMLElement).closest(".resize-zone")) reveal(w.id, y < 48 ? "t" : r.height - y < 48 ? "b" : null);
         }}
-        onPointerLeave={() => { if (hoverT.current) { clearTimeout(hoverT.current); hoverT.current = null; } if (!w.pinned) reveal(w.id, null); }}>
-        <div className="win-bar top" onPointerDown={(e) => !w.min && drag(e, w, "move")} onClick={(e) => { if (w.min && !(e.target as HTMLElement).closest("button")) upd(w.id, { min: false }); if (!(e.target as HTMLElement).closest("button")) e.stopPropagation(); }} onDoubleClick={() => !w.dock && !w.min && upd(w.id, { min: true })}>
+        onPointerLeave={() => { if (!w.pinned) reveal(w.id, null); setEdge((x) => ({ ...x, [w.id]: null })); }}>
+        <div className="win-bar top" onPointerDown={(e) => drag(e, w, "move")} onDoubleClick={() => !w.dock && upd(w.id, { min: true })}>
           <span className="title">{w.spec.title}</span>
-          {!w.min && <button className="ib sm" aria-label={w.pinned ? "Unpin bars" : "Pin bars"} title={w.pinned ? "Unpin bars (bars float over content)" : "Pin bars (part of the layout)"} onClick={() => upd(w.id, { pinned: !w.pinned })}>{w.pinned ? <PinOff /> : <Pin />}</button>}
+          <button className="ib sm" aria-label={w.pinned ? "Unpin controls" : "Pin controls"} title={w.pinned ? "Hide controls when idle" : "Keep controls visible"} onClick={() => upd(w.id, { pinned: !w.pinned })}>{w.pinned ? <PinOff /> : <Pin />}</button>
           <button className="ib sm" aria-label="Close" title="Close" onClick={() => setWins((ws) => ws.filter((x) => x.id !== w.id))}><X /></button>
         </div>
-        <Viewer spec={w.spec} winId={w.id} ctl={!w.min ? <>
+        <Viewer spec={w.spec} winId={w.id} ctl={<>
           <span className="bar-sep" />
-          <button className="ib sm" aria-label={w.dock ? "Float" : "Dock beside chat"} title={w.dock ? "Float" : "Dock beside chat"} onClick={() => setDock(w.id, !w.dock)}>{w.dock ? <PictureInPicture2 /> : <PanelRight />}</button>
-          {!w.dock && <button className="ib sm" aria-label="Minimize" title="Minimize" onClick={() => upd(w.id, { min: true })}><Minus /></button>}
-        </> : undefined} />
-        {w.dock ? <div className="win-dockresize" onPointerDown={(e) => drag(e, w, "dock")} aria-label="Resize" role="separator" aria-orientation="vertical" />
-          : <div className="win-resize" onPointerDown={(e) => drag(e, w, "resize")} />}
+          <button className="ib sm" aria-label={w.dock ? "Float canvas" : "Move to side canvas"} title={w.dock ? "Float canvas" : "Move to side canvas"} onClick={() => setDock(w.id, !w.dock)}>{w.dock ? <PictureInPicture2 /> : <PanelRight />}</button>
+          <button className="ib sm" aria-label="Minimize to canvas dock" title="Minimize to canvas dock" onClick={() => upd(w.id, { min: true, dock: false })}><Minus /></button>
+        </>} />
+        {w.dock ? <div className="win-dockresize" onPointerDown={(e) => drag(e, w, "dock")} aria-label="Resize side canvas" role="separator" aria-orientation="vertical" />
+          : dirs.map((d) => <div key={d} className={`resize-zone rz-${d}${edge[w.id] === d ? " active" : ""}`} onPointerEnter={() => setEdge((x) => ({ ...x, [w.id]: d }))} onPointerDown={(e) => drag(e, w, d)}><i /></div>)}
       </div>
     ))}
+    {minimized.length > 0 && <nav className="canvas-shelf" aria-label="Minimized canvases">
+      {minimized.map((w) => <div className="shelf-item" key={w.id}>
+        <button className="shelf-open" title={`Restore ${w.spec.title}`} onClick={() => upd(w.id, { min: false })}>
+          <span>{w.spec.title.trim().slice(0, 1).toUpperCase() || "C"}</span><b>{w.spec.title}</b>
+        </button>
+        <button className="shelf-close" aria-label={`Close ${w.spec.title}`} onClick={() => setWins((ws) => ws.filter((x) => x.id !== w.id))}><X /></button>
+      </div>)}
+    </nav>}
   </>;
 }

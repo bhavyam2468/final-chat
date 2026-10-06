@@ -781,3 +781,80 @@ button.busy:not(.solid)::after { border-color: var(--fg) var(--fg) transparent t
 .crumb.on { color: var(--fg); background: var(--surface); }
 .crumb svg { width: 12px; height: 12px; }
 .panel-sub { font-size: 10.5px; letter-spacing: .06em; color: var(--faint); padding: 10px 10px 2px; text-transform: uppercase; }
+
+
+/* Canvas interaction layer — quiet until the pointer asks for it. */
+.win {
+  --window-spring: cubic-bezier(.2,.9,.24,1.08);
+  transition: box-shadow .22s ease, border-color .22s ease, opacity .2s ease;
+  animation: canvas-arrive .42s var(--window-spring) both;
+  contain: layout paint;
+}
+@keyframes canvas-arrive { from { opacity: 0; transform: translateY(10px) scale(.975); } to { opacity: 1; transform: none; } }
+body.moving-window .win, body.resizing-window .win { animation: none; transition: none; }
+body.moving-window { cursor: grabbing !important; }
+body.resizing-window iframe, body.moving-window iframe { pointer-events: none; }
+
+/* Eight generous invisible hit targets. A Vision-style indicator only appears
+   beside the edge the pointer has actually approached. */
+.resize-zone { position: absolute; z-index: 8; touch-action: none; }
+.resize-zone i { position: absolute; display: block; border-radius: 999px; background: color-mix(in srgb, var(--fg) 72%, transparent); box-shadow: 0 1px 5px rgba(0,0,0,.18); opacity: 0; transform: scale(.65); transition: opacity .14s ease, transform .3s var(--window-spring); pointer-events: none; }
+.resize-zone:hover i, .resize-zone.active i { opacity: .82; transform: scale(1); }
+.rz-n,.rz-s { left: 18px; right: 18px; height: 12px; cursor: ns-resize; }
+.rz-n { top: -6px; } .rz-s { bottom: -6px; }
+.rz-n i,.rz-s i { width: 52px; height: 4px; left: calc(50% - 26px); }
+.rz-n i { top: -1px; } .rz-s i { bottom: -1px; }
+.rz-e,.rz-w { top: 18px; bottom: 18px; width: 12px; cursor: ew-resize; }
+.rz-e { right: -6px; } .rz-w { left: -6px; }
+.rz-e i,.rz-w i { width: 4px; height: 52px; top: calc(50% - 26px); }
+.rz-e i { right: -1px; } .rz-w i { left: -1px; }
+.rz-ne,.rz-nw,.rz-se,.rz-sw { width: 20px; height: 20px; }
+.rz-ne { right:-7px;top:-7px;cursor:nesw-resize } .rz-nw { left:-7px;top:-7px;cursor:nwse-resize }
+.rz-se { right:-7px;bottom:-7px;cursor:nwse-resize } .rz-sw { left:-7px;bottom:-7px;cursor:nesw-resize }
+.rz-ne i,.rz-nw i,.rz-se i,.rz-sw i { width: 13px; height: 4px; left: 4px; top: 8px; transform: rotate(45deg) scale(.65); }
+.rz-ne i,.rz-sw i { transform: rotate(-45deg) scale(.65); }
+.rz-ne:hover i,.rz-sw:hover i { transform: rotate(-45deg) scale(1); }
+.rz-nw:hover i,.rz-se:hover i { transform: rotate(45deg) scale(1); }
+
+/* Edge docking is a spatial preview, never a colour flash. */
+.dock-preview { position: fixed; inset: 8px; z-index: 29; pointer-events: none; display: flex; justify-content: flex-end; }
+.dock-preview.left { justify-content: flex-start; }
+.dock-preview div { width: min(560px,42vw); height: 100%; border: 1px solid color-mix(in srgb,var(--fg) 16%,transparent); border-radius: var(--r); background: color-mix(in srgb,var(--surface) 62%,transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--bg) 40%,transparent); animation: dock-preview-in .28s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes dock-preview-in { from { opacity:0; transform:translateX(18px) scale(.985) } }
+.dock-preview.left div { animation-name: dock-preview-left; }
+@keyframes dock-preview-left { from { opacity:0; transform:translateX(-18px) scale(.985) } }
+
+/* A real minimized-canvas home: compact, ordered, and attached to the left edge. */
+.canvas-shelf { position: fixed; left: 8px; top: 50%; transform: translateY(-50%); z-index: 75; display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb,var(--float) 90%,transparent); backdrop-filter: blur(18px); box-shadow: var(--shadow); animation: shelf-in .34s var(--window-spring) both; }
+@keyframes shelf-in { from { opacity:0; transform:translate(-10px,-50%) scale(.92) } }
+.shelf-item { position: relative; display: flex; align-items: center; }
+.shelf-open { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 9px; color: var(--fg); background: var(--surface); transition: transform .22s var(--window-spring), background .15s ease; }
+.shelf-open:hover { transform: translateX(3px) scale(1.06); background: var(--bubble); }
+.shelf-open span { font: 600 12px var(--font-mono); }
+.shelf-open b { position: absolute; left: 48px; max-width: 220px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--float); box-shadow: var(--shadow); font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transform: translateX(-5px); pointer-events: none; transition: .16s ease; }
+.shelf-open:hover b { opacity: 1; transform: none; }
+.shelf-close { position: absolute; right: -5px; top: -5px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: var(--fg); color: var(--bg); opacity: 0; transform: scale(.7); transition: .14s ease; }
+.shelf-item:hover .shelf-close { opacity: 1; transform: scale(1); }
+.shelf-close svg { width: 10px; height: 10px; }
+
+.win.docked { animation: side-canvas-in .44s cubic-bezier(.2,.82,.2,1) both; }
+@keyframes side-canvas-in { from { opacity:0; transform:translateX(26px) scale(.985) } }
+.win-dockresize { width: 14px; left: -7px; }
+.win-dockresize::after { left: 5px; width: 4px; height: 44px; opacity: 0; transform: scaleY(.65); transition: opacity .15s ease, transform .3s var(--window-spring); }
+.win-dockresize:hover::after { opacity: .8; height: 54px; transform: scaleY(1); }
+
+/* PDF behaves like a reader: stable page geometry, inertial scrolling and a
+   text/ink coordinate system that is exactly the page box. */
+.win-body.k-pdf { scroll-behavior: smooth; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.pdfwrap { padding: 12px 18px 32px; min-width: 100%; }
+.pdf-page { isolation: isolate; margin: 12px auto; overflow: hidden; box-shadow: 0 2px 14px rgba(0,0,0,.13); transition: width .3s cubic-bezier(.2,.8,.2,1), box-shadow .2s ease; }
+.pdf-page canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; z-index: 0; }
+.txtlayer { z-index: 2; user-select: text; }
+.txtlayer span { line-height: 1; transform-origin: 0 0; }
+.pdf-page .ink { z-index: 3; width: 100% !important; height: 100% !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .win,.win.docked,.canvas-shelf,.dock-preview div { animation-duration: .01ms !important; }
+  .pdf-page,.shelf-open,.resize-zone i { transition-duration: .01ms !important; }
+  .win-body.k-pdf { scroll-behavior: auto; }
+}

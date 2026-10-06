@@ -353,12 +353,16 @@ export default function App() {
     void contentRatio(spec).then((ratio) => {
       remember();
       setWins((ws) => {
-        const dock = !!o?.dock && innerWidth >= 760;
+        // The canvas is part of the workspace, not a pop-up: the first open item
+        // takes the integrated side canvas. Further items float without displacing it.
+        // An explicit `dock` attribute still wins when the model/user requests it.
+        const canDock = innerWidth >= 760;
+        const dock = canDock && (o?.dock === true || (o?.dock === undefined && !ws.some((w) => w.dock && !w.min)));
         const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
         const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
-        const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
-        if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock, peek: null } : undock(w)));
-        const floating = ws.filter((w) => !w.dock).length;
+        const releaseDock = (w: Win) => dock && w.dock && w !== exists ? { ...w, dock: false, min: false } : w;
+        if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock, peek: null, dockPeek: false } : releaseDock(w)));
+        const floating = ws.filter((w) => !w.dock && !w.min).length;
         let w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72);
         let x = innerWidth - w - 24 - floating * 24, y = 56 + floating * 24;
         if (ratio) {
@@ -369,7 +373,7 @@ export default function App() {
           if (h > maxH) { h = maxH; w = Math.round(h * ratio.ratio); }
           x = Math.round((innerWidth - w) / 2); y = Math.max(20, Math.round((innerHeight - h) / 2));
         }
-        return [...ws.map(undock), { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock }];
+        return [...ws.map(releaseDock), { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock }];
       });
     });
   }, []);
@@ -426,7 +430,16 @@ export default function App() {
       if (!node?.closest(".ai-content, .txtlayer, .docview, .reader")) { setQpop(null); return; }
       if (node.closest(".thread")) active.current = "thread"; else active.current = "main";
       const r = s.getRangeAt(0).getBoundingClientRect();
-      setQpop({ x: r.left + r.width / 2, y: r.top - 8, text: t });
+      const layer = node.closest<HTMLElement>(".txtlayer");
+      let quoted = t;
+      if (layer) {
+        const spans = [...layer.querySelectorAll("span")];
+        const anchor = node.closest("span");
+        const i = anchor ? spans.indexOf(anchor) : -1;
+        const context = i >= 0 ? spans.slice(Math.max(0, i - 3), i + 4).map((x) => x.textContent || "").join(" ").replace(/\s+/g, " ").trim() : "";
+        quoted = `[PDF: ${layer.dataset.path || "document"}, page ${layer.dataset.page || "?"}]\n${t}${context && context !== t ? `\nNearby text: ${context}` : ""}`;
+      }
+      setQpop({ x: r.left + r.width / 2, y: r.top - 8, text: quoted });
     }, 0);
     document.addEventListener("mouseup", up);
     return () => document.removeEventListener("mouseup", up);
