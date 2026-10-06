@@ -17,7 +17,8 @@ export function ChatView({ id, setBar }: { id: string; setBar: (n: React.ReactNo
     const t = setInterval(load, 4000); // cheap: one small JSON; keeps a running chat current
     return () => { stop = true; clearInterval(t); };
   }, [id]);
-  useEffect(() => { setBar(<button className="txt-btn" onClick={() => app.openChat(id)}>Open in chat</button>); }, [id, app, setBar]);
+  // The action belongs to the chat view's own top bar, not the composer/dock.
+  useEffect(() => { setBar(null); }, [setBar]);
   // main line: follow the newest leaf back to the root (side threads and old branches stay out)
   const line = useMemo(() => {
     if (!msgs) return [];
@@ -32,6 +33,7 @@ export function ChatView({ id, setBar }: { id: string; setBar: (n: React.ReactNo
   if (!msgs) return <div className="v-msg">Loading…</div>;
   return (
     <div className="reader chatview">
+      <div className="cv-toolbar"><span>Read-only chat</span><button className="txt-btn" onClick={() => app.openChat(id)}>Open in chat</button></div>
       {line.map((m) => m.role === "user"
         ? <div key={m.id} className="cv-user">{m.content.replace(/<ui_event[\s\S]*?<\/ui_event>/g, "(form sent)")}</div>
         : <div key={m.id} className="cv-ai">

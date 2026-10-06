@@ -7,7 +7,7 @@ export const conversations = pgTable("conversations", {
   summary: text("summary"),
   summaryUpTo: text("summary_up_to"),
   /** Harness state: loaded tool packs (kept so the tool list stays stable across turns) and the task checklist. */
-  state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[]; approved?: string[]; mode?: "chat" | "search"; project?: string }>().notNull().default({}),
+  state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[]; approved?: string[]; mode?: "chat" | "general" | "search"; project?: string }>().notNull().default({}),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

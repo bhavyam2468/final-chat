@@ -25,14 +25,16 @@ All services below are running locally via Docker containers. The app talks to t
 | Service | Container Name | Port | Description |
 |---|---|---|---|
 | **FreeLLMAPI** | `freellmapi-freellmapi-1` | `3001` | Local AI model proxy (200+ models). Network: `freellmapi_default` |
-| **Firecrawl API** | `firecrawl-api-1` | `3002` | Local self-hosted Firecrawl (scraping + search). Network: `firecrawl_backend`. `USE_DB_AUTHENTICATION=false` — no key needed for local calls |
+| **SearXNG** | `searxng` | `8080` | Local JSON metasearch discovery for ordinary web research |
+| **SearXNG cache** | `searxng-cache` | — | Valkey cache used by the local SearXNG service |
+| **Firecrawl API** | `firecrawl-api-1` | `3002` | Optional self-hosted escalation for difficult pages; not used by ordinary searches |
 | **Firecrawl Redis** | `firecrawl-redis-1` | — | Internal Redis for Firecrawl job queue |
 | **Firecrawl RabbitMQ** | `firecrawl-rabbitmq-1` | — | Internal job broker |
 | **Firecrawl Playwright** | `firecrawl-playwright-service-1` | — | Headless browser for Firecrawl |
 | **Firecrawl Postgres (NUQ)** | `firecrawl-nuq-postgres-1` | — | Internal DB for Firecrawl |
 | **App Postgres** | `minimalist-ai-chat-workspace-db-1` | `5432` | The chat app's own Postgres DB |
 
-> **Note on Firecrawl SearXNG**: The SearXNG container (`searxng`) is present but was `Exited`. Local search falls back to DuckDuckGo inside the Firecrawl container, and ultimately to Cloud Firecrawl if all else fails.
+> **Search note**: the app's compose file now runs a small SearXNG + Valkey pair on `:8080`. The app tries SearXNG first, then keyless adapters. Firecrawl is intentionally a separate, opt-in escalation because its browser workers are too heavy for routine local/mobile use.
 
 ---
 
@@ -61,7 +63,7 @@ EnvironmentFile=-/home/thatguy/Projects/the chat application/minimalist-ai-chat-
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=PATH=/home/thatguy/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStartPre=/usr/bin/docker compose -f "...docker-compose.yml" up -d db
+ExecStartPre=/usr/bin/docker compose -f "...docker-compose.yml" up -d db searxng-cache searxng
 ExecStart=/usr/bin/npm start
 Restart=always
 RestartSec=5
@@ -114,6 +116,8 @@ LLM_BASE_URL=http://localhost:3001/v1
 LLM_API_KEY=freellmapi-<key>
 LLM_MODEL=gemini-2.5-flash
 
+SEARXNG_URL=http://localhost:8080
+FIRECRAWL_ENABLED=0
 FIRECRAWL_URL=http://localhost:3002
 FIRECRAWL_API_KEY=fc-<cloud-key>
 FIRECRAWL_CLOUD_URL=https://api.firecrawl.dev
@@ -135,28 +139,11 @@ ACCESS_MODE=sandbox
 - Default `firecrawlKey` → cloud API key (for bypass/extract only)
 - FreeLLMAPI preset model updated to `gemini-2.5-flash`
 
-### 2. `src/lib/web.ts` — Hybrid Firecrawl (moved from `src/lib/tools.ts`)
+### 2. Local-first web research (`src/lib/web.ts`)
 
-Three new internal functions replaced the old single `firecrawl()` helper:
+The ordinary path queries local SearXNG, then uses short-timeout keyless adapters. Direct page reads use HTTP + Mozilla Readability + Turndown; local/cloud Firecrawl is contacted only when `FIRECRAWL_ENABLED=1` and lightweight extraction fails.
 
-**`firecrawlScrape(st, url)`**
-1. Tries local Firecrawl (`http://localhost:3002/v1/scrape`) with 15s timeout, no auth key
-2. Detects bot-protection in response (Cloudflare challenge text patterns)
-3. Falls back to Cloud Firecrawl (`https://api.firecrawl.dev/v1/scrape`) with Bearer token if local fails or is blocked
-
-**`firecrawlSearch(st, query, limit)`**
-1. Tries local Firecrawl search with **3-second** timeout (local SearXNG is often down)
-2. Falls back to Cloud Firecrawl search if local times out or returns empty results
-
-**`firecrawlExtract(st, url, prompt)`**
-- Always routes to Cloud (local has no LLM for AI extraction)
-- Uses `/v1/scrape` with `formats: ["extract"]` and `extract: { prompt }` body
-
-**Tool (now in `src/lib/tools/index.ts`, offered only when a cloud key is set):**
-```typescript
-T("web_extract", "Extract structured data from a web page using Firecrawl Cloud AI",
-  { url: ..., prompt: ... }, ["url", "prompt"])
-```
+Multiple web calls emitted by one model step start concurrently; each tool row reports its own status and source.
 
 ### 3. `src/app/api/models/route.ts` — Model Fetcher (NEW FILE)
 
@@ -178,9 +165,9 @@ Endpoint: `GET /api/models?baseUrl=<url>` or `POST /api/models` with `{ baseUrl,
   - Selecting a model from dropdown auto-saves model + context window
 
 **Tools tab changes:**
-- Firecrawl URL field label: `"Local Firecrawl URL (zero-credit)"`
-- Firecrawl Key field label: `"Online Firecrawl Key (bypass / extract)"`
-- Added explanatory subtitle under the fields
+- Added a SearXNG URL field (defaults to the local `:8080` JSON API).
+- Firecrawl URL/key fields are explicitly optional and paired with an off-by-default `Allow Firecrawl escalation` switch.
+- Added explanatory copy that ordinary research is HTTP/Readability-first and browser-free.
 
 ---
 
@@ -188,16 +175,16 @@ Endpoint: `GET /api/models?baseUrl=<url>` or `POST /api/models` with `{ baseUrl,
 
 ### ⚠️ Critical: Do NOT Change
 
-1. **`firecrawlScrape` local-first logic** — do not switch to always-cloud. Cloud uses paid credits. The whole point is local-first with targeted cloud fallback.
-2. **`firecrawlSearch` 3-second timeout** — SearXNG is often down; the short timeout is intentional to fail fast to cloud.
-3. **The app runs on the host, not in Docker** — do not suggest moving the Next.js app into Docker. Inside the app, `shell` is the agent's sandbox and `host_shell` (only when Settings → Access → Host terminal is on) is the real host terminal.
+1. **Firecrawl is opt-in** — `FIRECRAWL_ENABLED=0` is the safe default. Ordinary search/fetch must use SearXNG + HTTP/Readability and must not start a local browser stack.
+2. **The app runs on the host, not in Docker** — do not suggest moving the Next.js app into Docker. Inside the app, `shell` is the agent's sandbox and `host_shell` (only when Settings → Access → Host terminal is on) is the real host terminal.
+3. **General mode is not Search mode** — it has a separate history, no automatic web preflight, and visible tool calls; promotion to normal chat is explicit.
 4. **`workspace/` is gitignored** — it is the agent's live working directory with conversations, uploads, notes, etc. Never commit it.
 5. **`.env` is not committed** — credentials are only in the local `.env` file.
 
 ### Architecture Patterns
 
 - **Settings are stored in Postgres** (not just `.env`). The `.env` sets defaults; DB overrides them. `getSettings()` merges both. After changing settings via the UI, they persist in DB across restarts.
-- **Tool results include `meta.source`** — `"local"` or `"cloud"` — useful for debugging which Firecrawl path was taken.
+- **Tool results include `meta.source`** — values such as `"searxng"`, `"keyless"`, `"http-readability"`, or `"firecrawl-cloud"` make the route visible to the UI and logs.
 - **All API routes are `force-dynamic`** — no static caching. All data is always fresh from DB.
 - **The agent loop** in `agent.ts` runs up to 16 tool-call steps per user message (40 when the dev tool pack is loaded) and recomputes the tool list every step.
 - **Context window trimming** — `buildHistory()` drops oldest message pairs when the conversation exceeds `contextTokens`. Use `/compact` to summarise manually.
@@ -255,9 +242,12 @@ LLM_BASE_URL=http://localhost:3001/v1
 LLM_API_KEY=freellmapi-<your-key>
 LLM_MODEL=gemini-2.5-flash
 
-# Firecrawl — local instance (run firecrawl docker-compose separately)
+# Local-first web research
+SEARXNG_URL=http://localhost:8080
+# Firecrawl is an explicit fallback only
+FIRECRAWL_ENABLED=0
 FIRECRAWL_URL=http://localhost:3002
-# Cloud key for bot bypass + AI extraction
+# Cloud key for difficult pages / structured extraction
 FIRECRAWL_API_KEY=fc-<your-cloud-key>
 FIRECRAWL_CLOUD_URL=https://api.firecrawl.dev
 

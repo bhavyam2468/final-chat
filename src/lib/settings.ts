@@ -11,6 +11,10 @@ export type Settings = {
   /** What one request may use, whatever the model's window: trimming, folding and compaction work against this.
       Big windows (1M) otherwise mean every agent step resends everything. */
   workingTokens: number;
+  /** Local SearXNG HTTP endpoint used for search discovery. */
+  searxngUrl: string;
+  /** Firecrawl stays configured as an explicit, opt-in escalation path. */
+  firecrawlEnabled: boolean;
   firecrawlUrl: string;
   firecrawlKey: string;
   firecrawlCloudUrl: string;
@@ -51,6 +55,8 @@ export function defaults(): Settings {
     model: process.env.LLM_MODEL || PRESETS.freellmapi.model,
     contextTokens: Number(process.env.LLM_CONTEXT_TOKENS) || 131072,
     workingTokens: Number(process.env.LLM_WORKING_TOKENS) || 64000,
+    searxngUrl: process.env.SEARXNG_URL || "http://localhost:8080",
+    firecrawlEnabled: process.env.FIRECRAWL_ENABLED === "1",
     firecrawlUrl: process.env.FIRECRAWL_URL || "http://localhost:3002",
     firecrawlKey: process.env.FIRECRAWL_API_KEY || "",
     firecrawlCloudUrl: process.env.FIRECRAWL_CLOUD_URL || "https://api.firecrawl.dev",

@@ -1,9 +1,29 @@
-# Local install: `docker compose up -d db` then `npm i && npx drizzle-kit push && npm run build && npm start`
-# The app runs natively (not in Docker) so the agent can reach your terminal and files.
+# Local install: `docker compose up -d` starts PostgreSQL and the lightweight
+# SearXNG discovery service. The app itself runs natively so it can reach the
+# user's terminal and workspace. Firecrawl is deliberately not part of the
+# default stack; enable it separately only when difficult-page escalation is
+# needed.
 services:
   db:
     image: postgres:16
     environment: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: app_db }
     ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
-volumes: { pgdata: {} }
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  searxng-cache:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: valkey-server --save "" --appendonly no
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    depends_on:
+      - searxng-cache
+    ports: ["127.0.0.1:8080:8080"]
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+
+volumes:
+  pgdata: {}

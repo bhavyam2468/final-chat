@@ -36,12 +36,12 @@ each="item in list" / "(q, i) in qs" / "n in 5" (repeats element; locals item,i)
 @click="stmts" (@input @change @submit @done @tick …; event, el available; async ok) · on="click:fnName" (JS or Python function)
 Scope: named inputs, x-state, <script type="data" name="qs">[json]</script> vars, element ids (#t → t.start()), assignments create state (`score = score + 1`).
 Helpers: fmt(sec)→mm:ss sum avg count(arr,fn) pct(a,b) round(x,d) clamp range(n) pick shuffle len now date time json + Math.*
- sendToLm(obj|str, "Label"|{label,prompt}) → <ui_event> to you (only on explicit user action; label = what chat shows, prompt = your instruction for the reply). No-JS: <form lm="Submit answers" lm-prompt="Grade and explain mistakes"> sends its inputs; <button lm="Explain" lm-prompt="…"> sends inputs of its card/section · saveIn(path, text|obj) → workspace file · py(code)→stdout (server python)
+ sendToLm(obj|str, "Label"|{label,prompt}) → <ui_event> to you (only on explicit user action; label = what chat shows, prompt = your instruction for the reply). No-JS: <form lm="Submit answers" lm-prompt="Grade and explain mistakes"> sends its inputs; <button lm="Explain" lm-prompt="…"> sends inputs of its card/section · saveIn(path, text|obj) → workspace file · py(code)→stdout (server Python) · shell(command, opts) / processRun(command, opts) → sandboxed `{ok,code,out}` · processLogs(name, {follow:true}) → tail an existing agent process (including a host process started with explicit Host terminal access) without launching a new host command · backend(kind, input, opts) for `python|bash|process|resource` · backendStream(kind, input, onChunk, opts) for live stdout/snapshots · resource() → one system snapshot · watchResources(ms, "resources") → live `resources.history.cpu|memory|load` for charts
  form(sel?) → {name:value} · notify(text) · every(ms,fn) after(ms,fn) · open(pathOrUrl) → canvas · state(k,init)
 
 ## Logic
-<script> JS: top-level functions/vars are global and callable from bindings. Runs after markup finishes.
-<script type="python"> (Pyodide; numpy/pandas/sympy auto-load): S (state: S.score), el(sel), els(sel), form(), send_to_lm(d), save_in(p,t), notify(t), every(ms,f), after(ms,f), render(). Bind with on="click:fn". Use Python only when numerics need it.
+<script> JS: top-level functions/vars are global and callable from bindings. Runs after markup finishes. Use `backendStream` when a Bash/Python/process producer should paint rows or chart points as output arrives; parse newline-delimited JSON in the callback and assign state instead of writing a backend-specific chart component.
+<script type="python"> (Pyodide; numpy/pandas/sympy auto-load): S (state: S.score), el(sel), els(sel), form(), send_to_lm(d), save_in(p,t), notify(t), every(ms,f), after(ms,f), render(). Bind with on="click:fn". Use Python only when numerics need it; server Python/Bash access is through the backend bridge above.
 
 ## Relations <style type="rel">
 selector { prop: value } · selectors: .class #id tag root · nesting `.a { .b {} }` · `portrait { … }` `landscape { … }` overrides

@@ -9,6 +9,9 @@
  *
  * Streams: the host posts the growing source; complete elements mount once and animate in,
  * the element being written shows a shape-matched placeholder, nothing re-renders or jumps.
+ * Backends: backend("python"|"bash"|"process"|"resource", input), shell(command), processRun(command),
+ * backendStream(kind, input, onChunk), resource(), and watchResources(ms, key) use one sandboxed streaming
+ * bridge. Stream chunks can update any state key; resource history is ready for x-chart/x-sparkline.
  * Standalone: include runtime.css, runtime.js, elements.js and call Blocks.render(source).
  */
 (function () {
@@ -50,8 +53,19 @@
 
   // ---------------------------------------------------------------- host bridge
   const post = (type, data) => { try { parent.postMessage({ src: "blocks", frame: FRAME, type, ...data }, "*"); } catch {} };
-  let reqId = 0; const pending = {};
+  let reqId = 0; const pending = {}; const streams = {};
   const call = (type, data) => new Promise((res) => { const id = ++reqId; pending[id] = res; post(type, { id, ...data }); });
+  const backendPayload = (kind, input) => {
+    if (input && typeof input === "object" && !Array.isArray(input)) return { ...input };
+    return kind === "bash" || kind === "process" ? { command: String(input ?? "") } : { code: String(input ?? "") };
+  };
+  const backend = (kind, input, opts) => call("backend", { backend: String(kind), ...backendPayload(String(kind), input), ...(opts || {}) });
+  const backendStream = (kind, input, onChunk, opts) => {
+    const id = ++reqId;
+    const promise = new Promise((res) => { pending[id] = res; streams[id] = typeof onChunk === "function" ? onChunk : () => {}; });
+    post("backend", { id, backend: String(kind), ...backendPayload(String(kind), input), ...(opts || {}) });
+    return promise.finally(() => { delete streams[id]; });
+  };
   const standalone = window.parent === window;
 
   // ---------------------------------------------------------------- reactive store
@@ -672,19 +686,44 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   document.addEventListener("submit", (e) => { const f = e.target.closest && e.target.closest("form[lm]"); if (!f) return; e.preventDefault(); lmSend(f, f); }, true);
   document.addEventListener("click", (e) => { const b = e.target.closest && e.target.closest("button[lm]"); if (!b || b.closest("form[lm]")) return; e.preventDefault(); const sc = b.closest("x-card,x-section,x-slide,x-tab,form,section") || root; const bad = [...sc.querySelectorAll("input,select,textarea")].find((i) => !i.checkValidity()); if (bad) { bad.reportValidity(); return; } lmSend(b, sc); }, true);
   const saveIn = (path, text) => (standalone ? Promise.resolve(false) : call("save", { path, text: typeof text === "string" ? text : JSON.stringify(text, null, 2) }));
-  const py = (code) => (standalone ? Promise.resolve("(server python unavailable standalone)") : call("py", { code }));
+  // Backend-neutral data access. All server-side work is sandboxed; chunks can be appended to a
+  // live log, parsed as JSON lines, or turned into chart state by the block author.
+  const py = (code) => (standalone ? Promise.resolve("(server python unavailable standalone)") : backend("python", { code }).then((r) => typeof r === "string" ? r : r && r.out !== undefined ? r.out : String(r ?? "")));
+  const shell = (command, opts) => (standalone ? Promise.resolve({ ok: false, code: 1, out: "sandbox backend unavailable standalone" }) : backend("bash", { command, ...(opts || {}) }));
+  const processRun = (command, opts) => (standalone ? Promise.resolve({ ok: false, code: 1, out: "sandbox backend unavailable standalone" }) : backend("process", { command, ...(opts || {}) }));
+  const processLogs = (name, opts) => (standalone ? Promise.resolve({ ok: false, code: 1, out: "process bridge unavailable standalone" }) : backend("process", { name, ...(opts || {}) }));
+  const resource = () => (standalone ? Promise.resolve({ ok: false, code: 1, out: "resource backend unavailable standalone" }) : backend("resource", {}));
+  const watchResources = (interval = 1000, key = "resources") => {
+    let alive = true, timer = 0;
+    const tick = async () => {
+      if (!alive) return;
+      const r = await resource();
+      const d = r && r.data ? r.data : null;
+      if (d) {
+        const old = store[key] && typeof store[key] === "object" ? store[key] : {};
+        const h = old.history && typeof old.history === "object" ? old.history : {};
+        const push = (name, value) => [...(Array.isArray(h[name]) ? h[name] : []), Number(value)].filter(Number.isFinite).slice(-120);
+        setStore(key, { ...d, history: { cpu: push("cpu", d.cpuPercent), memory: push("memory", d.memoryPercent), load: push("load", d.load1) } });
+      }
+      if (alive) timer = setTimeout(tick, Math.max(250, Number(interval) || 1000));
+    };
+    tick();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  };
   const open = (target) => post("open", { target });
   const every = (ms, fn) => setInterval(() => { fn(); schedule(); }, ms);
   const after = (ms, fn) => setTimeout(() => { fn(); schedule(); }, ms);
   const state = (k, init) => { if (!(k in store)) store[k] = init; return { get: () => store[k], set: (v) => { store[k] = v; schedule(); } }; };
   const upload = (file, dir) => new Promise((res) => { const r = new FileReader(); r.onload = () => call("upload", { name: file.name, type: file.type, data: String(r.result).split(",")[1], dir }).then(res); r.readAsDataURL(file); });
-  Object.assign(H, { sendToLm, saveIn, py, notify, form, every, after, open });
-  Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, notify, state, every, after, open, S, render: schedule });
-  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, post, upload, standalone, H });
+  Object.assign(H, { sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, notify, form, every, after, open });
+  Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, notify, state, every, after, open, S, render: schedule });
+  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, backend, backendStream, upload, standalone, H });
 
   window.addEventListener("message", (e) => {
     const m = e.data || {};
     if (m.type === "reply" && pending[m.id]) { pending[m.id](m.value); delete pending[m.id]; }
+    else if (m.type === "backend-chunk" && streams[m.id]) { try { streams[m.id](String(m.chunk || ""), m); } catch (err) { reportErr(err); } schedule(); }
+    else if (m.type === "backend-data" && streams[m.id]) { try { streams[m.id](m.data, m); } catch (err) { reportErr(err); } schedule(); }
     else if (m.type === "theme") { for (const k in m.vars) document.documentElement.style.setProperty(k, m.vars[k]); document.body.dataset.theme = m.theme; root && root.querySelectorAll("[data-themed]").forEach((x) => x.refresh ? x.refresh(true) : x.render && x.render()); }
     else if (m.type === "source") feed(m.source, m.done);
   });

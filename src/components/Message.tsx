@@ -214,7 +214,10 @@ function ReadableResult({ result, name }: { result: string; name: string }) {
 }
 
 const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean; mid?: string }) {
-  const [openS, setOpen] = useState<boolean | null>(null); // active calls always expand; finished calls default to folded
+  // The initial state is chosen once. After that, the user's toggle is the only
+  // authority: completion, streamed output and parent rerenders must not reopen
+  // or fold this call.
+  const [open, setOpen] = useState(() => p.result === undefined);
   const app = useApp();
   const pending = p.result === undefined;
   const liveOut = p.live;
@@ -230,7 +233,6 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "Clean";
   const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? p.args.path : null;
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
-  const open = pending || openS === true;
   const omit = [m.arg || ""];
   let body: React.ReactNode = null;
   if (open && pending) body = <>
@@ -259,7 +261,7 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
   return (
     <div className={"tool" + (pending ? " live" : "")}>
       <div className="tool-line">
-        <button className="tool-row" onClick={() => setOpen(open ? false : true)} aria-expanded={open}>
+        <button className="tool-row" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
           <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>
           {target && (filePath && !pending
             ? <span className="tgt link" role="link" title="Open file" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
@@ -277,7 +279,10 @@ const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract
 });
 
 function ActivityGroup({ children, active, count }: { children: React.ReactNode; active: boolean; count: number }) {
-  return <details className="activity-group" open={active || undefined}>
+  // Deliberately uncontrolled: the DOM owns <details>. Activity/completion/stream
+  // changes may update the summary, but never write the `open` attribute, so a
+  // user's choice survives every render of this group.
+  return <details className="activity-group">
     <summary><span className={active ? "shimmer" : ""}>{active ? "Working" : "Activity"}</span><small>{count} steps</small>{active && <i className="spin" />}</summary>
     <div className="activity-group-body">{children}</div>
   </details>;

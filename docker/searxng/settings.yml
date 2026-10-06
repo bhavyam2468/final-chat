@@ -1,0 +1,18 @@
+# Private local instance for Minimalist Chat. JSON is enabled for the app's
+# server-side search adapter; do not expose this port directly to the internet.
+use_default_settings: true
+
+server:
+  secret_key: "minimalist-chat-local-searxng-change-this"
+  limiter: false
+  image_proxy: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 1
+
+redis:
+  url: redis://searxng-cache:6379/0

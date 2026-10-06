@@ -10,7 +10,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 | Capability | Description |
 |---|---|
-| **Search home** | The app opens on a centered search box, not a chat. A search is an answer with sources (History). New chat starts a real chat, which keeps its tool calls. "Open in chat" promotes a search. `/research`, `/background`, `/brief`, `/project`, `/google` are composer workflows |
+| **General mode** | New Chat opens a separate General conversation for unrelated questions. It does not auto-search, keeps tool calls visible, and has its own history. "Open in chat" promotes it into normal chat without mixing histories. `/research`, `/background`, `/brief`, `/project`, `/google` remain composer workflows |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
@@ -19,7 +19,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | **Streaming** | Rate-adaptive smoothing for text, markdown and every Blocks component: no jitter, no re-render flashes, stable skeletons while a component streams |
 | **MCP Servers** | Curated integrations plus any stdio/HTTP server; remote ones sign in with one click (OAuth, no API key to copy) |
 | **Skills** | Progressive-disclosure skill system (SKILL.md files teach the agent new capabilities on demand); the agent can write and install skills in chat |
-| **Hybrid Firecrawl** | Smart routing: local Firecrawl for free scraping, cloud key only for anti-bot bypass / AI extraction |
+| **Local-first web research** | SearXNG discovers URLs, parallel HTTP fetches use Mozilla Readability + Turndown, and Firecrawl remains an explicit opt-in fallback for difficult JavaScript/anti-bot pages |
 | **FreeLLMAPI** | Local proxy to 200+ AI models; dynamic model picker in Settings |
 
 ---
@@ -32,7 +32,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 - **Styling**: Tailwind CSS v4  
 - **Markdown**: Custom `streammark` streaming renderer (KaTeX math, highlight.js, footnotes, embeds)  
 - **AI**: OpenAI-compatible API (configured to FreeLLMAPI)  
-- **Web Scraping**: Firecrawl (hybrid local + cloud)  
+- **Web research**: SearXNG discovery + HTTP/Readability extraction; optional Firecrawl escalation
 
 ---
 
@@ -46,12 +46,12 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `next.config.ts` | Next.js config |
 | `tsconfig.json` | TypeScript config |
 | `drizzle.config.json` | Drizzle ORM config pointing at `DATABASE_URL` |
-| `docker-compose.yml` | Starts Postgres 16 on port 5432 |
+| `docker-compose.yml` | Starts Postgres 16 and the lightweight SearXNG + Valkey discovery stack (Firecrawl is not included) |
 | `.env` | **Local-only** environment variables (not committed) |
 | `DESIGN.md` | Visual/UX design principles for the app |
 | `workspace/` | Agent's working directory (gitignored). Contains `system/SYSTEM.md`, `system/AGENTS.md` (the user's own standing instructions), `system/skills/`, `system/mcp/servers.json`, `system/memory/` (profile + dated episodes), `uploads/`, `artifacts/`, `notes/`, `chats/` |
 | `workspace-template/` | Seed files copied into `workspace/` on first run |
-| `public/blocks/` | Standalone Blocks runtime (extended HTML tags, Pyodide, relational style language) |
+| `public/blocks/` | Standalone Blocks runtime (extended HTML tags, Pyodide, relational style language, backend-neutral live streams) |
 | `agent/` | Reserved for agent-authored scripts/tools |
 | `.agents/` | Antigravity agent config (skills, hooks) |
 | `.claude/` | Claude agent config |
@@ -77,7 +77,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `api/skills/route.ts` | GET/POST — list installed skills; install from GitHub URL |
 | `api/workspace/route.ts` | GET/POST/DELETE/PUT — workspace file CRUD |
 | `api/workspace/upload` | POST — upload files into workspace |
-| `api/python/route.ts` | POST — run Python snippet in workspace |
+| `api/python/route.ts` | POST — run a one-shot Python snippet in workspace |
+| `api/blocks/route.ts` | Streaming NDJSON bridge for sandbox Python, Bash/process output, and resource snapshots |
 | `api/search/route.ts` | GET — search conversations |
 | `api/health/route.ts` | GET — liveness probe (checks DB connection) |
 | `files/[...path]/route.ts` | GET — serve workspace files over HTTP |
@@ -89,7 +90,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `App.tsx` | Root client component: layout, panels, chat state, keyboard shortcuts |
 | `Composer.tsx` | Message input box: slash commands, `@`-mentions, file attachments |
 | `Message.tsx` | Renders a single message (user or assistant) with tool calls, sources, branches |
-| `Panels.tsx` | Left panel (chat history, search), right panel (workspace file browser) |
+| `Panels.tsx` | Left panel (Chats and separate General history), right panel (workspace file browser) |
 | `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI |
 | `Block.tsx` | Renders a `<canvas>` block (isolated iframe sandboxed to `/blocks/`) |
 | `Settings.tsx` | Settings panel (in-layout, beside the chat, not a modal): Model, Tools, Access, MCP, Skills |
@@ -102,7 +103,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `agent.ts` | Agent loop: system prompt, history, tool packs per step, image hand-off, todo recitation, quality guard |
 | `tools/index.ts` | Tool schemas (core + dev pack) and the `execTool()` dispatcher |
 | `tools/edit.ts` / `tools/syntax.ts` | Robust edits (exact → whitespace-tolerant → indentation-shifted matching, placeholder rejection) and the syntax guard |
-| `web.ts` | Hybrid Firecrawl search/scrape/extract (local first, cloud fallback, plain fetch last) |
+| `web.ts` | Local-first web router: SearXNG → keyless fallback, HTTP/Readability fetch, optional Firecrawl escalation |
 | `procs.ts` | Background processes for the agent (dev servers): start, logs, wait for port/pattern, restart, stop |
 | `browser.ts` | Headless Chrome via puppeteer-core: screenshots, console errors, scripted steps |
 | `harness/check.ts` / `harness/slop.ts` | `check` tool (types, lint, tests, build, design lint + screenshot) and the AI-styling linter |
@@ -115,6 +116,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `streammark/remend.ts` | Core markdown-to-VDOM streaming engine |
 | `blocks/catalog.ts` | `ui_search` catalog: index of available Blocks UI components by tags |
 | `exec.ts` | Shell/Python/pip execution: bubblewrap sandbox when available, host terminal, sudo gate |
+| `api/blocks` + `public/blocks/runtime.js` | Backend-neutral Blocks bridge: streamed sandbox Bash/Python/process output, tails of explicitly agent-started host processes, and live resource snapshots can feed the same tables/charts |
 | `context.ts` | Scoped compaction (tools, web, messages, history), restore, context reports |
 | `shared.ts` | Client/server helpers (canvas slugs, YouTube ids) |
 
@@ -137,7 +139,9 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | FreeLLMAPI | Any OpenAI-compatible endpoint (Gemini, OpenRouter, OpenAI, Ollama, FreeLLMAPI) |
 | `LLM_CONTEXT_TOKENS` | model preset | Context window; prompts are budgeted to fit (16k works) |
 | `LLM_WORKING_TOKENS` | 64000 | What one request may use even if the window is bigger; trimming, folding and auto-compaction work against it (Settings → Working context) |
-| `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Local-first search/scrape with cloud fallback |
+| `SEARXNG_URL` | `http://localhost:8080` | Local SearXNG JSON endpoint for URL discovery |
+| `FIRECRAWL_ENABLED` | `0` | Explicitly enable Firecrawl escalation; off keeps local browsers out of ordinary research |
+| `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Optional local/cloud fallback for difficult pages and structured extraction |
 | `WORKSPACE_DIR` | `./workspace` | Agent root |
 | `ACCESS_MODE` | `sandbox` | Initial file access: `sandbox`, `home`, `full` |
 | `TERMINAL_MODE` | `sandbox` | Initial terminal: `sandbox` or `host` |
@@ -211,7 +215,7 @@ Plain chat stays cheap: a short system prompt, core tools only, no plans or chec
 
 ## Extensions
 
-Settings → **MCP** lists installed servers with credential badges and a curated catalog. The catalog is picked for what a built-in tool cannot do, and remote servers that support OAuth 2.1 with dynamic client registration connect with **one click and no API key**: Notion, Linear, Jira & Confluence, Figma, Sentry. Keyless servers (DeepWiki, Context7) need nothing at all. Google's own Workspace servers are listed too, with an honest note that they need a Google Cloud OAuth client; anything else is one registry search away.
+Settings → **MCP** lists installed servers with credential badges and a curated catalog. The catalog is picked for what a built-in tool cannot do, and remote servers that support OAuth 2.1 with dynamic client registration connect with **one click and no API key**: Notion, Linear, Jira & Confluence, Figma, Sentry. Keyless servers (DeepWiki, Context7) need nothing at all. Google's own Workspace servers are listed too, with an honest note that they need a Google ch away.
 - One-click sign-in: the app discovers the authorization server, registers itself, opens the service, and comes back to `/api/mcp/oauth/callback` with a code. Tokens live in `workspace/system/mcp/auth.json` (mode 600) and refresh on their own. When the browser cannot reach the app, the same flow finishes with a pasted code.
 - In chat, `mcp_search` finds a server and `mcp_add` adds it and hands the user a sign-in link.
 - Credentials for token-based servers resolve in order: Settings secret → environment → your existing CLI login (`gh auth token`, Hugging Face token file). The CLI login is only used when you have granted home or host-terminal access, so a GitHub login you already have needs no setup.
@@ -241,10 +245,11 @@ __dev.disable()
 - Added `/api/models` endpoint that queries the provider's `/v1/models` and returns sorted, normalised model list
 - Settings UI has a **"Fetch models"** button that populates a searchable dropdown; selecting a model auto-fills its context window size
 
-### 2. Hybrid Firecrawl Routing (`src/lib/web.ts`)
-- **`web_fetch`** (scraping): tries local Firecrawl first; detects Cloudflare/bot-protection challenges in the response body; automatically falls back to Cloud Firecrawl with API key
-- **`web_search`**: tries local Firecrawl with a 3-second timeout; falls back to Cloud Firecrawl if local SearXNG is down or slow
-- **`web_extract`** (NEW tool): always routes to Cloud Firecrawl (local has no LLM); uses the `/v1/scrape` endpoint with `formats: ["extract"]` and a prompt for structured AI extraction
+### 2. Local-first web research (`src/lib/web.ts`)
+- **`web_search`** queries the local SearXNG JSON API first, then uses short-timeout keyless adapters so a fresh install remains usable. Firecrawl search is only considered when the explicit fallback switch is on.
+- **`web_fetch`** uses direct HTTP plus Mozilla Readability and Turndown to remove navigation, ads and boilerplate without a browser. Multiple fetch calls from one model step are started in parallel and each row reports its own progress.
+- **`web_extract`** remains available for structured Firecrawl extraction when the operator enables Firecrawl and supplies a cloud key.
+- Local Firecrawl/Chromium is never contacted for routine searches or pages. Enable it only for JavaScript-heavy, anti-bot, or otherwise unsupported pages.
 
 ### 3. Background Service & Desktop App
 - `~/.config/systemd/user/minimalist-chat.service`: runs `npm start` persistently; auto-starts Postgres on boot
@@ -257,17 +262,18 @@ __dev.disable()
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bhavyam2468/final-chat/main/setup.sh | bash
-# or, in a checkout:  ./setup.sh [--local|--online] [--yes] [--no-service] [--with-firecrawl] [--port N]
+# or, in a checkout:  ./setup.sh [--local|--online] [--yes] [--update] [--no-service] [--with-firecrawl] [--port N]
 ```
 
 `setup.sh`:
 - detects a desktop vs. a server and the OS package manager;
 - checks Node (offers nvm), Python (creates `.venv`), Docker, Chrome, bubblewrap, uv, LibreOffice and a `gh` login;
-- probes FreeLLMAPI (:3001), Ollama (:11434), Firecrawl (:3002) and a Postgres container, and adds only the missing `.env` keys (it asks for API keys when run interactively);
+- probes an existing FreeLLMAPI (:3001), Ollama (:11434), SearXNG (:8080), Firecrawl (:3002) and Postgres, and adds only missing `.env` keys (it asks for credentials when run interactively); if Docker is missing it offers to install Docker + Compose;
+- starts the lightweight Postgres/SearXNG stack by default; Firecrawl is not part of the ordinary path and only starts with `--with-firecrawl`;
 - installs, builds, and on a desktop installs the systemd user service / launchd agent, a `minimalist-chat` launcher and an app-menu entry;
 - binds to 127.0.0.1 locally, because the host terminal must not be reachable from the network. On a server it binds to 0.0.0.0 with `HOST_ACCESS=off`.
 
-`--with-firecrawl` clones and starts self-hosted Firecrawl in Docker. Re-running is safe.
+`--with-firecrawl` clones and starts self-hosted Firecrawl in Docker. It also enables the explicit fallback in `.env`; ordinary research still uses SearXNG/HTTP first. Re-running is safe. After installation, `minimalist-chat update` (or `./setup.sh --update`) refuses a dirty source checkout, fast-forwards, rebuilds, and refreshes the service.
 
 Manual install:
 
@@ -279,12 +285,15 @@ git clone https://github.com/bhavyam2468/final-chat.git && cd final-chat
 cp .env.example .env
 # Edit .env with your FreeLLMAPI key, Firecrawl keys, etc.
 
-# 3. Install (Postgres optional: without DATABASE_URL an embedded PGlite DB is used)
+# 3. Start local Postgres + SearXNG (optional; PGlite and keyless search remain available)
+docker compose up -d
+
+# 4. Install (without DATABASE_URL the embedded PGlite DB is used)
 npm install
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python tools + office previews
 # optional: bubblewrap (sandbox isolation), libreoffice (page-accurate .doc/.ppt previews)
 
-# 4. Build and run
+# 5. Build and run
 npm run build
 npm start
 

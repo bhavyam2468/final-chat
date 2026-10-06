@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { X, Plus } from "lucide-react";
 import { Mcp, Skills } from "./Extensions";
 
-type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; phone?: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
+type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; searxngUrl: string; firecrawlEnabled: boolean; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; phone?: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
 type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
@@ -132,12 +132,17 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
             <label className="field">Theme<select value={theme} onChange={(e) => setTheme(e.target.value)}><option value="dark">Dark</option><option value="light">Light</option></select></label>
           </>}
           {tab === "tools" && <>
+            {F("Local SearXNG URL (search discovery)", "searxngUrl")}
+            <div className="srv"><div className="t">Local-first web research<small>Search uses SearXNG when available, then lightweight keyless fallbacks. Pages use direct HTTP plus Mozilla Readability; no browser starts for ordinary research.</small></div>
+              <button className={"sw" + (s.searxngUrl ? " on" : "")} aria-label="Local SearXNG" onClick={() => saveS({ searxngUrl: s.searxngUrl ? "" : "http://localhost:8080" })} /></div>
             <div className="grid2">
-              {F("Local Firecrawl URL (zero-credit)", "firecrawlUrl")}
-              {F("Online Firecrawl Key (bypass / extract)", "firecrawlKey", "password")}
+              {F("Local Firecrawl URL (optional fallback)", "firecrawlUrl")}
+              {F("Online Firecrawl key (optional)", "firecrawlKey", "password")}
             </div>
-            <small style={{ color: "var(--muted)", fontSize: 11, marginTop: -6, marginBottom: 8, display: "block" }}>
-              Hybrid routing: standard scrape uses local Firecrawl. Cloud API key is used for Cloudflare/anti-bot bypass, AI extraction, and search fallback.
+            <div className="srv"><div className="t">Allow Firecrawl escalation<small>{s.firecrawlEnabled ? "On: use only after lightweight HTTP extraction fails, for explicit difficult-page fallbacks." : "Off by default: Firecrawl and its local browser never run during ordinary search or fetch."}</small></div>
+              <button className={"sw" + (s.firecrawlEnabled ? " on" : "")} aria-label="Enable Firecrawl fallback" onClick={() => saveS({ firecrawlEnabled: !s.firecrawlEnabled })} /></div>
+            <small style={{ color: "var(--muted)", fontSize: 11, marginTop: -2, marginBottom: 8, display: "block" }}>
+              Firecrawl remains available for JavaScript-heavy, anti-bot, or unsupported pages, and for structured extraction when configured. It is never the ordinary path unless enabled here.
             </small>
             <div className="grid2">
               <label className="field">Quality guard<select value={s.quality} onChange={(e) => saveS({ quality: e.target.value as S["quality"] })}>

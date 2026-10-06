@@ -6,7 +6,7 @@ import { upload } from "./Composer";
 import { SourceList } from "./Message";
 import { chatDir } from "@/lib/shared";
 
-export type ConvItem = { id: string; title: string; mode?: "chat" | "search"; branches: { leafId: string; label: string }[] };
+export type ConvItem = { id: string; title: string; mode?: "chat" | "general" | "search"; branches: { leafId: string; label: string }[] };
 
 export function ChatsPanel({ convs, current, running = [], onOpen, onDelete, onClose }: {
   convs: ConvItem[]; current: string | null; running?: string[]; onOpen: (id: string, leaf?: string, msg?: string) => void; onDelete: (id: string) => void; onClose: () => void;
@@ -14,31 +14,32 @@ export function ChatsPanel({ convs, current, running = [], onOpen, onDelete, onC
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<{ convId: string; title: string; messageId: string; snippet: string }[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  // Chats: full conversations. History: searches (temporary, messages only) until "Open in chat" converts one.
+  // General conversations have their own history and never fill the normal Chats tab.
   const mode = convs.find((c) => c.id === current)?.mode;
   const tabKey = `${current || ""}:${mode || ""}`;
-  const [tabChoice, setTabChoice] = useState<{ key: string; tab: "chat" | "search" }>(() => ({ key: tabKey, tab: mode || "chat" }));
-  const tab = tabChoice.key === tabKey ? tabChoice.tab : mode || "chat";
-  const setTab = (next: "chat" | "search") => setTabChoice({ key: tabKey, tab: next });
-  const list = convs.filter((c) => (c.mode || "chat") === tab);
+  const tabMode = mode === "search" ? "general" : mode;
+  const [tabChoice, setTabChoice] = useState<{ key: string; tab: "chat" | "general" }>(() => ({ key: tabKey, tab: tabMode || "chat" }));
+  const tab = tabChoice.key === tabKey ? tabChoice.tab : tabMode || "chat";
+  const setTab = (next: "chat" | "general") => setTabChoice({ key: tabKey, tab: next });
+  const list = convs.filter((c) => (c.mode === "search" ? "general" : c.mode || "chat") === tab);
   useEffect(() => {
     if (!q.trim()) return; // results are only shown while there is a query
-    const t = setTimeout(() => fetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then(setHits), 160);
+    const t = setTimeout(() => fetch(`/api/search?q=${encodeURIComponent(q)}&mode=${tab}`).then((r) => r.json()).then(setHits), 160);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q, tab]);
   return (
     <div className="panel" style={{ maxHeight: "100%" }}>
       <div className="panel-head"><div className="seg" role="tablist">
         <button role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}>Chats</button>
-        <button role="tab" aria-selected={tab === "search"} className={tab === "search" ? "on" : ""} onClick={() => setTab("search")}>History</button>
+        <button role="tab" aria-selected={tab === "general"} className={tab === "general" ? "on" : ""} onClick={() => setTab("general")}>General</button>
       </div><span className="sp" /><button className="ib sm" aria-label="Close" onClick={onClose}><X /></button></div>
-      <input className="search" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search chats" autoFocus onKeyDown={(e) => e.key === "Escape" && onClose()} />
+      <input className="search" value={q} onChange={(e) => { setQ(e.target.value); setHits([]); }} aria-label="Search chats" autoFocus onKeyDown={(e) => e.key === "Escape" && onClose()} />
       <div className="panel-body">
         {q.trim() ? hits.map((h) => (
           <button key={h.messageId} className="li" style={{ flexDirection: "column", alignItems: "stretch" }} onClick={() => onOpen(h.convId, undefined, h.messageId)}>
             <span className="t">{h.title}</span><span className="snip">{h.snippet}</span>
           </button>
-        )) : !list.length ? <div className="empty">{tab === "search" ? "No searches yet" : "No chats yet"}</div> : list.map((c) => (
+        )) : !list.length ? <div className="empty">{tab === "general" ? "No general conversations yet" : "No chats yet"}</div> : list.map((c) => (
           <div key={c.id}>
             <div className={"li" + (c.id === current ? " on" : "")} role="button" onClick={() => onOpen(c.id)}>
               {c.branches.length > 0

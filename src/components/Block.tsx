@@ -72,6 +72,35 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
           const r = await fetch("/api/python", { method: "POST", body: JSON.stringify({ code: m.code }) }).then((r) => r.json()).catch((err) => ({ out: String(err) }));
           reply(r.out); app.refreshTree(); break;
         }
+        case "backend": {
+          // One streaming bridge for Python, sandbox Bash, long-running process output, and resource
+          // snapshots. The iframe stays responsive while the host forwards NDJSON chunks as they arrive.
+          try {
+            const r = await fetch("/api/blocks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ backend: m.backend, code: m.code, command: m.command, name: m.name, follow: m.follow, cwd: m.cwd, timeout: m.timeout } ) });
+            if (!r.ok) { reply({ ok: false, code: r.status, out: await r.text() }); break; }
+            const reader = r.body?.getReader();
+            if (!reader) { reply({ ok: false, code: 1, out: "backend response has no stream" }); break; }
+            const decoder = new TextDecoder(); let buf = ""; let data: unknown; let result: unknown = { ok: false, code: 1, out: "backend ended without a result" };
+            const consume = (line: string) => {
+              if (!line.trim()) return;
+              try {
+                const e = JSON.parse(line);
+                if (e.t === "chunk") post({ type: "backend-chunk", id: m.id, chunk: String(e.chunk || "") });
+                else if (e.t === "data") { data = e.data; post({ type: "backend-data", id: m.id, data }); }
+                else if (e.t === "done") result = { ok: !!e.ok, code: Number(e.code ?? 1), out: String(e.out || ""), ...(data === undefined ? {} : { data }) };
+              } catch {}
+            };
+            while (true) {
+              const x = await reader.read();
+              if (x.done) break;
+              buf += decoder.decode(x.value, { stream: true });
+              const lines = buf.split("\\n"); buf = lines.pop() || "";
+              lines.forEach(consume);
+            }
+            consume(buf); reply(result); app.refreshTree();
+          } catch (err) { reply({ ok: false, code: 1, out: String(err) }); }
+          break;
+        }
         case "upload": {
           const bin = Uint8Array.from(atob(m.data), (c) => c.charCodeAt(0));
           const fd = new FormData(); fd.append("dir", m.dir || "uploads"); fd.append("files", new File([bin], m.name, { type: m.type }));

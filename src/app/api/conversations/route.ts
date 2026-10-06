@@ -20,6 +20,6 @@ export async function GET() {
       return { leafId: l.id, label: label.slice(0, 60) || "Branch" };
     }) : [];
     const { state, ...rest } = c;
-    return { ...rest, mode: state?.mode === "search" ? "search" : "chat", branches };
+    return { ...rest, mode: state?.mode === "general" || state?.mode === "search" ? "general" : "chat", branches };
   }));
 }

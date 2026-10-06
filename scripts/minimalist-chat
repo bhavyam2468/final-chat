@@ -11,7 +11,14 @@ case "${1:-open}" in
   start|stop|restart) svc "$1"; echo "$1: ok" ;;
   status) svc status --no-pager ;;
   logs) if [ "$(uname -s)" = Darwin ]; then tail -f ~/Library/Logs/minimalist-chat.log; else journalctl --user -u minimalist-chat -f; fi ;;
-  update) cd "$APP" && git pull --ff-only && ./setup.sh --yes ;;
+  update)
+    cd "$APP"
+    if [ -n "$(git status --porcelain --untracked-files=all)" ]; then echo "update: checkout is not clean; commit or stash source changes first" >&2; exit 1; fi
+    echo "update: pulling latest source…"
+    git pull --ff-only
+    echo "update: rebuilding and refreshing services…"
+    exec ./setup.sh --yes
+    ;;
   open)
     curl -fs -o /dev/null "$URL/api/health" || svc start
     for _ in $(seq 1 40); do curl -fs -o /dev/null "$URL/api/health" && break; sleep 0.5; done

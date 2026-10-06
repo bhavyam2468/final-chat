@@ -37,7 +37,7 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "search"; project?: string };
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "general" | "search"; project?: string };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in
@@ -70,9 +70,9 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("pip_install", "Install packages into the same venv run_python uses. Not system pip", { packages: arr({ type: "string" }) }, ["packages"]),
     T("shell", "Run bash in YOUR sandbox. Not for reading or searching files (fs_read, fs_search, fs_list). Quote paths that contain spaces. A missing binary is not retried", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
     ...(host ? [T("host_shell", "Run bash on the USER'S machine. Quote paths with spaces. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password. Not for adb (use the phone tools)", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
-    T("web_search", "Current or niche facts only. Do not search for stable knowledge you already have. Open a page with web_fetch before citing it", { query: s(), limit: n() }, ["query"]),
-    T("web_fetch", "Fetch a URL as markdown", { url: s() }, ["url"]),
-    ...(st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (Firecrawl AI)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
+    T("web_search", "Use for current, niche, source-backed, or explicitly requested web research. In General mode do not call automatically for stable questions. SearXNG is tried first; open the useful pages with web_fetch before citing them", { query: s(), limit: n() }, ["query"]),
+    T("web_fetch", "Fetch a URL with lightweight HTTP and established readability extraction; use for a page the user provided or a useful search result. Browser/Firecrawl escalation is optional and off by default", { url: s() }, ["url"]),
+    ...(st.firecrawlEnabled && st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (explicit Firecrawl AI fallback)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
     T("view_image", "Look at an image (workspace path or URL)", { path: s() }, ["path"]),
     T("todo", "Set the task checklist shown to the user (full list each call). Use for tasks with 3+ steps", { items: arr({ type: "object", properties: { text: s(), status: { type: "string", enum: ["todo", "doing", "done"] } }, required: ["text", "status"] }) }, ["items"]),
     T("ask_user", "Ask the user to choose (2-5 short options; they can also type their own answer or skip). Only when a real decision blocks you. Ends your turn", { question: s(), options: arr({ type: "string" }), multi: b() }, ["question", "options"]),

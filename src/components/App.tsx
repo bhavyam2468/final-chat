@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PanelLeft, SquarePen, Search, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
+import { PanelLeft, SquarePen, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
@@ -10,16 +10,14 @@ import { CanvasLayer, Win, contentRatio } from "./Canvas";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
-function DockStatus({ conv, offerBrief, streamId, msgs, onBrief, onPromote, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; msgs: Msg[]; onBrief: () => void; onPromote: () => void; onUnlink: () => void }) {
-  const showSearch = conv?.mode === "search" && msgs.some((m) => m.role === "user");
-  if (!showSearch && !offerBrief && !conv?.state?.project) return null;
+function DockStatus({ conv, offerBrief, streamId, onBrief, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; onBrief: () => void; onUnlink: () => void }) {
+  if (!offerBrief && !conv?.state?.project) return null;
   return <div className="dock-extra">
     {conv?.state?.project && <button className="promote" onClick={onUnlink} title="Unlink project">Project {conv.state.project}</button>}
     {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
-    {showSearch && <button className="promote" onClick={onPromote}>Open in chat</button>}
   </div>;
 }
-const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
+const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "general" || c.state?.mode === "search" || c.mode === "general" ? "general" : "chat" });
 const NONE: Msg[] = [];
 const keyOf = (parentId: string | null, threadOf: string | null) => parentId ?? `root:${threadOf ?? ""}`;
 const toXml = (d: unknown): string => typeof d !== "object" || d === null ? String(d) : Object.entries(d as Record<string, unknown>).map(([k, v]) => `<${k}>${typeof v === "object" ? toXml(v) : String(v)}</${k}>`).join("\n");
@@ -34,8 +32,10 @@ export default function App() {
   const [view, setViewS] = useState(() => "new:" + rid());
   const viewRef = useRef(view);
   const winsCache = useRef<Record<string, Win[]>>({});
-  const [surface, setSurface] = useState<"search" | "chat">("search");
-  const modeRef = useRef<"chat" | "search">("search");
+  // A new conversation starts in General. It is intentionally separate from
+  // normal chat history and can be promoted in one deliberate action.
+  const [surface, setSurface] = useState<"general" | "chat">("general");
+  const modeRef = useRef<"chat" | "general">("general");
   const pendingProject = useRef<string | null>(null);
   const [offerBrief, setOfferBrief] = useState(false);
   // canvases live per chat: switching chats parks this chat's windows and restores that chat's
@@ -188,14 +188,21 @@ export default function App() {
     const loaded = withMode(j.conversation); modeRef.current = loaded.mode || "chat"; setSurface(loaded.mode || "chat"); setConv(loaded); setMsgsFor(id, () => ms); setSel((x) => ({ ...x, ...s }));
     if (!target) setThread(null);
     if (!live) attachRef.current(id); // re-attach if the server is still answering (e.g. after a reload)
-    if (focusMsg) setTimeout(() => document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" }), 80);
+    // Reopen a conversation at its latest turn. A focused search result is
+    // the only intentional exception.
+    setTimeout(() => {
+      if (focusMsg) document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" });
+      else scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "auto" });
+    }, 80);
   }, [setView, setMsgsFor]);
 
-  const setMode = useCallback((m: "search" | "chat") => { modeRef.current = m; setSurface(m); }, []);
-  const goSearch = useCallback(() => { setMode("search"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
-  const newChat = useCallback(() => { setMode("chat"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
+  const setMode = useCallback((m: "general" | "chat") => { modeRef.current = m; setSurface(m); }, []);
+  const newChat = useCallback(() => { setMode("general"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
   const promote = useCallback(async () => {
-    const c = convRef.current; if (!c) return;
+    const c = convRef.current;
+    // Before the first message there is no database row to patch; switching
+    // the pending composer is enough and the next POST creates a chat.
+    if (!c) { setMode("chat"); return; }
     await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "chat" }) });
     setMode("chat"); setConv({ ...c, mode: "chat", state: { ...(c.state || {}), mode: "chat" } }); refreshConvs();
   }, [setMode, refreshConvs]);
@@ -465,7 +472,7 @@ export default function App() {
       else if (e.key === "Escape" && !(e.target as HTMLElement).closest("input,textarea")) { if (thread) setThread(null); else if (settings) setSettings(false); else setPanels({ chats: false, ws: false, art: false, src: false }); }
     };
     addEventListener("keydown", k); return () => removeEventListener("keydown", k);
-  }, [newChat, thread]);
+  }, [newChat, thread, settings]);
 
   const sources = useMemo(() => {
     const seen = new Set<string>(); const out: { url: string; title: string; snippet?: string }[] = [];
@@ -474,7 +481,7 @@ export default function App() {
     return out;
   }, [mainPath, threadPath]);
 
-  const chipNew = useCallback((mode: "chat" | "search", text: string) => {
+  const chipNew = useCallback((mode: "chat" | "general", text: string) => {
     const id = "new:" + rid();
     try { localStorage.setItem("draft:" + id, JSON.stringify({ text, chips: [] })); } catch { /* ignore quota */ }
     setMode(mode); setView(id); setConv(null); setThread(null); setEditing(null);
@@ -494,14 +501,13 @@ export default function App() {
   const runBrief = useCallback(() => {
     localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10));
     setOfferBrief(false);
-    chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
+    chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
   }, [chipNew]);
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
-    { name: "search", hint: "New search", run: goSearch },
     { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
     { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
-    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("search", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
+    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
     { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
     { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
@@ -514,7 +520,7 @@ export default function App() {
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
     { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
-  ], [newChat, goSearch, runBrief, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
+  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -524,7 +530,7 @@ export default function App() {
           onCancel={() => setEditing(null)} onSend={(p) => { setEditing(null); send(p, m.parentId, m.threadOf); }} />
       </div></div>
     );
-    return <Message key={m.id} m={m} quiet={!isThread && (conv?.mode === "search" || (surface === "search" && !conv))} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
+    return <Message key={m.id} m={m} streaming={m.id === streamId} sib={sib} onNav={(d) => nav(m, d)}
       onEdit={streamId ? undefined : () => setEditing(m.id)}
       onRegenerate={streamId ? undefined : () => send(null, m.parentId, m.threadOf)}
       onThread={isThread ? undefined : () => setThread(m.id)}
@@ -546,8 +552,7 @@ export default function App() {
         style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--lw" as string]: pw.l + "px", ["--rw" as string]: (settings ? Math.max(pw.r, 400) : pw.r) + "px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
-          <button className={"ib" + (surface === "search" && !conv ? " on" : "")} aria-label="Search" title="Search" onClick={goSearch}><Search /></button>
-          <button className={"ib" + (surface === "chat" && !conv ? " on" : "")} aria-label="New chat" title="New chat" onClick={newChat}><SquarePen /></button>
+          <button className={"ib" + (surface === "general" && !conv ? " on" : "")} aria-label="New chat" title="New chat · opens General mode" onClick={newChat}><SquarePen /></button>
         </div>
         <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
@@ -557,12 +562,16 @@ export default function App() {
         </div>
 
         <div className="scroll" ref={scroller}>
+          {(surface === "general" || conv?.mode === "general") && <div className="general-toolbar">
+            <div><span className="general-kicker">General</span><span className="general-copy">A separate space for unrelated questions</span></div>
+            <button className="promote" onClick={promote}>Open in chat</button>
+          </div>}
           <main className="column">{mainPath.map((m, i) => renderTurn(m, false, i === mainPath.length - 1))}</main>
         </div>
 
         <div className="dock">
           <div className="dock-stack">
-          <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} msgs={msgs} onBrief={runBrief} onPromote={promote} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
+          <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} onBrief={runBrief} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
           <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
           </div>
@@ -570,7 +579,7 @@ export default function App() {
 
         {panels.chats && <div className="lstack"><div className="rsz" onPointerDown={resize("l")} aria-hidden /><ChatsPanel convs={convs} current={conv?.id || null} running={runningIds}
           onOpen={(id, leaf, msg) => { loadConv(id, leaf, msg); }} onClose={() => setPanels((p) => ({ ...p, chats: false }))}
-          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) (conv.mode === "search" ? goSearch() : newChat()); refreshConvs(); }} /></div>}
+          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) newChat(); refreshConvs(); }} /></div>}
 
         {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}><div className="rsz" onPointerDown={resize("r")} aria-hidden />
           {settings && <Settings onClose={() => setSettings(false)} theme={theme} setTheme={setTheme} />}

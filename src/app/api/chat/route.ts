@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   if (!conv) {
     convId = nanoid(10);
     const title = (b.user?.content || "New chat").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().split(" ").slice(0, 7).join(" ").slice(0, 60) || "New chat";
-    [conv] = await db.insert(conversations).values({ id: convId, title, ...(b.mode === "search" ? { state: { mode: "search" } } : {}) }).returning();
+    [conv] = await db.insert(conversations).values({ id: convId, title, ...(b.mode === "general" || b.mode === "search" ? { state: { mode: "general" } } : {}) }).returning();
   }
   let parentId = b.parentId;
   let userId: string | null = null;

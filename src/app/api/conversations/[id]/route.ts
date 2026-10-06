@@ -23,12 +23,13 @@ export async function PATCH(req: NextRequest, { params }: P) {
   const set: Record<string, unknown> = {};
   if (typeof b.title === "string") set.title = b.title;
   if (Array.isArray(b.context)) set.context = b.context;
-  // "Open in chat": a search (History) becomes a full chat
-  if (b.mode === "chat" || b.mode === "search" || typeof b.project === "string" || b.project === null) {
+  // "Open in chat": a General conversation is promoted into normal chat
+  if (b.mode === "chat" || b.mode === "general" || b.mode === "search" || typeof b.project === "string" || b.project === null) {
     const [c] = await db.select({ state: conversations.state }).from(conversations).where(eq(conversations.id, id));
     if (c) {
       const state = { ...(c.state || {}), ...(set.state as object || {}) };
-      if (b.mode === "chat" || b.mode === "search") state.mode = b.mode;
+      if (b.mode === "chat") state.mode = "chat";
+      else if (b.mode === "general" || b.mode === "search") state.mode = "general";
       if (b.project === null || b.project === "") delete state.project;
       else if (typeof b.project === "string") state.project = b.project.replace(/[^\w-]/g, "").slice(0, 40);
       set.state = state;

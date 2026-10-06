@@ -41,22 +41,17 @@ export function packsFor(st: Settings, state: ConvState | null | undefined): Pac
 }
 
 type Sys = { text: string; sections: CtxSection[] };
-/** Search conversations (History): an answer engine, not a chat. Results for the query arrive in <search_results>. */
-const SEARCH_MODE = `# Search mode
-The user is searching, not chatting. Answer the way a search engine's AI mode does: the answer in the first sentence, then only the detail that helps. Short paragraphs, a table for comparisons, no preamble, no closing offers.
-- Results for their query are attached in <search_results> and shown inside the expandable search-call card before your answer. Do not list the links again; cite claims inline as [n](url) using those results.
-- Stable general knowledge (definitions, math, history, how something works): answer directly, citations optional.
-- A specific lookup (a product, person, place, price, version, schedule, news): give the facts that answer it, each cited. If the results don't answer it, search again with a better query or web_fetch the best page. Never guess.
-- A task (compare, find me, plan, fix, how do I …): search and fetch as much as it needs, then do it. Check every command, flag and API against current docs before giving it.`;
+/** General mode is a separate, quiet history for unrelated questions. It is
+ * not a search surface: there is no automatic pre-search and no synthetic
+ * search result injected before the model sees the user's message. */
+const GENERAL_MODE = `# General mode
+This is a separate general-question conversation, not the user's normal chat history.
+- Never preflight or automatically search the web, including for questions that might be fresher online. Answer directly unless the user explicitly asks for search/current/source-backed information or supplies a URL they want read.
+- If the user does explicitly request a web tool, keep the call visible and explain the result naturally.
+- Tool calls remain visible to the user. Keep unrelated general questions out of normal chat history until the user deliberately chooses Open in chat.
+- Be concise and useful; do not imitate a search results page or inject citations without actually opening the source.`;
 
-/** Search mode skips the pre-search for small talk and plain arithmetic. */
-export function needsSearch(q: string) {
-  const t = q.trim();
-  if (!t || t.length > 2000) return false;
-  if (/^(hi|hello|hey|yo|thanks?|thank you|ok(ay)?|cool|nice|good (morning|afternoon|evening|night))\b[\s!.?]*$/i.test(t)) return false;
-  if (/^[\d\s+\-*/^().,=x×÷%]+\??$/.test(t)) return false;
-  return true;
-}
+const isGeneral = (mode?: string) => mode === "general" || mode === "search";
 
 async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number, query = ""): Promise<Sys> {
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
@@ -85,7 +80,7 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
     ["system", "System prompt", base],
     ["memory", "Memory", [userInstructions && `# Standing instructions from the user (AGENTS.md)\n${userInstructions}`, recall && `# Remembered\n${recall}\nThe user sees every note and can undo one with forget(id); remember only what they ask, or a decision that will matter later.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
-    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, conv.state?.mode === "search" ? SEARCH_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
+    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, isGeneral(conv.state?.mode) ? GENERAL_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
     ["tree", "Workspace tree", tree],
     ["files", "Files in context", files && `# Active context files\n${files}`],
   ];
@@ -260,10 +255,9 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     },
   };
 
-  // General/search chats stay light: no big context window. Old tool output is always folded, and
-  // once a search chat passes 30 exchanged messages, everything beyond the last 15 becomes a rolling
-  // summary block instead of raw history.
-  if (state.mode === "search") {
+  // General conversations stay light: old tool output is folded so this
+  // separate history remains quick on a phone. There is no automatic web step.
+  if (isGeneral(state.mode)) {
     const pre = chain(all, parentId);
     if (pre.length > 30) { await compactHistory(conv, pre, st, 15); await reload(); }
     else if (pre.length > 8) { const n = await compactTools(pre, { keepLast: 6 }); if (n) await reload(); }
@@ -293,30 +287,6 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     }
   }
 
-  // Search mode: the FIRST query is searched right away (no model round trip), results shown and handed
-  // to the model. Follow-ups answer from what is already here unless they are clearly a new lookup
-  // (an explicit search verb or a full new question) — re-searching on every prompt was the bug.
-  // The model keeps web_search and can look things up itself when a follow-up truly needs it.
-  let presearched = false;
-  const prevUsers = hist.path.filter((m) => m.role === "user" && m.id !== parent?.id);
-  const isNewQuery = (t: string) => /\b(search|find|look ?up|google|check|latest|news|price|today|compare)\b/i.test(t) || t.trim().split(/\s+/).length >= 6;
-  if (state.mode === "search" && parent?.role === "user" && !parent.threadOf && needsSearch(parent.content) && (prevUsers.length === 0 || isNewQuery(parent.content))) {
-    const prevQ = prevUsers.slice(-1)[0]?.content || "";
-    const q = (parent.content.trim().split(/\s+/).length < 4 && prevQ ? `${prevQ.slice(0, 120)} ${parent.content}` : parent.content).replace(/\s+/g, " ").trim().slice(0, 300);
-    const id = `presearch_${Date.now()}`;
-    const startedAt = Date.now();
-    const part: Part = { type: "tool", id, name: "web_search", args: { query: q }, startedAt };
-    parts.push(part);
-    emit({ t: "toolStart", id, name: "web_search", args: part.args, startedAt });
-    const out = await execTool("web_search", { query: q, limit: 6 }, { ...ctx, progress: (status) => emit({ t: "toolStatus", id, status }) });
-    Object.assign(part, { result: out.result, ok: out.ok, meta: { ...(out.meta || {}), presearch: true } });
-    emit({ t: "toolResult", id, result: out.result.slice(0, 20000), ok: out.ok, meta: part.meta });
-    const last = hist.msgs[hist.msgs.length - 1];
-    const add = out.ok ? `\n\n<search_results query="${q.replace(/"/g, "'")}">\n${out.result}\n</search_results>` : `\n\n<search_results query="${q.replace(/"/g, "'")}">search failed: ${out.result.slice(0, 200)}</search_results>`;
-    if (last?.role === "user") last.content = typeof last.content === "string" ? last.content + add : [...(last.content as { type: string }[]), { type: "text", text: add }] as OAMsg["content"];
-    presearched = out.ok;
-  }
-
   const touched = new Set<string>();
   const snapshots = new Map<string, string>(); // file content before this turn's first write (integrity diff)
   const brief = [...hist.path.filter((m) => m.role === "user").slice(-3).map((m) => m.content)].join("\n");
@@ -327,7 +297,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const stuck = new StuckDetector();
   let opener = new OpenerGate();
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
-  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, blockRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched, usedPython = false;
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, blockRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false, usedPython = false;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
@@ -461,7 +431,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             continue;
           }
         }
-        if (state.mode === "search" && st.quality === "fix" && cmdRounds < 1 && text && !signal.aborted) {
+        if (isGeneral(state.mode) && st.quality === "fix" && cmdRounds < 1 && text && !signal.aborted) {
           const bad = unseenCommandFlags(text, seenText());
           if (bad) {
             cmdRounds++;
@@ -498,20 +468,43 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
       loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
       const images: string[] = [];
       let stop = false, nudge = "";
+      // Start independent web work together. The rows remain separate and
+      // each reports its own progress, but network waits are not serialized.
+      const parallelWeb = new Map<string, { args: Record<string, unknown>; bad: string; part: Extract<Part, { type: "tool" }>; promise: Promise<Awaited<ReturnType<typeof execTool>>> }>();
+      for (const c of valid) {
+        const name = c.function.name;
+        if (!/^web_(search|fetch)$/.test(name)) continue;
+        let args: Record<string, unknown> = {};
+        let bad = "";
+        try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
+        const part: Extract<Part, { type: "tool" }> = { type: "tool", id: c.id, name, args, startedAt: c.startedAt };
+        parts.push(part);
+        emit({ t: "tool", id: c.id, name, args, startedAt: c.startedAt });
+        const promise = bad
+          ? Promise.resolve({ ok: false, result: bad } as Awaited<ReturnType<typeof execTool>>)
+          : execTool(name, args, { ...ctx, progress: (status) => emit({ t: "toolStatus", id: c.id, status }), signal });
+        parallelWeb.set(c.id, { args, bad, part, promise });
+      }
       for (const c of valid) {
         let args: Record<string, unknown> = {};
         let bad = "";
         try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
-        const part: Part = { type: "tool", id: c.id, name: c.function.name, args, startedAt: c.startedAt };
-        parts.push(part);
-        emit({ t: "tool", id: c.id, name: part.name, args, startedAt: c.startedAt });
+        const pre = parallelWeb.get(c.id);
+        if (pre) { args = pre.args; bad = pre.bad; }
+        const part = pre?.part || { type: "tool" as const, id: c.id, name: c.function.name, args, startedAt: c.startedAt };
+        if (!pre) {
+          parts.push(part);
+          emit({ t: "tool", id: c.id, name: part.name, args, startedAt: c.startedAt });
+        }
         const name = c.function.name;
         if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
         // live output: batched every 120ms so a chatty process doesn't flood the stream; last 6 KB is what the row shows
         let buf = "", timer: ReturnType<typeof setTimeout> | null = null;
         const flush = () => { timer = null; if (buf) { emit({ t: "toolOutput", id: c.id, chunk: buf }); buf = ""; } };
         const output = (chunk: string) => { buf = (buf + chunk).slice(-6000); if (!timer) timer = setTimeout(flush, 120); };
-        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, progress: (status) => emit({ t: "toolStatus", id: c.id, status }), signal });
+        const out = bad
+          ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>>
+          : pre ? await pre.promise : await execTool(name, args, { ...ctx, output, progress: (status) => emit({ t: "toolStatus", id: c.id, status }), signal });
         if (timer) { clearTimeout(timer); flush(); }
         callNo++;
         if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }

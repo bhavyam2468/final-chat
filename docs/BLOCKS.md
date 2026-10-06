@@ -4,7 +4,7 @@ BlocksUI is the language the model writes inside `<ui>…</ui>` to produce inter
 
 1. **Components** (`x-*` tags) for things HTML lacks: charts, graphs, decks, quizzes, timers, molecules, diagrams.
 2. **Bindings**: `{{expr}}`, `:attr`, `show`, `each`, `@event`. They make markup reactive without framework code.
-3. **Logic**: `<script>` in JS, or `<script type="python">` through Pyodide, with a small helper API that reaches the chat (`sendToLm`) and the workspace (`saveIn`, `py`).
+3. **Logic**: `<script>` in JS, or `<script type="python">` through Pyodide, with a small helper API that reaches the chat (`sendToLm`), workspace (`saveIn`, `py`) and sandbox backends (`backend`, `shell`, live resource snapshots).
 4. **Relations**: `<style type="rel">` describes *how things relate* (size, grouping, placement, orientation) instead of *how they look*.
 
 The runtime owns every visual decision (theme, radius, spacing, typography, motion, responsiveness), so any combination the model writes looks like it belongs to the app. Models never write CSS.
@@ -148,6 +148,8 @@ Any element with `name=` becomes a reactive variable of the same name.
 | Formatting and math | `fmt(sec)` (mm:ss), `sum`, `avg`, `count(arr, fn)`, `pct(a, b)`, `round(x, d)`, `clamp` |
 | Collections and time | `range(n)`, `pick`, `shuffle`, `len`, `now`, `date`, `time`, `json` |
 | Chat and workspace | `sendToLm(obj|str, label|{label, prompt})`, `saveIn(path, text|obj)`, `py(code)` |
+| Backends | `backend(kind, input, opts)` for `python`, `bash`, `process`, `resource`; `shell(command, opts)` / `processRun(command, opts)` launch sandbox work; `processLogs(name, {follow:true})` tails an existing agent process (including explicitly host-started processes); `backendStream(kind, input, onChunk, opts)` forwards live stdout/snapshots; blocks never launch arbitrary host commands |
+| Live system data | `resource()` returns one snapshot; `watchResources(ms, key)` maintains `key.history.cpu`, `key.history.memory`, and `key.history.load` for `x-chart` / `x-sparkline` |
 | Page utilities | `form(sel?)`, `notify(text)`, `every(ms, fn)`, `after(ms, fn)`, `open(pathOrUrl)`, `state(k, init)`, `$`, `$$` |
 
 `sendToLm` posts a `<ui_event>` into the chat as the user's next turn. The chat shows `label` as a compact card (fields collapsible) and passes `prompt` to the model as the instruction for its reply, so a button can invoke the AI with custom context:
@@ -159,7 +161,7 @@ Any element with `name=` becomes a reactive variable of the same name.
 <button lm="Explain this setting" lm-prompt="Explain what a={{a}} does to the curve">Why?</button>
 ```
 
-`form[lm]` sends its named inputs on submit; `button[lm]` outside a form sends the inputs of its nearest card/section/slide. No script needed. `py` runs server-side Python in the workspace and returns stdout.
+`form[lm]` sends its named inputs on submit; `button[lm]` outside a form sends the inputs of its nearest card/section/slide. No script needed. `py` runs server-side Python in the workspace and returns stdout. For live producers, `backendStream("bash", command, chunk => { log += chunk })` forwards stdout as it arrives; parse newline-delimited JSON when the producer emits structured rows and bind those rows to a normal `x-table` or `x-chart`. The bridge never grants a block host-terminal access.
 
 ## Logic
 
