@@ -88,8 +88,6 @@ input, textarea, select { font: inherit; color: inherit; }
 .ib:hover, .ib.on { background: var(--surface); color: var(--fg); }
 .ib svg { width: 17px; height: 17px; stroke-width: 1.6; }
 .ib.sm { width: 26px; height: 26px; } .ib.sm svg { width: 14px; height: 14px; }
-.general-quick { height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r); color: var(--muted); background: color-mix(in srgb, var(--float) 88%, transparent); font-size: 12px; white-space: nowrap; transition: background .15s, color .15s, border-color .15s; }
-.general-quick:hover { color: var(--fg); background: var(--surface); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 
 /* ============ Messages ============ */
 .turn { margin: 0 0 32px; animation: fadeUp .35s var(--ease) both; }
