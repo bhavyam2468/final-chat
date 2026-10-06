@@ -193,7 +193,10 @@ if [ "$MODE" = local ] && [ $SERVICE -eq 1 ]; then
   b "Service"
   mkdir -p "$HOME/.local/bin"
   sed -e "s|@APP@|$APP|g" -e "s|@PORT@|$PORT|g" scripts/minimalist-chat > "$HOME/.local/bin/minimalist-chat"; chmod +x "$HOME/.local/bin/minimalist-chat"
-  ok "launcher: minimalist-chat [open|start|stop|restart|status|logs]"
+  ln -sf "$APP/scripts/chatsync.mjs" "$HOME/.local/bin/chatsync"
+  ln -sf "$APP/scripts/chatsync.mjs" "$HOME/.local/bin/chat-sync"
+  ok "launcher: minimalist-chat [open|start|stop|restart|status|logs|sync|rollback]"
+  ok "sync & rollback tool: chatsync (or chat-sync)"
   if [ "$OS" = Linux ] && has systemctl && systemctl --user show-environment >/dev/null 2>&1; then
     PRE=""
     if [ "$COMPOSE" -eq 1 ]; then PRE="ExecStartPre=$(command -v docker) compose -f \"$APP/docker-compose.yml\" up -d db searxng-cache searxng"; elif [ "$COMPOSE" -eq 2 ]; then PRE="ExecStartPre=$(command -v docker-compose) -f \"$APP/docker-compose.yml\" up -d db searxng-cache searxng"; fi
