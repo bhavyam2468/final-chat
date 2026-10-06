@@ -64,32 +64,6 @@ input, textarea, select { font: inherit; color: inherit; }
     padding: 72px 48px 200px;
   }
 }
-.general-toolbar {
-  position: sticky;
-  top: 12px;
-  z-index: 8;
-  width: min(820px, calc(100% - 48px));
-  margin: 12px auto -58px;
-  min-height: 42px;
-  padding: 7px 10px 7px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-  background: color-mix(in srgb, var(--float) 92%, transparent);
-  box-shadow: 0 10px 28px -20px var(--fg);
-  backdrop-filter: blur(14px);
-  animation: fadeUp .25s var(--ease);
-}
-.general-toolbar > div { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.general-kicker { color: var(--fg); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.general-copy { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 600px) {
-  .general-toolbar { width: calc(100% - 24px); margin-bottom: -58px; }
-  .general-copy { display: none; }
-}
 .chrome {
   position: fixed;
   top: 12px;
@@ -114,6 +88,8 @@ input, textarea, select { font: inherit; color: inherit; }
 .ib:hover, .ib.on { background: var(--surface); color: var(--fg); }
 .ib svg { width: 17px; height: 17px; stroke-width: 1.6; }
 .ib.sm { width: 26px; height: 26px; } .ib.sm svg { width: 14px; height: 14px; }
+.general-quick { height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r); color: var(--muted); background: color-mix(in srgb, var(--float) 88%, transparent); font-size: 12px; white-space: nowrap; transition: background .15s, color .15s, border-color .15s; }
+.general-quick:hover { color: var(--fg); background: var(--surface); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
 
 /* ============ Messages ============ */
 .turn { margin: 0 0 32px; animation: fadeUp .35s var(--ease) both; }
