@@ -384,6 +384,11 @@ body.canvas-gesture .scroll, body.canvas-gesture .dock, body.canvas-gesture .chr
 .v-meta { color: var(--muted); font-size: 12px; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .v-meta.num { font-variant-numeric: tabular-nums; }
 .v-page { width: 3ch; background: none; border: 0; outline: none; color: var(--fg); text-align: right; font: inherit; padding: 0; }
+.v-ocr-lang { max-width: 128px; min-width: 96px; height: 25px; padding: 2px 18px 2px 7px; border: 1px solid var(--line); border-radius: var(--r); background: var(--float); color: var(--fg); font: inherit; font-size: 11px; }
+.v-ocr-lang:disabled { opacity: .58; }
+.v-ocr-status { max-width: 180px; font-variant-numeric: tabular-nums; }
+.v-ocr-status.error { color: var(--danger); }
+.ocr-spin { width: 14px; height: 14px; animation: spin .8s linear infinite; }
 .v-search { width: 140px; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--r); background: transparent; outline: none; font-size: 12.5px; color: var(--fg); animation: fadeIn .15s; }
 .v-msg { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
 .v-msg.err { color: var(--danger); }

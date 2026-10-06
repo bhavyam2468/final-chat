@@ -5,7 +5,7 @@
    the whole window visible, and minimized items stay grouped in a restore tray. Viewers contribute
    type-specific actions to the bottom bar, which scrolls inline instead of overflowing. */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, Highlighter, Undo2, AppWindow, FileText } from "lucide-react";
+import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, ScanText, LoaderCircle, Highlighter, Undo2, AppWindow, FileText } from "lucide-react";
 import { CanvasSpec, fileUrl, useApp } from "./ctx";
 import { Block } from "./Block";
 import { StreamMarkdown, CodeBlock } from "@/lib/streammark/StreamMarkdown";
@@ -118,7 +118,7 @@ function Ink({ strokes, onChange, mode }: { strokes: Stroke[]; onChange: (s: Str
   </>;
 }
 
-type TxtItem = { s: string; x: number; y: number; w: number; h: number; angle: number };
+type TxtItem = { s: string; x: number; y: number; w: number; h: number; angle: number; ocr?: boolean };
 type PdfViewport = { width: number; height: number; transform?: number[] };
 type PdfPageProxy = {
   getViewport: (o: { scale: number }) => PdfViewport;
@@ -127,6 +127,9 @@ type PdfPageProxy = {
 };
 type PdfDocumentProxy = { numPages: number; getPage: (n: number) => Promise<PdfPageProxy>; destroy?: () => Promise<void> | void };
 type RenderOp = { token: number; task?: { promise: Promise<void>; cancel?: () => void } };
+type OcrStatus = { stage: string; progress: number; done?: boolean; error?: string };
+type TesseractModule = typeof import("tesseract.js");
+type TesseractWorker = Awaited<ReturnType<TesseractModule["createWorker"]>>;
 
 const multiplyTransform = (a: number[], b: number[]) => [
   a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1],
@@ -142,6 +145,12 @@ const multiplyTransform = (a: number[], b: number[]) => [
 function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<string, Stroke[]>; setInk?: (k: string, s: Stroke[]) => void; setBar?: (n: React.ReactNode) => void }) {
   const [pages, setPages] = useState<{ w: number; h: number; transform: number[] }[]>([]);
   const [texts, setTexts] = useState<Record<number, TxtItem[]>>({});
+  const [ocrTexts, setOcrTexts] = useState<Record<number, TxtItem[]>>({});
+  const [ocrPlain, setOcrPlain] = useState<Record<number, string>>({});
+  const [ocrStatus, setOcrStatus] = useState<Record<number, OcrStatus>>({});
+  const [ocrLanguage, setOcrLanguage] = useState("eng");
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrBusyPage, setOcrBusyPage] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pageErrors, setPageErrors] = useState<Record<number, string>>({});
@@ -155,6 +164,13 @@ function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<str
   const pageEls = useRef<(HTMLDivElement | null)[]>([]);
   const wrap = useRef<HTMLDivElement>(null);
   const doc = useRef<PdfDocumentProxy | null>(null);
+  const ocrWorker = useRef<TesseractWorker | null>(null);
+  const ocrWorkerLanguage = useRef("");
+  const ocrGeneration = useRef(0);
+  const ocrRun = useRef(false);
+  const ocrActivePage = useRef<number | null>(null);
+  const ocrRenderTask = useRef<{ cancel?: () => void } | null>(null);
+  const activePdfPath = useRef(path); activePdfPath.current = path;
   const renderOps = useRef<Map<number, RenderOp>>(new Map());
   const resizeTimers = useRef<Map<number, number>>(new Map());
   const renderKeys = useRef<Map<number, string>>(new Map());
@@ -228,11 +244,16 @@ function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<str
 
   useEffect(() => {
     let dead = false;
+    ocrGeneration.current += 1;
+    const oldWorker = ocrWorker.current;
+    ocrWorker.current = null; ocrWorkerLanguage.current = ""; ocrRun.current = false; ocrActivePage.current = null;
+    ocrRenderTask.current?.cancel?.(); ocrRenderTask.current = null;
+    void oldWorker?.terminate().catch(() => {});
     let loaded: PdfDocumentProxy | null = null;
     const ops = renderOps.current;
     for (const op of ops.values()) op.task?.cancel?.();
     ops.clear(); renderKeys.current.clear(); doc.current = null;
-    setPages([]); setTexts({}); setRendered({}); setVisible({}); textLoaded.current.clear(); visiblePages.current.clear(); setFailed(false); setLoading(true); setPageErrors({}); setCur(1); setZoom(1); setPageInput("1"); setTool(null);
+    setPages([]); setTexts({}); setOcrTexts({}); setOcrPlain({}); setOcrStatus({}); setOcrBusy(false); setOcrBusyPage(null); setRendered({}); setVisible({}); textLoaded.current.clear(); visiblePages.current.clear(); setFailed(false); setLoading(true); setPageErrors({}); setCur(1); setZoom(1); setPageInput("1"); setTool(null);
     (async () => {
       try {
         const { getDocumentProxy } = await import("unpdf");
@@ -260,7 +281,10 @@ function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<str
       }
     })();
     return () => {
-      dead = true;
+      dead = true; ocrGeneration.current += 1; ocrRun.current = false; ocrActivePage.current = null;
+      ocrRenderTask.current?.cancel?.(); ocrRenderTask.current = null;
+      const worker = ocrWorker.current; ocrWorker.current = null; ocrWorkerLanguage.current = "";
+      void worker?.terminate().catch(() => {});
       for (const op of ops.values()) op.task?.cancel?.();
       ops.clear();
       if (doc.current === loaded) doc.current = null;
@@ -367,6 +391,94 @@ function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<str
     setZoomAnchored(n);
   }, [setZoomAnchored, zoom]);
 
+  const recognizePage = useCallback(async (i: number) => {
+    if (ocrRun.current) return;
+    const generation = ocrGeneration.current, sourcePath = path, language = ocrLanguage;
+    const pdf = doc.current;
+    if (!pdf || !pagesRef.current[i]) return;
+    const isCurrent = () => generation === ocrGeneration.current && activePdfPath.current === sourcePath;
+    ocrRun.current = true; ocrActivePage.current = i;
+    setOcrBusy(true); setOcrBusyPage(i);
+    setOcrStatus((old) => ({ ...old, [i]: { stage: "Preparing page", progress: 0 } }));
+    let canvas: HTMLCanvasElement | null = null;
+    let renderTask: { promise: Promise<void>; cancel?: () => void } | null = null;
+    try {
+      const page = await pdf.getPage(i + 1);
+      if (!isCurrent()) return;
+      const base = page.getViewport({ scale: 1 });
+      const area = Math.max(1, base.width * base.height), side = Math.max(base.width, base.height);
+      const scale = Math.min(2, 2600 / side, Math.sqrt(4_500_000 / area));
+      const viewport = page.getViewport({ scale });
+      canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.ceil(viewport.width)); canvas.height = Math.max(1, Math.ceil(viewport.height));
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("Could not prepare this page for text recognition.");
+      renderTask = page.render({ canvasContext: context, viewport, canvas });
+      ocrRenderTask.current = renderTask;
+      await renderTask.promise;
+      if (!isCurrent()) return;
+      setOcrStatus((old) => ({ ...old, [i]: { stage: "Loading OCR engine", progress: 0 } }));
+
+      let worker = ocrWorker.current;
+      if (worker && ocrWorkerLanguage.current !== language) {
+        ocrWorker.current = null; ocrWorkerLanguage.current = "";
+        await worker.terminate().catch(() => {});
+        if (!isCurrent()) return;
+        worker = null;
+      }
+      if (!worker) {
+        const { createWorker } = await import("tesseract.js");
+        let lastLogAt = 0, lastStage = "";
+        const created = await createWorker(language.split("+"), 1, {
+          workerPath: new URL("/vendor/tesseract/worker.min.js", window.location.origin).href,
+          corePath: new URL("/vendor/tesseract-core", window.location.origin).href,
+          langPath: new URL("/vendor/tessdata/4.0.0_best_int", window.location.origin).href,
+          workerBlobURL: false,
+          cacheMethod: "write",
+          gzip: true,
+          logger: (message) => {
+            const pageIndex = ocrActivePage.current;
+            if (!isCurrent() || pageIndex === null) return;
+            const stage = message.status === "loading tesseract core" ? "Loading OCR engine"
+              : message.status === "loading language traineddata" ? "Loading language data"
+                : message.status === "recognizing text" ? "Recognizing text" : "Starting OCR";
+            const now = Date.now();
+            if (stage === lastStage && now - lastLogAt < 140 && message.progress < 1) return;
+            lastLogAt = now; lastStage = stage;
+            setOcrStatus((old) => ({ ...old, [pageIndex]: { stage, progress: Math.max(0, Math.min(1, message.progress)) } }));
+          },
+          errorHandler: (error: unknown) => console.warn("OCR worker error", error),
+        });
+        if (!isCurrent()) { await created.terminate().catch(() => {}); return; }
+        worker = created; ocrWorker.current = created; ocrWorkerLanguage.current = language;
+      }
+      const { data } = await worker.recognize(canvas, {}, { blocks: true });
+      if (!isCurrent()) return;
+      const words = (data.blocks || []).flatMap((block) => (block.paragraphs || []).flatMap((paragraph) => (paragraph.lines || []).flatMap((line) => line.words || [])));
+      const items: TxtItem[] = [];
+      for (const word of words) {
+        const text = word.text.trim();
+        if (!text || word.confidence < 8) continue;
+        const x0 = Math.max(0, Math.min(canvas.width, word.bbox.x0)), y0 = Math.max(0, Math.min(canvas.height, word.bbox.y0));
+        const x1 = Math.max(x0, Math.min(canvas.width, word.bbox.x1)), y1 = Math.max(y0, Math.min(canvas.height, word.bbox.y1));
+        if (x1 - x0 < 1 || y1 - y0 < 1) continue;
+        items.push({ s: text, x: x0 / canvas.width, y: y0 / canvas.height, w: (x1 - x0) / canvas.width, h: (y1 - y0) / canvas.height, angle: 0, ocr: true });
+      }
+      const recognized = data.text.trim();
+      setOcrTexts((old) => ({ ...old, [i]: items }));
+      setOcrPlain((old) => ({ ...old, [i]: recognized }));
+      setOcrStatus((old) => ({ ...old, [i]: { stage: items.length || recognized ? "Text ready" : "No text found", progress: 1, done: true } }));
+    } catch (error) {
+      if (isCurrent()) setOcrStatus((old) => ({ ...old, [i]: { stage: "OCR failed", progress: 0, error: String((error as Error)?.message || "Could not recognize this page.").slice(0, 180) } }));
+    } finally {
+      if (ocrRenderTask.current === renderTask) ocrRenderTask.current = null;
+      if (canvas) { canvas.width = 0; canvas.height = 0; }
+      if (isCurrent() && ocrActivePage.current === i) {
+        ocrRun.current = false; ocrActivePage.current = null; setOcrBusy(false); setOcrBusyPage(null);
+      }
+    }
+  }, [ocrLanguage, path]);
+
   useEffect(() => {
     const winEl = wrap.current?.closest(".win"), body = wrap.current?.closest(".win-body") as HTMLElement | null;
     if (!winEl || !body || !pages.length) return;
@@ -400,6 +512,10 @@ function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<str
     if (!setBar) return;
     const key = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") { commitPage((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); } };
     const currentMarks = ink?.[String(cur)] || [];
+    const ocrPage = ocrBusyPage ?? cur - 1, currentOcr = ocrStatus[ocrBusy ? ocrPage : cur - 1];
+    const ocrMessage = ocrBusy
+      ? ocrBusyPage === cur - 1 ? `${currentOcr?.stage || "Recognizing text"} ${Math.round((currentOcr?.progress || 0) * 100)}%` : `OCR · page ${ocrPage + 1}`
+      : currentOcr?.error ? "OCR failed" : currentOcr?.stage || "";
     setBar(pages.length ? <>
       <span className="v-meta num"><input className="v-page" type="text" inputMode="numeric" value={pageInput} onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ""))} onBlur={() => commitPage()} onKeyDown={key} aria-label="Go to page" title="Go to page" /> / {pages.length}</span>
       <button className="ib sm" aria-label="Zoom out" title="Zoom out (-)" disabled={zoom <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut /></button>
@@ -415,23 +531,36 @@ function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<str
           <button className="ib sm" aria-label="Clear annotations on this page" title="Clear marks on this page" disabled={!currentMarks.length} onClick={() => setInk(String(cur), [])}><Eraser /></button>
         </>}
       </>}
+      <span className="bar-sep" />
+      <select className="v-ocr-lang" value={ocrLanguage} onChange={(e) => setOcrLanguage(e.target.value)} disabled={ocrBusy} aria-label="OCR language" title="OCR language">
+        <option value="eng">English</option><option value="hin">Hindi</option><option value="pan">Punjabi</option>
+        <option value="eng+hin">English + Hindi</option><option value="eng+pan">English + Punjabi</option>
+      </select>
+      <button className={"ib sm" + (ocrStatus[cur - 1]?.done ? " on" : "")} aria-label={`Recognize text on page ${cur}`} title={`Recognize text on page ${cur} · Runs locally in your browser`} disabled={ocrBusy} onClick={() => void recognizePage(cur - 1)}>
+        {ocrBusy ? <LoaderCircle className="ocr-spin" /> : <ScanText />}
+      </button>
+      {ocrMessage && <span className={"v-meta v-ocr-status" + (currentOcr?.error ? " error" : "")} title={currentOcr?.error || ocrMessage} aria-live="polite">{ocrMessage}</span>}
     </> : null);
-  }, [pages, cur, pageInput, commitPage, zoom, tool, ink, setInk, setBar, zoomBy, setZoomAnchored, go]);
+  }, [pages, cur, pageInput, commitPage, zoom, tool, ink, setInk, setBar, zoomBy, setZoomAnchored, go, ocrStatus, ocrBusy, ocrBusyPage, ocrLanguage, recognizePage]);
 
   if (failed) return <iframe className="full" src={fileUrl(path)} title={path} />;
   return <div ref={wrap} className="pdfwrap" aria-busy={loading}>
     {loading && <div className="pdf-loading"><span className="spin" />Loading document</div>}
     {!loading && !pages.length && <div className="pdf-loading">This PDF has no pages.</div>}
-    {pages.map((d, i) => (
-      <div key={`${path}:${i}`} ref={(el) => { pageEls.current[i] = el; }} data-index={i} className="pdf-page" style={{ aspectRatio: `${d.w}/${d.h}`, width: `${zoom * 100}%` }}>
+    {pages.map((d, i) => {
+      const nativeText = texts[i] || [];
+      const textItems = nativeText.length ? nativeText : ocrTexts[i] || nativeText;
+      const pageText = ocrPlain[i] || textItems.map((t) => t.s).join(" ");
+      return <div key={`${path}:${i}`} ref={(el) => { pageEls.current[i] = el; }} data-index={i} className="pdf-page" style={{ aspectRatio: `${d.w}/${d.h}`, width: `${zoom * 100}%` }}>
         <canvas ref={(el) => { refs.current[i] = el; }} className="pdf-canvas" />
         {setInk && visible[i] && (tool !== null || (ink?.[i + 1]?.length || 0) > 0) && <Ink strokes={ink?.[i + 1] || EMPTY_STROKES} onChange={(s) => setInk(String(i + 1), s)} mode={tool} />}
-        {visible[i] && texts[i] && <div className="txtlayer" data-pdf-path={path} data-pdf-page={i + 1} data-pdf-text={texts[i].map((t) => t.s).join(" ")} aria-label={`Text from page ${i + 1}`}>
-          {texts[i].map((t, k) => <span key={k} style={{ left: `${t.x * 100}cqw`, top: `${t.y * 100}cqh`, width: `${t.w * 100}cqw`, fontSize: `${t.h * 100}cqh`, lineHeight: `${t.h * 100}cqh`, transform: `rotate(${t.angle}deg)` }}>{t.s}</span>)}
+        {visible[i] && (textItems.length > 0 || !!pageText) && <div className="txtlayer" data-pdf-path={path} data-pdf-page={i + 1} data-pdf-text={pageText} aria-label={`Text from page ${i + 1}`}>
+          {textItems.map((t, k) => <span key={k} style={{ left: `${t.x * 100}cqw`, top: `${t.y * 100}cqh`, width: `${t.w * 100}cqw`, fontSize: `${t.h * 100}cqh`, lineHeight: `${t.h * 100}cqh`, transform: `rotate(${t.angle}deg)` }}>{t.s}{t.ocr ? " " : ""}</span>)}
         </div>}
         {visible[i] && !rendered[i] && !pageErrors[i] && <div className="pdf-page-skeleton" aria-hidden="true"><span className="spin" />Preparing page {i + 1}</div>}
         {visible[i] && pageErrors[i] && <button className="pdf-page-error" onClick={() => { renderKeys.current.delete(i); void renderPage(i, true); }} title={pageErrors[i]}>Retry page render</button>}
-      </div>))}
+      </div>;
+    })}
   </div>;
 }
 
