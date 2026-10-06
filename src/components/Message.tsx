@@ -33,34 +33,37 @@ function lineDiff(a: string, b: string) {
 
 type Meta = { icon: typeof FileText; live: string; done: string; arg?: string };
 const M = (icon: Meta["icon"], live: string, done: string, arg?: string): Meta => ({ icon, live, done, arg });
-/** Running tools read in the present ("Reading"), finished ones in the past ("Read"). */
+/** Each known tool gets a human label; unknown/MCP calls use the same readable generic presentation. */
 const TOOL_META: Record<string, Meta> = {
-  skill_open: M(BookOpen, "Opening skill", "Opened skill", "name"), context_add: M(Layers, "Adding to context", "Added to context", "path"),
-  context_remove: M(Layers, "Removing from context", "Removed from context", "path"), compact_context: M(Layers, "Compacting context", "Compacted context", "scope"),
-  fs_list: M(FolderTree, "Listing", "Listed", "path"), fs_read: M(FileText, "Reading", "Read", "path"), fs_search: M(Search, "Searching files for", "Searched files for", "pattern"),
-  fs_write: M(FilePen, "Writing", "Wrote", "path"), fs_edit: M(FilePen, "Editing", "Edited", "path"), fs_insert: M(FilePen, "Inserting into", "Inserted into", "path"),
-  fs_delete: M(Trash2, "Deleting", "Deleted", "path"), fs_move: M(FilePen, "Moving to", "Moved to", "to"),
-  run_python: M(Code2, "Running Python", "Ran Python"), pip_install: M(Package, "Installing", "Installed", "packages"),
-  shell: M(Terminal, "Running", "Ran", "command"), host_shell: M(Monitor, "Running on your machine", "Ran on your machine", "command"),
-  web_search: M(Search, "Searching", "Searched", "query"), web_fetch: M(Globe, "Reading", "Read", "url"), web_extract: M(Globe, "Extracting from", "Extracted from", "url"),
-  view_image: M(ImageIcon, "Looking at", "Looked at", "path"), todo: M(ListChecks, "Updating plan", "Plan"), ask_user: M(MessageSquare, "Asking", "Asked", "question"),
-  canvas_open: M(AppWindow, "Opening", "Opened", "target"), ui_search: M(AppWindow, "Looking up components", "Looked up components", "query"),
-  proc_start: M(Play, "Starting", "Started", "name"), proc_logs: M(ScrollText, "Reading logs of", "Read logs of", "name"), proc_restart: M(RotateCw, "Restarting", "Restarted", "name"),
-  proc_stop: M(Square, "Stopping", "Stopped", "name"), browser: M(Globe, "Opening in browser", "Viewed in browser", "target"), check: M(ShieldCheck, "Checking", "Checked", "path"),
-  quality_check: M(ShieldCheck, "Checking design", "Design check"),
-  remember: M(Bookmark, "Remembering", "Remembered", "text"), forget: M(Bookmark, "Forgetting", "Forgot", "id"),
+  skill_open: M(BookOpen, "Loading skill", "Loaded skill", "name"), context_add: M(Layers, "Adding file to context", "Added file to context", "path"),
+  context_remove: M(Layers, "Removing file from context", "Removed file from context", "path"), compact_context: M(Layers, "Summarising conversation", "Summarised conversation", "scope"),
+  fs_list: M(FolderTree, "Listing folder", "Listed folder", "path"), fs_read: M(FileText, "Reading file", "Read file", "path"), fs_search: M(Search, "Searching files", "Searched files", "pattern"),
+  fs_write: M(FilePen, "Writing file", "Wrote file", "path"), fs_edit: M(FilePen, "Updating file", "Updated file", "path"), fs_insert: M(FilePen, "Adding to file", "Added to file", "path"),
+  fs_delete: M(Trash2, "Moving to trash", "Moved to trash", "path"), fs_move: M(FilePen, "Moving file", "Moved file", "to"),
+  run_python: M(Code2, "Running Python", "Ran Python"), pip_install: M(Package, "Installing packages", "Installed packages", "packages"),
+  shell: M(Terminal, "Running command", "Ran command", "command"), host_shell: M(Monitor, "Running command on your machine", "Ran command on your machine", "command"),
+  web_search: M(Search, "Searching the web", "Searched the web", "query"), web_fetch: M(Globe, "Reading webpage", "Read webpage", "url"), web_extract: M(Globe, "Extracting page details", "Extracted page details", "url"),
+  view_image: M(ImageIcon, "Opening image", "Opened image", "path"), todo: M(ListChecks, "Updating plan", "Updated plan"), ask_user: M(MessageSquare, "Asking you", "Asked you", "question"),
+  canvas_open: M(AppWindow, "Opening preview", "Opened preview", "target"), ui_search: M(AppWindow, "Searching UI components", "Found UI components", "query"),
+  proc_start: M(Play, "Starting process", "Started process", "name"), proc_logs: M(ScrollText, "Reading process output", "Read process output", "name"), proc_restart: M(RotateCw, "Restarting process", "Restarted process", "name"),
+  proc_stop: M(Square, "Stopping process", "Stopped process", "name"), browser: M(Globe, "Using browser", "Used browser", "target"), check: M(ShieldCheck, "Running checks", "Finished checks", "path"),
+  quality_check: M(ShieldCheck, "Reviewing design", "Reviewed design"), remember: M(Bookmark, "Saving memory", "Saved memory", "text"), forget: M(Bookmark, "Removing memory", "Removed memory", "id"),
+  project_open: M(FolderTree, "Opening project", "Opened project", "name"), diff_since: M(GitBranch, "Checking recent changes", "Checked recent changes", "hours"),
+  adb_devices: M(Monitor, "Checking connected devices", "Checked connected devices"), adb_install: M(Package, "Installing on device", "Installed on device", "path"),
+  adb_launch: M(Play, "Opening app on device", "Opened app on device", "package"), adb_shot: M(ImageIcon, "Capturing device screen", "Captured device screen"),
+  adb_tap: M(Monitor, "Sending touch input", "Sent touch input"), adb_logcat: M(ScrollText, "Reading device logs", "Read device logs"), adb_shell: M(Terminal, "Running device command", "Ran device command", "command"),
 };
-
+const humanize = (s: string) => s.replace(/^mcp__/, "").replace(/__/g, " · ").replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim().replace(/\b[a-z]/g, (c) => c.toUpperCase());
 type Src = { url: string; title: string; snippet?: string };
-/** Compact source rail: numbered pills (favicon · host · title) that sit quietly above the answer,
-    in the same order the model cites them as [n]. */
+/** Search sources stay with their search/fetch tool call; also used in the Sources side panel. */
 export function SourceList({ items }: { items: Src[] }) {
   return <div className="srcs">{items.map((s, i) => { let host = ""; try { host = new URL(s.url).hostname.replace(/^www\./, ""); } catch {}
     return <a key={i} className="src" href={s.url} target="_blank" rel="noreferrer" title={s.snippet || s.title}>
       <span className="n">{i + 1}</span>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" />
-      <span className="t"><b>{host}</b><small>{s.title}</small></span></a>; })}</div>;
+      <span className="t"><b>{host}</b><small>{s.title}</small>{s.snippet && <span className="src-snippet">{s.snippet}</span>}</span>
+    </a>; })}</div>;
 }
 
 type Todo = { text: string; status: "todo" | "doing" | "done" };
@@ -115,14 +118,21 @@ function ApproveBar({ ap, live, mid, pid }: { ap: Approval; live: boolean; mid?:
   </div>;
 }
 
-const fmtMs = (ms: number) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`);
-/** Model reasoning (<think> blocks or reasoning_content): open and following along while it streams, folded after; never copied or re-sent. */
-function Reasoning({ text, ms, live }: { text: string; ms?: number; live: boolean }) {
+const fmtMs = (ms: number) => ms < 1000 ? "<1s" : ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+/** Model reasoning follows the provider's actual stream and duration; it folds when the step finishes. */
+function Reasoning({ text, ms, startedAt, live }: { text: string; ms?: number; startedAt?: number; live: boolean }) {
   const body = useRef<HTMLDivElement>(null);
+  const [now, setNow] = useState(0);
   useEffect(() => { const el = body.current; if (live && el) el.scrollTop = el.scrollHeight; }, [text, live]);
-  if (!live && text.trim().length < 60) return null; // a few words of "thinking" is noise
+  useEffect(() => {
+    if (!live || ms !== undefined) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [live, ms]);
+  if (!text.trim()) return null;
+  const duration = ms ?? (startedAt && now ? Math.max(0, now - startedAt) : 0);
   return <details className="reason" open={live || undefined}>
-    <summary>{live ? <span className="shimmer">Thinking</span> : ms ? `Thought for ${fmtMs(ms)}` : "Thought"}</summary>
+    <summary>{live ? <><span className="shimmer">Thinking</span>{duration > 0 && <small>{fmtMs(duration)}</small>}</> : ms !== undefined ? `Thought for ${fmtMs(ms)}` : "Thought"}</summary>
     <div className="reason-body" ref={body}>{text.trim()}</div>
   </details>;
 }
@@ -133,68 +143,142 @@ function LiveOut({ text }: { text: string }) {
   useEffect(() => { if (el.current) el.current.scrollTop = el.current.scrollHeight; }, [text]);
   return <pre ref={el} className="live-out">{text}</pre>;
 }
-function Elapsed() {
-  const [t0] = useState(() => Date.now());
-  const [, tick] = useState(0);
-  useEffect(() => { const i = setInterval(() => tick((x) => x + 1), 1000); return () => clearInterval(i); }, []);
-  const s = Math.floor((Date.now() - t0) / 1000);
-  return s >= 3 ? <span className="elapsed">{fmtMs(s * 1000)}</span> : null;
+function Elapsed({ startedAt }: { startedAt?: number }) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const t0 = startedAt || Date.now();
+    const timer = setInterval(() => setSeconds(Math.max(0, Math.floor((Date.now() - t0) / 1000))), 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+  return seconds >= 3 ? <span className="elapsed">{fmtMs(seconds * 1000)}</span> : null;
+}
+
+const SECRET_KEY = /(password|secret|token|api.?key|authorization|credential)/i;
+const OMIT_FROM_FIELDS = new Set(["code", "content", "text", "find", "replace", "edits", "steps", "items"]);
+function concise(value: unknown): string {
+  if (typeof value === "string") return value.replace(/\s+/g, " ").trim().slice(0, 180);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.every((x) => typeof x === "string") ? value.join(", ").slice(0, 180) : `${value.length} item${value.length === 1 ? "" : "s"}`;
+  if (value && typeof value === "object") return `${Object.keys(value).length} detail${Object.keys(value).length === 1 ? "" : "s"}`;
+  return value == null ? "" : String(value);
+}
+function ArgFields({ args, omit = [] }: { args: Record<string, unknown>; omit?: string[] }) {
+  const skip = new Set([...OMIT_FROM_FIELDS, ...omit]);
+  const entries = Object.entries(args).filter(([k, v]) => !skip.has(k) && v !== undefined).slice(0, 12);
+  if (!entries.length) return null;
+  return <dl className="tool-args">{entries.map(([k, v]) => <div key={k}><dt>{humanize(k)}</dt><dd>{SECRET_KEY.test(k) ? "••••" : concise(v) || "—"}</dd></div>)}</dl>;
+}
+function StreamPreview({ name, args }: { name: string; args: Record<string, unknown> }) {
+  if (name === "fs_edit") {
+    const items = Array.isArray(args.edits) ? args.edits : [args];
+    const edits = items.flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const x = raw as Record<string, unknown>;
+      const find = x.find ?? x.old_string ?? x.search ?? x.old;
+      const replace = x.replace ?? x.new_string ?? x.new;
+      return typeof find === "string" || typeof replace === "string" ? [{ find: String(find || ""), replace: String(replace || "") }] : [];
+    });
+    if (edits.length) return <div className="tool-preview-wrap"><div className="tool-preview-title">Preparing {edits.length} file edit{edits.length === 1 ? "" : "s"}</div>{edits.slice(0, 4).map((e, i) => <div className="tool-edit-preview" key={i}><span>Find</span><pre>{e.find.slice(0, 700) || "…"}</pre><span>Replace</span><pre>{e.replace.slice(0, 700) || "(remove)"}</pre></div>)}</div>;
+  }
+  const value = name === "fs_write" ? args.content : name === "fs_insert" ? args.text : name === "run_python" ? args.code : ["shell", "host_shell", "adb_shell"].includes(name) ? args.command : undefined;
+  if (typeof value !== "string" || !value) return null;
+  const title = name === "fs_write" ? "File contents" : name === "fs_insert" ? "Inserted text" : name === "run_python" ? "Python" : "Command";
+  return <div className="tool-preview-wrap"><div className="tool-preview-title">{title}{value.length > 2200 ? " · preview" : ""}</div><pre className="tool-preview">{value.slice(0, 2200)}{value.length > 2200 ? "\n…" : ""}</pre></div>;
+}
+function StructuredValue({ value, depth = 0 }: { value: unknown; depth?: number }): React.ReactNode {
+  if (value === null || value === undefined) return <span className="result-muted">—</span>;
+  if (typeof value === "string") return <span>{value.length > 1600 ? value.slice(0, 1600) + "…" : value}</span>;
+  if (typeof value === "number" || typeof value === "boolean") return <span>{String(value)}</span>;
+  if (depth > 3) return <span className="result-muted">More details</span>;
+  if (Array.isArray(value)) return <ul className="result-list">{value.slice(0, 40).map((v, i) => <li key={i}><StructuredValue value={v} depth={depth + 1} /></li>)}{value.length > 40 && <li className="result-muted">and {value.length - 40} more</li>}</ul>;
+  const entries = Object.entries(value as Record<string, unknown>).slice(0, 40);
+  if (!entries.length) return <span className="result-muted">No details</span>;
+  return <dl className="result-fields">{entries.map(([k, v]) => <div key={k}><dt>{humanize(k)}</dt><dd>{SECRET_KEY.test(k) ? "••••" : <StructuredValue value={v} depth={depth + 1} />}</dd></div>)}</dl>;
+}
+function ReadableResult({ result, name }: { result: string; name: string }) {
+  let value: unknown;
+  try {
+    value = JSON.parse(result);
+    if (typeof value === "string") { try { value = JSON.parse(value); } catch { /* a normal text result */ } }
+  } catch { value = undefined; }
+  if (value !== undefined) return <div className="tool-structured"><StructuredValue value={value} /></div>;
+  const match = result.match(/^exit\s+(\d+)\n/);
+  const consoleLike = /^(run_python|shell|host_shell|pip_install|adb_|proc_logs)/.test(name);
+  return <>
+    {match && <div className={"tool-exit" + (match[1] === "0" ? " ok" : " err")}>Exit code {match[1]}</div>}
+    <pre className={consoleLike ? "tool-console" : "tool-result"}>{match ? result.slice(match[0].length) : result}</pre>
+  </>;
 }
 
 const ToolCall = memo(function ToolCall({ p, lastTodo, live, mid }: { p: Extract<Part, { type: "tool" }>; lastTodo?: boolean; live?: boolean; mid?: string }) {
-  const [openS, setOpen] = useState<boolean | null>(null); // null = automatic: open while running, folded when done
+  const [openS, setOpen] = useState<boolean | null>(null); // active calls always expand; finished calls default to folded
   const app = useApp();
-  const mcp = p.name.match(/^mcp__(.+?)__(.+)$/);
   const pending = p.result === undefined;
-  const liveOut = (p as { live?: string }).live;
-  const m = TOOL_META[p.name] || { icon: Plug, live: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name, done: mcp ? `${mcp[1]} · ${mcp[2]}` : p.name };
+  const liveOut = p.live;
+  const mcp = p.name.match(/^mcp__(.+?)__(.+)$/);
+  const m: Meta = TOOL_META[p.name] || { icon: Plug, live: mcp ? `Using ${mcp[1]} · ${humanize(mcp[2])}` : p.name ? `Using ${humanize(p.name)}` : "Preparing tool call", done: mcp ? `Used ${mcp[1]} · ${humanize(mcp[2])}` : p.name ? `Used ${humanize(p.name)}` : "Tool call", arg: undefined };
   const Icon = m.icon;
-  const argv = m.arg ? p.args[m.arg] : undefined;
-  let target = Array.isArray(argv) ? argv.join(" ") : typeof argv === "string" ? argv : "";
   const meta = p.meta as { before?: string; after?: string; sources?: Src[]; path?: string; image?: string; todo?: Todo[]; question?: string; options?: string[]; multi?: boolean; memory?: { id: string; text: string; scope: string } } | undefined;
   const ap = (p.meta as { approval?: Approval } | undefined)?.approval;
-  if (ap) target = ""; // the approval bar shows the full command
+  let target = m.arg ? concise(p.args[m.arg]) : "";
+  if (!m.arg && mcp) target = Object.entries(p.args).filter(([k]) => !SECRET_KEY.test(k)).slice(0, 2).map(([k, v]) => `${humanize(k)}: ${concise(v)}`).filter((x) => !x.endsWith(": ")).join(" · ");
+  if (ap) target = "";
   if (p.name === "todo" && meta?.todo) target = `${meta.todo.filter((t) => t.status === "done").length}/${meta.todo.length}`;
-  if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "clean";
-  // file tools: the path itself opens the file (no extra button under the row)
-  const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? String(p.args.path) : null;
+  if (p.name === "quality_check" && !pending) target = p.ok === false ? `${(p.result || "").split("\n").filter((l) => l.startsWith("- ")).length} issues` : "Clean";
+  const filePath = typeof p.args.path === "string" && ["fs_write", "fs_edit", "fs_insert", "fs_read", "context_add", "view_image"].includes(p.name) && p.ok !== false ? p.args.path : null;
   if (p.name === "ask_user" && meta?.question) return <AskCard q={meta.question} options={meta.options || []} multi={!!meta.multi} live={!!live} />;
-  const runs = ["run_python", "shell", "host_shell", "pip_install"].includes(p.name);
-  const open = openS ?? pending;
+  const open = pending || openS === true;
+  const omit = [m.arg || ""];
   let body: React.ReactNode = null;
-  if (open) {
-    const code = p.name === "run_python" ? String(p.args.code || "") : "";
-    if (pending) body = <>{code && <pre>{code}</pre>}<LiveOut text={liveOut || "working…"} /></>;
-    else if (meta?.sources && p.name === "web_search") body = null;
-    else if (meta && "after" in meta) body = <div className="diff">{lineDiff(meta.before || "", meta.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>;
-    else if (p.name === "run_python") body = <><pre>{code}</pre><pre>{p.result}</pre></>;
-    else body = <>{Object.keys(p.args).length > 0 && !["shell", "host_shell", "todo", "quality_check"].includes(p.name) && <pre>{JSON.stringify(p.args, null, 2)}</pre>}<pre>{p.result}</pre></>;
+  if (open && pending) body = <>
+    <div className="tool-activity" aria-live="polite"><span className="tool-activity-dot" /><span>{p.status || (p.name ? m.live : "Preparing tool call")}</span><i className="tool-activity-track"><b /></i></div>
+    <StreamPreview name={p.name} args={p.args} />
+    <ArgFields args={p.args} omit={omit} />
+    {liveOut && <LiveOut text={liveOut} />}
+  </>;
+  else if (open && p.result !== undefined) {
+    const changed = !!meta && "after" in meta;
+    const sources = meta?.sources?.filter((s) => s.url) || [];
+    body = <>
+      {meta?.image && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className="tool-shot" src={fileUrl(meta.image)} alt="Tool result" onClick={() => app.openFile(meta.image!)} />
+      )}
+      {sources.length > 0 && <SourceList items={sources} />}
+      {changed ? <div className="diff">{lineDiff(meta?.before || "", meta?.after || "").map((l, i) => <div key={i} className={l.k}>{l.k === "add" ? "+ " : l.k === "del" ? "- " : "  "}{l.t}</div>)}</div>
+        : p.result && !(p.name === "web_search" && sources.length > 0) && <ReadableResult result={p.result} name={p.name} />}
+    </>;
   }
   const copyTool = () => {
     const arg = p.args.command || p.args.code || p.args.path || p.args.query || "";
-    navigator.clipboard.writeText(`$ ${p.name}${arg ? " " + arg : ""}\n${p.result || ""}`);
+    navigator.clipboard.writeText(`$ ${p.name}${arg ? " " + concise(arg) : ""}\n${p.result || ""}`);
   };
   return (
     <div className={"tool" + (pending ? " live" : "")}>
       <div className="tool-line">
-      <button className="tool-row" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>
-        {target && (filePath && !pending
-          ? <span className="tgt link" role="link" title="Open" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
-          : <span className="tgt">{target}</span>)}
-        {pending ? <><Elapsed /><span className="spin" /></> : p.ok === false && !ap ? <X className="err" /> : null}
-      </button>
-      {!pending && <button className="ib sm tool-copy" aria-label="Copy tool call" title="Copy command and output" onClick={copyTool}><Copy /></button>}
+        <button className="tool-row" onClick={() => setOpen(open ? false : true)} aria-expanded={open}>
+          <Icon /><span>{pending ? m.live : ap ? (ap.decision === "deny" ? "Not run" : ap.decision === "approve" ? "Approved" : "Needs approval") : m.done}</span>
+          {target && (filePath && !pending
+            ? <span className="tgt link" role="link" title="Open file" onClick={(e) => { e.stopPropagation(); app.openFile(filePath); }}>{target}</span>
+            : <span className="tgt">{target}</span>)}
+          {pending ? <><Elapsed startedAt={p.startedAt} /><span className="spin" /></> : p.ok === false && !ap ? <X className="err" /> : null}
+        </button>
+        {!pending && <button className="ib sm tool-copy" aria-label="Copy tool call" title="Copy command and output" onClick={copyTool}><Copy /></button>}
       </div>
       {p.name === "todo" && lastTodo && meta?.todo && <TodoList items={meta.todo} />}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      {meta?.image && !pending && <img className="tool-shot" src={fileUrl(meta.image)} alt="" onClick={() => app.openFile(meta.image!)} />}
       {open && body && <div className="tool-body">{body}</div>}
       {meta?.memory && <MemoryNote mem={meta.memory} />}
       {ap && <ApproveBar ap={ap} live={!!live} mid={mid} pid={p.id} />}
     </div>
   );
 });
+
+function ActivityGroup({ children, active, count }: { children: React.ReactNode; active: boolean; count: number }) {
+  return <details className="activity-group" open={active || undefined}>
+    <summary><span className={active ? "shimmer" : ""}>{active ? "Working" : "Activity"}</span><small>{count} steps</small>{active && <i className="spin" />}</summary>
+    <div className="activity-group-body">{children}</div>
+  </details>;
+}
 
 /** <canvas title="…" [dock]> anything you could put in chat </canvas>. A lone <ui> block fills the window;
     a lone YouTube link becomes a player; anything else renders as rich markdown (with inline blocks, media, math). */
@@ -226,7 +310,10 @@ function FileCard({ href, label }: { href: string; label: string }) {
   const meta = c ? [c.kind === "doc" && c.pages ? `${c.pages} pages` : "", c.kind === "sheet" && c.total ? `${c.total} rows` : "", c.kind === "archive" ? `${c.count} entries` : "", fmtSize(c.size)].filter(Boolean).join(" · ") : "";
   return <div className="filecard" role="button" onClick={() => app.openFile(p)}>
     <div className="fc-h"><FileText /><span className="t">{label && label !== p ? label : c?.name || p}</span><small>{meta}</small><AppWindow className="fc-open" /></div>
-    {c?.kind === "image" && /* eslint-disable-next-line @next/next/no-img-element */ <img src={fileUrl(p)} alt="" />}
+    {c?.kind === "image" && (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={fileUrl(p)} alt="" />
+    )}
     {c?.rows && <div className="fc-rows"><table><tbody>{c.rows.map((r, i) => <tr key={i}>{r.slice(0, 6).map((x, j) => i ? <td key={j}>{x}</td> : <th key={j}>{x}</th>)}</tr>)}</tbody></table></div>}
     {c?.excerpt && !c.rows && <pre className="fc-x">{c.excerpt}</pre>}
   </div>;
@@ -273,32 +360,55 @@ function Changes({ parts }: { parts: Part[] }) {
   </details>;
 }
 
-export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid, quiet }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string; quiet?: boolean }) {
+function ThinkingState({ startedAt }: { startedAt?: number }) {
+  return <div className="thinking-live"><span className="spin" /><span className="shimmer">Thinking</span><Elapsed startedAt={startedAt} /></div>;
+}
+function StreamSilence({ revision, active }: { revision: Part[]; active: boolean }) {
+  const [elapsed, setElapsed] = useState<{ revision: Part[]; ms: number } | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const t0 = Date.now();
+    const timer = setInterval(() => setElapsed({ revision, ms: Date.now() - t0 }), 1000);
+    return () => clearInterval(timer);
+  }, [revision, active]);
+  const ms = elapsed?.revision === revision ? elapsed.ms : 0;
+  if (!active || ms < 2000) return null;
+  return <div className="stream-silence"><span className="spin" /><span>Waiting for model</span><small>No new output · {fmtMs(ms)}</small></div>;
+}
+
+export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid, startedAt }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string; startedAt?: number }) {
   const h = useMdHandlers();
   const [animate] = useState(streaming); // messages loaded from history render instantly
-  const sources: Src[] = [];
-  const seenSrc = new Set<string>();
-  for (const p of parts) if (p.type === "tool" && (p.name === "web_search" || p.name === "web_fetch")) for (const s of ((p.meta as { sources?: Src[] } | undefined)?.sources || [])) if (s.url && !seenSrc.has(s.url)) { seenSrc.add(s.url); sources.push(s); }
-  if (!parts.length && streaming) return <div className="thinking" />;
-  if (quiet) {
-    const texts = parts.filter((p): p is Extract<Part, { type: "text" }> => p.type === "text");
-    const reasons = parts.filter((p): p is Extract<Part, { type: "reasoning" }> => p.type === "reasoning");
-    const searching = streaming && !texts.some((p) => p.text.trim());
-    const keep = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && (p.name === "ask_user" || p.name === "remember"));
-    return <>
-      {sources.length > 0 && <SourceList items={sources} />}
-      {searching && <div className="thinking" />}
-      {reasons.map((p, i) => <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && parts[parts.length - 1] === p} />)}
-      {texts.map((p, i) => animate ? <LiveText key={i} text={p.text} streaming={streaming && i === texts.length - 1 && !keep.length} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />)}
-      {keep.map((p) => <ToolCall key={p.id} p={p} live={!!last && !streaming} mid={mid} />)}
-    </>;
-  }
+  if (!parts.length && streaming) return <ThinkingState startedAt={startedAt} />;
   let lastTodo = -1;
   parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
-  return <>{sources.length > 0 && <SourceList items={sources} />}{parts.map((p, i) => p.type === "text"
-    ? animate ? <LiveText key={i} text={p.text} streaming={streaming && i === parts.length - 1} h={h} unverified={p.unverified} /> : <StreamMarkdown key={i} text={p.text} streaming={false} unverified={p.unverified} {...h} />
-    : p.type === "reasoning" ? <Reasoning key={"r" + i} text={p.text} ms={p.ms} live={streaming && i === parts.length - 1} />
-    : <ToolCall key={p.id + i} p={p} lastTodo={i === lastTodo} live={!!last && !streaming} mid={mid} />)}</>;
+  const visible = parts.map((p, index) => ({ p, index })).filter(({ p }) => p.type !== "reasoning" || !!p.text.trim());
+  const render = ({ p, index }: { p: Part; index: number }, key: string): React.ReactNode => p.type === "text"
+    ? animate ? <LiveText key={key} text={p.text} streaming={streaming && index === parts.length - 1} h={h} unverified={p.unverified} />
+      : <StreamMarkdown key={key} text={p.text} streaming={false} unverified={p.unverified} {...h} />
+    : p.type === "reasoning" ? <Reasoning key={key} text={p.text} ms={p.ms} startedAt={p.startedAt} live={streaming && p.ms === undefined && !parts.slice(index + 1).some((x) => x.type === "text")} />
+      : <ToolCall key={key} p={p} lastTodo={index === lastTodo} live={!!last && !streaming} mid={mid} />;
+  const isActivity = (p: Part) => p.type === "tool" || p.type === "reasoning";
+  const activePart = ({ p, index }: { p: Part; index: number }) => p.type === "tool" ? p.result === undefined : p.type === "reasoning" && streaming && p.ms === undefined && !parts.slice(index + 1).some((x) => x.type === "text");
+  const out: React.ReactNode[] = [];
+  for (let i = 0; i < visible.length;) {
+    const item = visible[i];
+    if (!isActivity(item.p)) {
+      out.push(render(item, `part-${item.index}`));
+      i++;
+      continue;
+    }
+    let end = i + 1;
+    while (end < visible.length && isActivity(visible[end].p)) end++;
+    const batch = visible.slice(i, end);
+    const nodes = batch.map((x) => render(x, `part-${x.index}`));
+    if (batch.length > 1) out.push(<ActivityGroup key={`group-${item.index}`} active={batch.some((x) => activePart(x))} count={batch.length}>{nodes}</ActivityGroup>);
+    else out.push(nodes[0]);
+    i = end;
+  }
+  const hasActiveTool = parts.some((p) => p.type === "tool" && p.result === undefined);
+  const hasLiveThought = parts.some((p, i) => p.type === "reasoning" && p.ms === undefined && !parts.slice(i + 1).some((x) => x.type === "text"));
+  return <>{out}<StreamSilence revision={parts} active={streaming && !hasActiveTool && !hasLiveThought} /></>;
 });
 
 /** <ui_event label="…"> from a BlocksUI form/button: shown as a compact card instead of raw XML. */
@@ -341,7 +451,7 @@ export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit,
   const text = m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
   return (
     <div className="turn ai" data-mid={m.id}>
-      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} quiet={quiet} />{!streaming && !quiet && <Changes parts={m.parts} />}</div>
+      <div className="ai-content"><AssistantBody parts={m.parts} streaming={streaming} last={last} mid={m.id} startedAt={m.streamStartedAt} />{!streaming && !quiet && <Changes parts={m.parts} />}</div>
       {!streaming && <div className="actions">
         <Nav i={sib.i} n={sib.n} go={onNav} />
         <CopyBtn text={text} />

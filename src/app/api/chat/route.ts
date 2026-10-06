@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
   const assistantId = nanoid(12);
   const c = conv;
   const { run, emit, finish, signal } = startRun(c.id, assistantId);
-  emit({ t: "meta", conversationId: c.id, userId, assistantId, parentId, threadOf: b.threadOf || null, title: c.title });
+  emit({ t: "meta", conversationId: c.id, userId, assistantId, parentId, threadOf: b.threadOf || null, title: c.title, startedAt: run.startedAt });
   // the run is not tied to this request: it survives the viewer leaving
   (async () => {
     try { await runAgent({ conv: c, assistantId, parentId: parentId!, threadOf: b.threadOf || null, emit, signal }); }

@@ -10,7 +10,7 @@ import { mcpTools, readServers } from "./mcp";
 import { skillsIndex, findSkill, skillMeta, skillAllowed } from "./skills";
 import { varsFor, varsIn } from "./credentials";
 import { lintFiles } from "./harness/check";
-import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, urlsIn } from "./harness/stream";
+import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, urlsIn, parsePartialJsonObject } from "./harness/stream";
 import { StuckDetector } from "./harness/stuck";
 import { integrityIssues, isCodeFile } from "./harness/integrity";
 import { fmtIssues } from "./harness/slop";
@@ -43,7 +43,7 @@ type Sys = { text: string; sections: CtxSection[] };
 /** Search conversations (History): an answer engine, not a chat. Results for the query arrive in <search_results>. */
 const SEARCH_MODE = `# Search mode
 The user is searching, not chatting. Answer the way a search engine's AI mode does: the answer in the first sentence, then only the detail that helps. Short paragraphs, a table for comparisons, no preamble, no closing offers.
-- Results for their query are attached in <search_results>. The result cards are shown above your answer, so never list the links again; cite claims inline as [n](url) using those results.
+- Results for their query are attached in <search_results> and shown inside the expandable search-call card before your answer. Do not list the links again; cite claims inline as [n](url) using those results.
 - Stable general knowledge (definitions, math, history, how something works): answer directly, citations optional.
 - A specific lookup (a product, person, place, price, version, schedule, news): give the facts that answer it, each cited. If the results don't answer it, search again with a better query or web_fetch the best page. Never guess.
 - A task (compare, find me, plan, fix, how do I …): search and fetch as much as it needs, then do it. Check every command, flag and API against current docs before giving it.`;
@@ -222,10 +222,25 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
 
   const parts: Part[] = [];
   const lastText = () => { for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; if (p.type === "text") return p; if (p.type === "tool") return null; } return null; };
-  let thinkStart = 0;
-  const endThink = () => { const r = parts[parts.length - 1]; if (r?.type === "reasoning" && r.ms === undefined) r.ms = Date.now() - thinkStart; };
-  const pushText = (d: string) => { endThink(); const l = parts[parts.length - 1]; if (l?.type === "text") l.text += d; else parts.push({ type: "text", text: d }); };
-  const pushReasoning = (d: string) => { const l = parts[parts.length - 1]; if (l?.type === "reasoning") l.text += d; else { thinkStart = Date.now(); parts.push({ type: "reasoning", text: d }); } emit({ t: "reasoning", d }); };
+  let thoughtPart: Extract<Part, { type: "reasoning" }> | null = null;
+  let thoughtNo = 0;
+  let lastThoughtAt = 0;
+  const endThink = () => {
+    if (!thoughtPart || thoughtPart.ms !== undefined) return;
+    thoughtPart.ms = Math.max(0, (lastThoughtAt || Date.now()) - (thoughtPart.startedAt || Date.now()));
+    emit({ t: "reasoningEnd", id: thoughtPart.id, ms: thoughtPart.ms });
+    thoughtPart = null;
+  };
+  const pushText = (d: string) => { const l = parts[parts.length - 1]; if (l?.type === "text") l.text += d; else parts.push({ type: "text", text: d }); };
+  const pushReasoning = (d: string, startedAt?: number) => {
+    if (!thoughtPart || thoughtPart.ms !== undefined) {
+      thoughtPart = { type: "reasoning", id: `reason_${Date.now()}_${thoughtNo++}`, text: "", startedAt: startedAt || Date.now() };
+      parts.push(thoughtPart);
+    }
+    thoughtPart.text += d;
+    lastThoughtAt = Date.now();
+    emit({ t: "reasoning", id: thoughtPart.id, d, startedAt: thoughtPart.startedAt });
+  };
   const reload = async () => { all = await db.select().from(messages).where(eq(messages.conversationId, conv.id)); [conv] = await db.select().from(conversations).where(eq(conversations.id, conv.id)); };
   const ctx: ToolCtx = {
     settings: st, conversationId: conv.id, pinned: conv.context, emit, state,
@@ -286,10 +301,11 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     const prevQ = prevUsers.slice(-1)[0]?.content || "";
     const q = (parent.content.trim().split(/\s+/).length < 4 && prevQ ? `${prevQ.slice(0, 120)} ${parent.content}` : parent.content).replace(/\s+/g, " ").trim().slice(0, 300);
     const id = `presearch_${Date.now()}`;
-    const part: Part = { type: "tool", id, name: "web_search", args: { query: q } };
+    const startedAt = Date.now();
+    const part: Part = { type: "tool", id, name: "web_search", args: { query: q }, startedAt };
     parts.push(part);
-    emit({ t: "tool", id, name: "web_search", args: part.args });
-    const out = await execTool("web_search", { query: q, limit: 6 }, ctx);
+    emit({ t: "toolStart", id, name: "web_search", args: part.args, startedAt });
+    const out = await execTool("web_search", { query: q, limit: 6 }, { ...ctx, progress: (status) => emit({ t: "toolStatus", id, status }) });
     Object.assign(part, { result: out.result, ok: out.ok, meta: { ...(out.meta || {}), presearch: true } });
     emit({ t: "toolResult", id, result: out.result.slice(0, 20000), ok: out.ok, meta: part.meta });
     const last = hist.msgs[hist.msgs.length - 1];
@@ -343,7 +359,8 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
       const onContent = (c: string) => {
         const r = split.push(c);
         if (r.orphan) { rewriteStep(text, ""); text = ""; opener = new OpenerGate(); }
-        if (r.reasoning) { thought += r.reasoning; pushReasoning(r.reasoning); if (r.orphan) thinkStart = stepStart; }
+        if (r.reasoning) { thought += r.reasoning; pushReasoning(r.reasoning, r.orphan ? stepStart : undefined); }
+        if (r.reasoningEnd) endThink();
         if (r.text) visible(r.text);
       };
       read: for (;;) {
@@ -366,12 +383,12 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             endThink();
             const i = tc.index ?? calls.length;
             const fresh = !calls[i];
-            calls[i] ??= { id: tc.id || `call_${i}_${Date.now()}`, type: "function", function: { name: "", arguments: "" } };
-            if (tc.id) calls[i].id = tc.id;
+            calls[i] ??= { id: tc.id || `call_${i}_${Date.now()}`, startedAt: Date.now(), type: "function", function: { name: "", arguments: "" } };
+            if (fresh) emit({ t: "toolStart", id: calls[i].id, name: "", args: {}, startedAt: calls[i].startedAt });
             if (tc.function?.name) calls[i].function.name += tc.function.name;
             if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
             if (tc.extra_content) calls[i].extra_content = tc.extra_content;
-            if (fresh && calls[i].function.name) emit({ t: "toolStart", id: calls[i].id, name: calls[i].function.name });
+            emit({ t: "toolDraft", id: calls[i].id, name: calls[i].function.name, args: parsePartialJsonObject(calls[i].function.arguments), startedAt: calls[i].startedAt });
           }
           // Degenerate repetition: cut the stream instead of burning the whole output budget.
           if (text.length - checkedAt > 240) { checkedAt = text.length; const k = findLoop(text); if (k >= 0) { rewriteStep(text, text.slice(0, k)); text = text.slice(0, k); looped = true; } }
@@ -471,16 +488,16 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         let args: Record<string, unknown> = {};
         let bad = "";
         try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) { bad = `Invalid JSON arguments (${(e as Error).message}). Resend the call with valid JSON.`; }
-        const part: Part = { type: "tool", id: c.id, name: c.function.name, args };
+        const part: Part = { type: "tool", id: c.id, name: c.function.name, args, startedAt: c.startedAt };
         parts.push(part);
-        emit({ t: "tool", id: c.id, name: part.name, args });
+        emit({ t: "tool", id: c.id, name: part.name, args, startedAt: c.startedAt });
         const name = c.function.name;
         if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
         // live output: batched every 120ms so a chatty process doesn't flood the stream; last 6 KB is what the row shows
         let buf = "", timer: ReturnType<typeof setTimeout> | null = null;
         const flush = () => { timer = null; if (buf) { emit({ t: "toolOutput", id: c.id, chunk: buf }); buf = ""; } };
         const output = (chunk: string) => { buf = (buf + chunk).slice(-6000); if (!timer) timer = setTimeout(flush, 120); };
-        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, signal });
+        const out = bad ? { ok: false, result: bad } as Awaited<ReturnType<typeof execTool>> : await execTool(name, args, { ...ctx, output, progress: (status) => emit({ t: "toolStatus", id: c.id, status }), signal });
         if (timer) { clearTimeout(timer); flush(); }
         callNo++;
         if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }

@@ -1,6 +1,6 @@
 // Run: node --experimental-strip-types --no-warnings dev/tests/guards.test.ts
 import assert from "node:assert/strict";
-import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls } from "../../src/lib/harness/stream.ts";
+import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, parsePartialJsonObject } from "../../src/lib/harness/stream.ts";
 import { destructive, installTargets } from "../../src/lib/harness/guard.ts";
 import { StuckDetector } from "../../src/lib/harness/stuck.ts";
 import { integrityIssues } from "../../src/lib/harness/integrity.ts";
@@ -15,6 +15,12 @@ t("think split across chunks", () => { const r = feed(["<th", "ink>plan it", " o
 t("orphan closing tag", () => { const r = feed(["the user wants x", "</think>", "Hello"]); assert.equal(r.text, "Hello"); assert.equal(r.reasoning, "the user wants x"); assert.ok(r.orphan); });
 t("plain text untouched, '<' kept", () => { const r = feed(["a < b and <b>bold</b>"]); assert.equal(r.text, "a < b and <b>bold</b>"); });
 t("<thinking> variant", () => { const r = feed(["<thinking>x</thinking>y"]); assert.equal(r.text, "y"); assert.equal(r.reasoning, "x"); });
+t("reasoning close reports the real end boundary", () => { const s = new ReasoningSplitter(); s.push("<think>some private reasoning"); const r = s.push("</think>visible answer"); assert.equal(r.reasoningEnd, true); assert.equal(r.text, "visible answer"); });
+t("partial tool arguments expose decoded streamed fields", () => {
+  const raw = String.raw`{"path":"src/a.ts","settings":{"nested":["x"]},"content":"line 1\nline 2 \"part`;
+  assert.deepEqual(parsePartialJsonObject(raw), { path: "src/a.ts", settings: { nested: ["x"] }, content: 'line 1\nline 2 "part' });
+  assert.deepEqual(parsePartialJsonObject('{"limit":3,"options":["a","b"]}'), { limit: 3, options: ["a", "b"] });
+});
 
 // filler
 t("opener dropped", () => { const g = new OpenerGate(); assert.equal(g.push("Great question! ") + g.push("Paris is the capital.") + g.flush(), "Paris is the capital."); });

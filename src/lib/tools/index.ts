@@ -101,6 +101,8 @@ export type ToolCtx = {
   state: ConvState; setState: (s: ConvState) => Promise<void>;
   /** live stdout/stderr of the running call (shown in the tool row while it runs) */
   output?: (chunk: string) => void;
+  /** Human-readable progress for file, web, integration and other tools without streaming stdout. */
+  progress?: (status: string) => void;
   signal?: AbortSignal;
 };
 export type ToolOut = { result: string; ok: boolean; meta?: unknown; images?: string[]; stop?: boolean };
@@ -200,6 +202,22 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
   const st = ctx.settings;
   const P = (p: string) => resolvePath(String(p ?? "."), st.access);
   try {
+    const activity: Record<string, string> = {
+      skill_open: "Loading skill instructions", context_add: "Checking workspace file", context_remove: "Updating context",
+      compact_context: "Summarising conversation", fs_list: "Reading folder contents", fs_read: "Opening file",
+      fs_search: "Searching workspace files", fs_write: "Preparing file write", fs_edit: "Reading current file",
+      fs_insert: "Reading current file", fs_delete: "Moving item to trash", fs_move: "Checking destination",
+      run_python: "Starting Python", pip_install: "Checking packages", shell: "Preparing sandbox command",
+      host_shell: "Preparing machine command", web_search: "Searching the web", web_fetch: "Opening webpage",
+      web_extract: "Extracting page details", view_image: "Loading image", todo: "Updating task list",
+      remember: "Saving memory", forget: "Removing memory", project_open: "Opening project", diff_since: "Checking recent changes",
+      canvas_open: "Opening preview", ui_search: "Searching UI components", browser: "Opening browser",
+      check: "Running checks", quality_check: "Reviewing design", adb_devices: "Checking connected devices",
+      adb_install: "Installing app on device", adb_launch: "Opening app on device", adb_shot: "Capturing device screen",
+      adb_tap: "Sending touch input", adb_logcat: "Reading device logs", adb_shell: "Running device command",
+      proc_start: "Starting process", proc_logs: "Reading process output", proc_restart: "Restarting process", proc_stop: "Stopping process",
+    };
+    ctx.progress?.(activity[name] || "Working on integration");
     switch (name) {
       case "skill_open": {
         const sk = await findSkill(String(a.name || ""));
@@ -234,7 +252,9 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const f = P(a.path);
         if (isImage(f)) return { ok: true, result: "Image file. Use view_image to look at it." };
         const ext = path.extname(f).slice(1).toLowerCase();
+        ctx.progress?.("Reading file contents");
         const raw = ["pdf", "docx", "pptx", "xlsx", "xls"].includes(ext) ? await readText(f, 400000) : await fs.readFile(f, "utf8");
+        ctx.progress?.("Preparing readable preview");
         if (raw.startsWith("(binary file)")) return { ok: false, result: "Binary file; not readable as text." };
         const lines = raw.split("\n");
         if (a.outline) {
@@ -277,9 +297,10 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         let before = "", exists = false;
         try { before = await fs.readFile(f, "utf8"); exists = true; } catch {}
         const L = ledger(ctx.conversationId);
-        if (a.mode === "append") { await fs.appendFile(f, (before && !before.endsWith("\n") ? "\n" : "") + content); L.set(f, mtime(f)); return { ok: true, result: `Appended to ${a.path}`, meta: { path: a.path, before: "", after: content.slice(0, 20000) } }; }
+        if (a.mode === "append") { ctx.progress?.("Appending to file"); await fs.appendFile(f, (before && !before.endsWith("\n") ? "\n" : "") + content); L.set(f, mtime(f)); return { ok: true, result: `Appended to ${a.path}`, meta: { path: a.path, before: "", after: content.slice(0, 20000) } }; }
         if (exists && before.trim() && !L.has(f) && before !== content) return { ok: false, result: `${a.path} exists (${before.split("\n").length} lines) and you have not read it in this chat. fs_read it first, then fs_edit (or fs_write again to replace it).` , meta: { path: a.path } };
         if (exists && hasPlaceholder(content, before)) return { ok: false, result: "content contains an elision placeholder (\"... rest of code\"); writing it would delete code. Write the full file or use fs_edit." };
+        ctx.progress?.("Writing file to workspace");
         await fs.writeFile(f, content); L.set(f, mtime(f));
         const syn = syntaxError(f, content);
         return { ok: true, result: `Wrote ${a.path} (${content.split("\n").length} lines)${syn ? `\nwarning: syntax error ${syn}` : ""}`, meta: { path: a.path, before: before.slice(0, 20000), after: content.slice(0, 20000) } };
@@ -293,6 +314,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         if (!r.ok) return { ok: false, result: r.error };
         const L = ledger(ctx.conversationId);
         const stale = L.has(f) && L.get(f) !== mtime(f) ? ["note: file changed on disk since you read it"] : [];
+        ctx.progress?.("Validating patch and writing file");
         const out = await guardAndWrite(f, src, r.text, r.changed, [...stale, ...r.notes]);
         if (out.ok) L.set(f, mtime(f));
         return { ...out, result: out.ok ? `Edited ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: edits.map((e) => e.find).join("\n…\n"), after: edits.map((e) => e.replace).join("\n…\n") } };
@@ -301,6 +323,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const f = P(a.path);
         let src = ""; try { src = await fs.readFile(f, "utf8"); } catch { await fs.mkdir(path.dirname(f), { recursive: true }); }
         const r = insertLines(src, Number(a.line ?? -1), String(a.text ?? ""));
+        ctx.progress?.("Validating insertion and writing file");
         const out = await guardAndWrite(f, src, r.text, [r.span]);
         if (out.ok) ledger(ctx.conversationId).set(f, mtime(f));
         return { ...out, result: out.ok ? `Inserted ${r.span[1] - r.span[0] + 1} lines into ${a.path}\n${out.result}` : out.result, meta: { path: a.path, before: "", after: String(a.text ?? "") } };
@@ -327,6 +350,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         return { ok: true, result: `Moved ${rel(from)} → ${rel(to)}${clash ? " (replaced file moved to trash)" : ""}` };
       }
       case "run_python": {
+        ctx.progress?.("Running Python code");
         const r = await execPython(st, a.code, 120000, { onData: ctx.output, signal: ctx.signal });
         const chart = /\b(matplotlib|pyplot|plt\.show|plt\.savefig)\b/.test(String(a.code)) ? "\n\n[harness] A matplotlib figure is not visible in chat. If the user should see a chart, emit <ui><x-chart> or <x-graph>. Keep a file only if they asked for one." : "";
         return { ok: r.code === 0, result: cut((r.out || "(no output)") + chart) };
@@ -336,6 +360,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const chk = await checkInstalls(pk, "pypi");
         if (chk?.block) { banPackages(ctx.conversationId, pk); return { ok: false, result: chk.block + "\n\n[harness] Do not retry this name." }; }
         if (chk?.approve) { const gate = await approvalGate(ctx, `pip install ${pk.join(" ")}`, chk.approve, false); if (gate) return gate; }
+        ctx.progress?.("Installing Python packages");
         const r = await pipInstall(pk, { onData: ctx.output, signal: ctx.signal }); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
       }
       case "shell":
@@ -353,6 +378,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         if (chk?.block) { banPackages(ctx.conversationId, installNames(cmd)); return { ok: false, result: chk.block + "\n\n[harness] Do not retry this name. Search for the real package, or stop." }; }
         if (chk?.approve) { const gate = await approvalGate(ctx, cmd, chk.approve, host); if (gate) return gate; }
         const cwd = a.cwd ? resolvePath(String(a.cwd), host ? st.access : "sandbox") : undefined;
+        ctx.progress?.(host ? "Running command on your machine" : "Running command in sandbox");
         const r = await runShell(st, String(a.command), Math.min(host ? 1800 : 600, Math.max(5, Number(a.timeout) || 120)) * 1000, host, cwd, { onData: ctx.output, signal: ctx.signal });
         noteMissing(ctx.conversationId, r.out);
         return { ok: r.code === 0, result: cut(`exit ${r.code}\n${r.out.trim() || "(no output)"}` + shellNote(r.out)) };
@@ -415,6 +441,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
       }
       case "web_search": {
+        ctx.progress?.("Waiting for web results");
         const j = await firecrawlSearch(st, a.query, Math.min(Number(a.limit) || 5, 8));
         const items = ((j.data as { url: string; title?: string; description?: string }[]) || []).map((d) => ({ url: d.url, title: d.title || d.url, snippet: (d.description || "").slice(0, 240) }));
         const empty = !items.length ? (j._source === "none" ? "no results. Search is not configured (no keyless hits, local Firecrawl not up, no cloud key). Say so; do not invent sources." : "no results") : "";
@@ -454,11 +481,13 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         return { ok, result: ok ? `Forgot ${a.id}` : `No memory with id ${a.id}` };
       }
       case "web_fetch": {
+        ctx.progress?.("Fetching page content");
         const j = await firecrawlScrape(st, a.url);
         const md = (j.data?.markdown as string) || "";
         return { ok: true, result: cut(md, 12000), meta: { sources: [{ url: a.url, title: j.data?.metadata?.title || a.url, snippet: md.slice(0, 200) }], source: j._source } };
       }
       case "web_extract": {
+        ctx.progress?.("Extracting requested details");
         const x = await firecrawlExtract(st, a.url, String(a.prompt));
         return { ok: true, result: cut(typeof x === "string" ? x : JSON.stringify(x, null, 2), 12000), meta: { sources: [{ url: a.url, title: a.url, snippet: "Structured extraction" }], source: "cloud" } };
       }
@@ -527,7 +556,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       }
       default: {
         const m = name.match(/^mcp__(.+?)__(.+)$/);
-        if (m) return { ok: true, result: cut(await callMcp(m[1], m[2], a), 12000) };
+        if (m) { ctx.progress?.(`Contacting ${m[1]} · ${m[2]}`); return { ok: true, result: cut(await callMcp(m[1], m[2], a), 12000) }; }
         return { ok: false, result: "Unknown tool " + name };
       }
     }

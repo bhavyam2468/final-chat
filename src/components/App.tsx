@@ -10,27 +10,13 @@ import { CanvasLayer, Win, contentRatio } from "./Canvas";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
-function StreamClock() {
-  const [s, setS] = useState(0);
-  useEffect(() => { const t0 = Date.now(); const i = setInterval(() => setS(Math.floor((Date.now() - t0) / 1000)), 1000); return () => clearInterval(i); }, []);
-  return s >= 3 ? <span className="elapsed">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null;
-}
 function DockStatus({ conv, offerBrief, streamId, msgs, onBrief, onPromote, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; msgs: Msg[]; onBrief: () => void; onPromote: () => void; onUnlink: () => void }) {
-  const live = streamId ? msgs.find((m) => m.id === streamId) : undefined;
-  const tool = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.result === undefined);
-  const reasoning = [...(live?.parts || [])].reverse().find((p) => p.type === "reasoning");
-  const todo = [...(live?.parts || [])].reverse().find((p) => p.type === "tool" && p.name === "todo" && p.meta && typeof p.meta === "object" && "todo" in (p.meta as object));
-  const items = (todo && todo.type === "tool" ? (todo.meta as { todo?: { text: string; status: string }[] }).todo : []) || [];
-  const doing = items.find((t) => t.status === "doing") || items.find((t) => t.status === "todo");
-  // a live activity chip whenever the model is working, so silence never reads as "stuck"
-  const act = streamId ? doing?.text || (tool && tool.type === "tool" ? tool.name.replaceAll("_", " ") : reasoning ? "Thinking" : "Working") : null;
   const showSearch = conv?.mode === "search" && msgs.some((m) => m.role === "user");
-  if (!showSearch && !offerBrief && !conv?.state?.project && !act) return null;
+  if (!showSearch && !offerBrief && !conv?.state?.project) return null;
   return <div className="dock-extra">
     {conv?.state?.project && <button className="promote" onClick={onUnlink} title="Unlink project">Project {conv.state.project}</button>}
     {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
     {showSearch && <button className="promote" onClick={onPromote}>Open in chat</button>}
-    {act && <span className="queue-now"><i className="live-dot" />{act}<StreamClock /></span>}
   </div>;
 }
 const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "search" || c.mode === "search" ? "search" : "chat" });
@@ -235,7 +221,7 @@ export default function App() {
             if (attach) {
               // re-attached to a run started elsewhere: the user message is saved, the answer is not yet
               ta = e.assistantId;
-              setMsgsFor(key, (ms) => ms.some((m) => m.id === ta) ? ms : [...ms, { id: ta, conversationId: cid, parentId: e.parentId, threadOf: e.threadOf ?? null, role: "assistant", content: "", parts: [], attachments: [], quote: null, createdAt: new Date().toISOString(), pending: true }]);
+              setMsgsFor(key, (ms) => ms.some((m) => m.id === ta) ? ms.map((m) => m.id === ta ? { ...m, streamStartedAt: Number(e.startedAt) || undefined } : m) : [...ms, { id: ta, conversationId: cid, parentId: e.parentId, threadOf: e.threadOf ?? null, role: "assistant", content: "", parts: [], attachments: [], quote: null, createdAt: new Date(Number(e.startedAt) || Date.now()).toISOString(), pending: true, streamStartedAt: Number(e.startedAt) || undefined }]);
               setSel((x) => ({ ...x, [keyOf(e.parentId, e.threadOf ?? null)]: ta }));
               setRunning((r) => ({ ...r, [key]: ta }));
               continue;
@@ -255,11 +241,21 @@ export default function App() {
               }
               refreshConvs();
             }
-            setMsgsFor(key, (ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: cid })));
+            setMsgsFor(key, (ms) => ms.map((m) => ({ ...m, id: r(m.id)!, parentId: r(m.parentId), conversationId: cid, ...(m.id === ta && Number(e.startedAt) ? { streamStartedAt: Number(e.startedAt) } : {}) })));
             setSel((x) => Object.fromEntries(Object.entries(x).map(([k, v]) => [r(k)!, r(v)!])));
             ta = e.assistantId; setRunning((x) => ({ ...x, [key]: ta }));
             if (stopAsked.current.has(key0)) { stopAsked.current.delete(key0); fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: cid }) }); }
-          } else if (e.t === "reasoning") patchA((p) => { const l = p[p.length - 1]; return l?.type === "reasoning" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "reasoning", text: e.d }]; });
+          } else if (e.t === "reasoning") patchA((p) => {
+            const id = typeof e.id === "string" ? e.id : undefined;
+            let i = id ? p.findIndex((x) => x.type === "reasoning" && x.id === id) : -1;
+            if (i < 0 && !id) for (let k = p.length - 1; k >= 0; k--) { const x = p[k]; if (x.type === "reasoning" && x.ms === undefined) { i = k; break; } }
+            if (i >= 0 && p[i].type === "reasoning") return p.map((x, k) => k === i && x.type === "reasoning" ? { ...x, text: x.text + e.d, startedAt: x.startedAt ?? e.startedAt } : x);
+            return [...p, { type: "reasoning", id, text: e.d, startedAt: e.startedAt }];
+          });
+          else if (e.t === "reasoningEnd") patchA((p) => {
+            const i = p.findIndex((x) => x.type === "reasoning" && (e.id ? x.id === e.id : x.ms === undefined));
+            return i < 0 ? p : p.map((x, k) => k === i && x.type === "reasoning" ? { ...x, ms: Number(e.ms) || 0 } : x);
+          });
           else if (e.t === "retext") patchA((p) => {
             // the server rewrote the current text part (reasoning retracted, loop cut, printed tool call removed)
             let i = p.length - 1; while (i >= 0 && p[i].type === "reasoning") i--;
@@ -267,12 +263,22 @@ export default function App() {
             return e.text ? p.map((x, k) => (k === i ? { ...x, text: e.text } : x)) : p.filter((_, k) => k !== i);
           });
           else if (e.t === "text") patchA((p) => { const l = p[p.length - 1]; return l?.type === "text" ? [...p.slice(0, -1), { ...l, text: l.text + e.d }] : [...p, { type: "text", text: e.d }]; });
-          else if (e.t === "toolStart") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p : [...p, { type: "tool", id: e.id, name: e.name, args: {} }]));
-          else if (e.t === "tool") patchA((p) => (p.some((x) => x.type === "tool" && x.id === e.id) ? p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, name: e.name, args: e.args } : x)) : [...p, { type: "tool", id: e.id, name: e.name, args: e.args }]));
-          else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: ((x as { live?: string }).live || "") + e.chunk } as Part : x)));
+          else if (e.t === "toolStart") patchA((p) => {
+            const i = p.findIndex((x) => x.type === "tool" && x.id === e.id);
+            const draft = { type: "tool" as const, id: String(e.id), name: String(e.name || ""), args: (e.args || {}) as Record<string, unknown>, startedAt: e.startedAt as number | undefined };
+            return i < 0 ? [...p, draft] : p.map((x, k) => k === i && x.type === "tool" ? { ...x, ...draft, args: Object.keys(draft.args).length ? draft.args : x.args } : x);
+          });
+          else if (e.t === "toolDraft") patchA((p) => p.map((x) => x.type === "tool" && x.id === e.id ? { ...x, name: String(e.name || x.name), args: (e.args || x.args) as Record<string, unknown>, startedAt: x.startedAt ?? e.startedAt as number | undefined } : x));
+          else if (e.t === "tool") patchA((p) => {
+            const i = p.findIndex((x) => x.type === "tool" && x.id === e.id);
+            const update = { name: String(e.name), args: e.args as Record<string, unknown>, startedAt: e.startedAt as number | undefined };
+            return i < 0 ? [...p, { type: "tool", id: String(e.id), ...update }] : p.map((x, k) => k === i && x.type === "tool" ? { ...x, ...update, startedAt: x.startedAt ?? update.startedAt } : x);
+          });
+          else if (e.t === "toolStatus") patchA((p) => p.map((x) => x.type === "tool" && x.id === e.id ? { ...x, status: String(e.status || "") } : x));
+          else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: (x.live || "") + e.chunk } : x)));
           else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, { dock: e.dock }); }
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
-          else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, live: undefined } as Part : x))); refreshTree(); }
+          else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, status: undefined, live: undefined } : x))); refreshTree(); }
           else if (e.t === "context") { if (viewRef.current === key) setConv((c) => (c ? { ...c, context: e.context } : c)); }
           else if (e.t === "artifact") refreshTree(); // canvas cards open themselves
           else if (e.t === "error" || e.t === "notice") patchA((p) => [...p, { type: "text", text: `\n\n> ${e.text}\n` }]);
