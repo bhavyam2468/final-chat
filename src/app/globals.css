@@ -150,7 +150,7 @@ input, textarea, select { font: inherit; color: inherit; }
 /* ============ Composer ============ */
 .dock { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 24px 20px; z-index: 20; pointer-events: none; display: flex; justify-content: center; }
 .dock::before { content: ""; position: absolute; inset: -40px 0 0; background: linear-gradient(to bottom, transparent, var(--bg) 60%); pointer-events: none; }
-.composer { position: relative; pointer-events: auto; width: 100%; min-width: 0; max-width: min(480px, 100%); background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); transition: max-width .35s var(--ease), border-color .2s; }
+.composer { position: relative; pointer-events: auto; width: 100%; min-width: 0; max-width: min(480px, 100%); background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); transition: border-color .2s; }
 .composer.open { max-width: min(820px, 100%); }
 @media (min-width: 1024px) {
   .composer.open { max-width: min(960px, 100%); }
@@ -181,7 +181,8 @@ input, textarea, select { font: inherit; color: inherit; }
 .composer.drag { border-color: var(--accent); }
 .composer .row { display: flex; align-items: flex-end; gap: 4px; padding: 6px; }
 .composer textarea { flex: 1; min-height: 32px; max-height: 40vh; padding: 5px 6px; background: none; border: 0; outline: none; resize: none; line-height: 1.5; }
-.composer .send { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r); background: var(--fg); color: var(--bg); animation: pop .2s var(--ease); flex: none; }
+.composer .send-slot { width: 36px; height: 32px; display: grid; place-items: center; flex: none; }
+.composer .send { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r); background: var(--fg); color: var(--bg); animation: pop .2s var(--ease); }
 .composer .send svg { width: 16px; height: 16px; }
 @keyframes pop { from { transform: scale(.6); opacity: 0; } }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 8px 0; }
@@ -232,48 +233,81 @@ input, textarea, select { font: inherit; color: inherit; }
    The content IS the window. Unpinned bars float over it and hide (immersive fullscreen content);
    hovering the top/bottom edge slides a bar in over the content; pinning makes the bars real layout
    (header above the content, footer below). The footer scrolls inline instead of overflowing. */
-.win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; animation: winIn .28s var(--ease); min-width: 240px; min-height: 120px; }
-@keyframes winIn { from { opacity: 0; transform: scale(.96); } }
+/* ============ Canvas windows ============
+   The content is the window: bars float over it, resize handles appear only when the cursor
+   nears an edge, and everything placement-related (position, size, minimize, park) is animated
+   by motion springs in JS. CSS here handles the statics: surfaces, pills, tabs, previews. */
+.win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; min-width: 240px; min-height: 120px; will-change: transform; }
+.win.gone { pointer-events: none; }
+.win.lifted { box-shadow: 0 28px 72px -20px rgba(45, 30, 10, .45); }
 .win-bar { position: absolute; left: 0; right: 0; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 5px 6px; background: color-mix(in srgb, var(--float) 88%, transparent); backdrop-filter: blur(10px); transition: opacity .25s, transform .25s var(--ease); font-size: 12.5px; }
 .win-bar.top { top: 0; cursor: grab; }
+.win-bar.top:active { cursor: grabbing; }
 .win-bar.bot { bottom: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .win-bar.bot > * { flex: none; }
 .win-bar .sp { flex: 1 1 0px !important; min-width: 0; }
 .bar-sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; flex: none; }
-.win-bar .title { flex: 1; padding-left: 8px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* unpinned: bars are overlays, hidden by default (the canvas opens immersive) */
+.win-bar .title { flex: 1; padding-left: 8px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: none; }
 .win:not(.pinned) .win-bar { opacity: 0; pointer-events: none; }
 .win:not(.pinned) .win-bar.top { transform: translateY(-100%); }
 .win:not(.pinned) .win-bar.bot { transform: translateY(100%); }
 .win:not(.pinned).show-t .win-bar.top, .win:not(.pinned).show-b .win-bar.bot { opacity: 1; transform: none; pointer-events: auto; }
-/* a faint hint that the bars exist while the pointer is in the window */
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::before,
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::after { content: ""; position: absolute; left: 0; right: 0; height: 22px; z-index: 2; pointer-events: none; opacity: .55; }
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::before { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::after { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
-/* pinned: bars join the layout — content sits between them, never under them */
+.win:not(.pinned):not(.peeked):not(.gone):hover::before,
+.win:not(.pinned):not(.peeked):not(.gone):hover::after { content: ""; position: absolute; left: 0; right: 0; height: 22px; z-index: 2; pointer-events: none; opacity: .55; }
+.win:not(.pinned):not(.peeked):not(.gone):hover::before { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
+.win:not(.pinned):not(.peeked):not(.gone):hover::after { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
 .win.pinned .win-bar { position: relative; opacity: 1; transform: none; pointer-events: auto; }
 .win.pinned .win-bar.top { border-bottom: 1px solid var(--line); }
 .win.pinned .win-bar.bot { border-top: 1px solid var(--line); }
-.win-body { flex: 1; min-height: 0; overflow: auto; position: relative; }
+.win-body { flex: 1; min-height: 0; overflow: auto; position: relative; overscroll-behavior: contain; }
 .win-body.k-ui { display: flex; flex-direction: column; overflow: hidden; padding-left: 0; padding-right: 0; }
 .win-body.k-ui .blk-frame.fill { flex: 1 1 auto; height: auto; min-height: 0; width: 100%; }
-.win.min { height: 36px !important; min-height: 0; min-width: 0; transition: left .2s var(--ease), top .2s var(--ease); }
-.win.min .win-bar.top { height: 36px; cursor: pointer; position: relative; opacity: 1; transform: none; pointer-events: auto; }
-.win.min .win-body, .win.min .win-bar.bot { display: none; }
-.win-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 4; }
-/* parked at the screen edge: a sliver that peeks on hover and restores on click */
-.win.peek { cursor: pointer; box-shadow: none; transition: left .25s var(--ease), top .25s var(--ease), width .25s var(--ease), height .25s var(--ease), transform .2s var(--ease); }
-.win.peek .win-bar, .win.peek .win-body, .win.peek .win-resize { display: none; }
-.win.peek::before { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 50%, transparent), transparent); }
-.win.peek-r:hover { transform: translateX(-10px); }
-.win.peek-l:hover { transform: translateX(10px); }
-.win.dockpeek { cursor: pointer; transition: width .2s var(--ease); }
-.win.dockpeek:hover { width: 26px; } /* peek out on hover; click or dwell restores the full dock */
-body.dragging .win.docked { transition: none; }
-.win.dockpeek .win-bar, .win.dockpeek .win-body, .win.dockpeek .win-dockresize { display: none; }
-.win.dockpeek::before { content: ""; position: absolute; inset: 4px 5px; border-radius: 6px; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent); }
-.win.dockpeek:hover::after { content: ""; position: absolute; left: -6px; top: 0; bottom: 0; width: 6px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* parked at an edge: only a designed tab peeks; hover glides the window out, click restores */
+.win.peeked .win-bar, .win.peeked .notes { display: none; }
+.peek-tab { position: absolute; z-index: 5; display: flex; align-items: center; gap: 10px; cursor: pointer; color: var(--muted); background: color-mix(in srgb, var(--float) 90%, transparent); backdrop-filter: blur(8px); transition: color .15s, opacity .18s; user-select: none; }
+.peek-tab:hover { color: var(--fg); }
+.peek-tab svg { width: 15px; height: 15px; flex: none; }
+.peek-tab .pk-title { font-size: 12px; letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-height: 84%; max-width: 84%; }
+.pk-l .peek-tab, .pk-r .peek-tab { flex-direction: column; top: 0; bottom: 0; width: 44px; padding: 12px 0; }
+.pk-l .peek-tab { right: 0; border-radius: 0 var(--r) var(--r) 0; border-left: 1px solid var(--line); }
+.pk-r .peek-tab { left: 0; border-radius: var(--r) 0 0 var(--r); border-right: 1px solid var(--line); }
+.pk-l .peek-tab .pk-title, .pk-r .peek-tab .pk-title { writing-mode: vertical-rl; }
+.pk-t .peek-tab, .pk-b .peek-tab { left: 0; right: 0; height: 44px; padding: 0 14px; justify-content: center; }
+.pk-t .peek-tab { bottom: 0; border-radius: var(--r) var(--r) 0 0; border-top: 1px solid var(--line); }
+.pk-b .peek-tab { top: 0; border-radius: 0 0 var(--r) var(--r); border-bottom: 1px solid var(--line); }
+.peek-tab.fade { opacity: 0; pointer-events: none; }
+.peek-catcher { position: absolute; inset: 0; z-index: 6; cursor: pointer; }
+
+/* handles + gesture previews live in a fixed overlay sibling, never clipped by the window */
+.win-overlay { position: fixed; inset: 0; pointer-events: none; }
+.rz-handle { position: absolute; left: 0; top: 0; pointer-events: auto; touch-action: none; border-radius: 999px; background: color-mix(in srgb, var(--float) 82%, transparent); backdrop-filter: blur(6px); border: 1px solid var(--line); box-shadow: 0 3px 14px rgba(30, 22, 8, .18); transition: background .15s, border-color .15s; }
+.rz-handle:hover, .rz-handle:active { background: color-mix(in srgb, var(--accent) 88%, var(--float)); border-color: var(--accent); }
+.rz-handle[data-zone="l"], .rz-handle[data-zone="r"] { cursor: ew-resize; width: 5px; }
+.rz-handle[data-zone="t"], .rz-handle[data-zone="b"] { cursor: ns-resize; height: 5px; }
+.rz-handle[data-zone="tl"], .rz-handle[data-zone="br"] { cursor: nwse-resize; }
+.rz-handle[data-zone="tr"], .rz-handle[data-zone="bl"] { cursor: nesw-resize; }
+.rz-handle.dot { border-radius: 50%; }
+.snap-preview { position: absolute; pointer-events: none; border-radius: 5px; background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent); }
+.sn-l { left: 3px; top: 10px; bottom: 10px; width: 5px; }
+.sn-r { right: 3px; top: 10px; bottom: 10px; width: 5px; }
+.sn-t { top: 3px; left: 10px; right: 10px; height: 5px; }
+.sn-b { bottom: 3px; left: 10px; right: 10px; height: 5px; }
+.dock-drop-preview { position: absolute; top: 8px; bottom: 8px; right: 8px; border-radius: var(--r); background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 40%, transparent); pointer-events: none; }
+/* docked resize is a ghost: the panel keeps its layout until the pull commits */
+.dock-ghost { position: absolute; top: 8px; bottom: 8px; right: 8px; border-radius: var(--r); background: color-mix(in srgb, var(--float) 50%, transparent); border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent); pointer-events: none; }
+.dock-ghost-size { position: absolute; top: 16px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; background: var(--float); border: 1px solid var(--line); padding: 1px 8px; border-radius: 999px; pointer-events: none; box-shadow: var(--shadow); }
+
+/* the minimize rail: a thin pill dock on the left edge */
+.min-rail { position: fixed; left: 10px; z-index: 70; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 6px; background: color-mix(in srgb, var(--float) 88%, transparent); backdrop-filter: blur(12px); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow); }
+.rail-item { position: relative; }
+.rail-tile { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; color: var(--muted); transition: background .15s, color .15s, transform .18s var(--ease); }
+.rail-tile:hover { background: var(--surface); color: var(--fg); transform: scale(1.07); }
+.rail-tile svg { width: 16px; height: 16px; }
+.rail-tip { position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%) translateX(-6px); display: flex; align-items: center; gap: 6px; max-width: 280px; padding: 4px 4px 4px 10px; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); font-size: 12.5px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .15s, transform .18s var(--ease); }
+.rail-item:hover .rail-tip { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
+.rail-tip span { overflow: hidden; text-overflow: ellipsis; }
+
 .seg { display: inline-flex; padding: 2px; border-radius: var(--r); background: var(--surface); }
 /* inline-flex + nowrap: Tailwind preflight makes svg display:block, which broke "Preview" onto two lines */
 .seg button { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; padding: 3px 10px; border-radius: calc(var(--r) - 3px); color: var(--muted); font-size: 12px; }
@@ -290,16 +324,34 @@ body.dragging .win.docked { transition: none; }
 .pdfwrap { padding: 0 8px; }
 .pdf-page { position: relative; margin: 8px auto; box-shadow: 0 1px 8px rgba(0,0,0,.12); border-radius: 4px; overflow: hidden; background: white; container-type: size; }
 .pdf-page canvas { display: block; }
-/* invisible but selectable text over each page: select it and Quote, like chat text */
+.pdf-page.pending::after { content: ""; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 20%, rgba(128,120,105,.07) 40%, rgba(128,120,105,.07) 55%, transparent 75%); background-size: 220% 100%; animation: pgshimmer 1.6s infinite linear; }
+@keyframes pgshimmer { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+/* text layer: transparent spans aligned to the pdf.js layout; selection highlight reads like text */
 .txtlayer { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
-.txtlayer span { position: absolute; white-space: pre; color: transparent; cursor: text; line-height: 1.15; }
+.txtlayer span { position: absolute; white-space: pre; color: transparent; cursor: text; transform-origin: 0 0; }
 .txtlayer span::selection { background: var(--mark); }
+/* saved highlights: flat quads under the text, multiplied like a real highlighter */
+.hl-mark { position: absolute; background: var(--mark); border-radius: 3px; pointer-events: none; mix-blend-mode: multiply; }
+/* selection popover: quote (with provenance + context), highlight, copy */
+.pdfsel { position: absolute; z-index: 8; transform: translate(-50%, -100%); display: flex; align-items: center; gap: 2px; padding: 3px; background: var(--float); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow); animation: fadeUp .16s var(--ease); }
+.pdfsel-page { font-size: 11px; color: var(--muted); padding: 0 6px 0 8px; font-variant-numeric: tabular-nums; }
+.pdfsel button { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; padding: 4px 10px; border-radius: 999px; color: var(--muted); }
+.pdfsel button:hover { background: var(--surface); color: var(--fg); }
+.pdfsel button svg { width: 13px; height: 13px; }
+.hl-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.hl-pop { position: absolute; right: 10px; bottom: 46px; z-index: 9; width: min(360px, 92%); max-height: 45%; overflow: auto; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); padding: 6px; animation: fadeUp .18s var(--ease); }
+.hl-pop-h { display: flex; align-items: center; gap: 6px; padding: 4px 6px 8px; font-size: 12.5px; color: var(--muted); }
+.hl-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: calc(var(--r) - 4px); font-size: 12.5px; }
+.hl-row:hover { background: var(--surface); }
+.hl-row .pg { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.hl-row .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* snip: drag a region, it lands in the input bar */
 .snip { position: absolute; inset: 0; z-index: 6; cursor: crosshair; touch-action: none; background: color-mix(in srgb, var(--bg) 25%, transparent); }
 .snip-rect { position: fixed; border: 1.5px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 4px; pointer-events: none; z-index: 7; }
 .snip-hint { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--muted); background: var(--float); border: 1px solid var(--line); padding: 3px 12px; border-radius: 999px; white-space: nowrap; }
 .notes { position: absolute; left: 0; right: 0; bottom: 0; height: 38%; z-index: 2; background: var(--float); border-top: 1px solid var(--line); display: flex; flex-direction: column; animation: fadeUp .2s var(--ease); }
 .notes textarea { flex: 1; background: none; border: 0; outline: none; resize: none; padding: 12px 16px; font-size: 14px; }
+
 .canvas-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin: 12px 0; border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; transition: background .15s; }
 .canvas-card:hover { background: var(--surface); }
 .canvas-card svg { width: 16px; height: 16px; color: var(--muted); }
@@ -310,20 +362,17 @@ body.dragging .win.docked { transition: none; }
 .blk-frame { width: 100%; border: 0; display: block; margin: 12px 0; background: transparent; transition: height .25s var(--ease); color-scheme: normal; }
 .blk-frame.fill { height: 100%; margin: 0; }
 
-/* ============ Canvas: integrated (docked) mode ============ */
-body.dragging iframe { pointer-events: none; } body.dragging { user-select: none; cursor: ew-resize; }
+/* ============ Canvas: docked sidebar mode ============
+   The docked canvas is a sidebar: the chat column and its chrome slide left via --dockw margins.
+   The panel itself is a normal window in the canvas layer (position animated by motion). */
+body.dragging iframe { pointer-events: none; } body.dragging { user-select: none; }
 .scroll, .dock, .chrome.r, .rstack { transition: margin-right .32s var(--ease), right .32s var(--ease), padding-right .32s var(--ease); }
 body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.dragging .rstack { transition: none; }
 .shell.has-dock .scroll { margin-right: calc(var(--dockw) + 16px); }
 .shell.has-dock .dock { right: calc(var(--dockw) + 16px); }
 .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: calc(var(--dockw) + 24px); }
-.win.docked { top: 8px; right: 8px; bottom: 8px; left: auto; width: var(--dockw); height: auto; animation: dockIn .32s var(--ease); min-width: 0; }
-@keyframes dockIn { from { opacity: 0; transform: translateX(24px); } }
-.win.docked .win-bar.top { cursor: default; }
-.win-dockresize { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 5; }
-.win-dockresize::after { content: ""; position: absolute; left: 2px; top: 50%; height: 36px; width: 3px; margin-top: -18px; border-radius: 3px; background: var(--line); transition: background .15s, height .15s; }
-.win-dockresize:hover::after { background: var(--muted); height: 56px; margin-top: -28px; }
-@media (max-width: 759px) { .win.docked { left: 8px; width: auto; } .shell.has-dock .scroll { margin-right: 0; } .shell.has-dock .dock, .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: 0; } }
+@media (max-width: 759px) { .shell.has-dock .scroll { margin-right: 0; } .shell.has-dock .dock, .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: 0; } }
+
 
 /* ============ Canvas viewers ============ */
 .win-bar .sp { flex: 1; }
@@ -435,6 +484,7 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 /* ============ Modal ============ */
 .scrim { position: fixed; inset: 0; z-index: 80; background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(4px); display: grid; place-items: center; animation: fadeIn .2s; }
 @keyframes fadeIn { from { opacity: 0; } }
+@keyframes winIn { from { opacity: 0; transform: scale(.96); } }
 .modal { width: min(620px, calc(100vw - 32px)); max-height: 84vh; display: flex; flex-direction: column; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); animation: winIn .25s var(--ease); overflow: hidden; }
 .modal .tabs { display: flex; gap: 2px; padding: 10px 10px 0; }
 .panel.settings .tabs { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }

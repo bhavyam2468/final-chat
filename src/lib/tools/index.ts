@@ -514,7 +514,7 @@ They can also press Connect in Settings → MCP.` : "";
         if (yt) spec = { kind: "youtube", id: yt, title: title || "YouTube" };
         else if (/^https?:\/\//.test(t)) spec = { kind: "web", url: t, title: title || new URL(t).hostname };
         else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
-        ctx.emit({ t: "canvas", spec, dock: !!a.dock });
+        ctx.emit({ t: "canvas", spec, dock: a.dock === undefined ? true : !!a.dock }); // dock-first: the sidebar is the default home
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
       }
       case "web_search": {

@@ -6,7 +6,8 @@ import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
 import { chatDir } from "@/lib/shared";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
-import { CanvasLayer, Win, contentRatio } from "./Canvas";
+import { CanvasLayer } from "./Canvas";
+import { Win, cascadeRect, contentRatio, migrateWin, sameSpec, viewport } from "./canvas/types";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
@@ -43,7 +44,7 @@ export default function App() {
     const prev = viewRef.current;
     if (prev !== k) {
       winsCache.current[prev] = winsRef.current;
-      const load = winsCache.current[k] ?? (() => { try { const v = JSON.parse(localStorage.getItem("wins:" + k) || "null"); return Array.isArray(v) ? v as Win[] : null; } catch { return null; } })();
+      const load = winsCache.current[k] ?? (() => { try { const v = JSON.parse(localStorage.getItem("wins:" + k) || "null"); return Array.isArray(v) ? (v as Win[]).map(migrateWin) : null; } catch { return null; } })();
       setWins(load || []);
     }
     viewRef.current = k; setViewS(k);
@@ -340,8 +341,9 @@ export default function App() {
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
   // ---- canvases
-  // a window is sized around its content: a 16:9 image opens as a ~16:9 window hugging it, centred,
-  // with just a little padding — never a generic box the content floats around
+  // dock-first: canvases open beside the chat by default; if the dock is taken they float,
+  // sized around their content (a 16:9 image opens as a ~16:9 window hugging it, centred).
+  // An explicit dock request displaces the current occupant — it parks in the rail.
   const openCanvas = useCallback((spec: CanvasSpec, o?: OpenOpts) => {
     const remember = () => {
       const k = viewRef.current; if (k.startsWith("new:")) return;
@@ -353,23 +355,18 @@ export default function App() {
     void contentRatio(spec).then((ratio) => {
       remember();
       setWins((ws) => {
-        const dock = !!o?.dock && innerWidth >= 760;
-        const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
+        const vp = viewport();
+        const dock = (o?.dock ?? true) && vp.w >= 760; // dock-first; narrow screens float
+        const exists = ws.find((w) => sameSpec(w.spec, spec));
         const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
-        const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
-        if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock, peek: null } : undock(w)));
-        const floating = ws.filter((w) => !w.dock).length;
-        let w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72);
-        let x = innerWidth - w - 24 - floating * 24, y = 56 + floating * 24;
-        if (ratio) {
-          const pad = 24; // a little breathing room around the content
-          const maxW = Math.min(innerWidth - 48, 1280), maxH = innerHeight - 64;
-          w = Math.round(Math.max(340, Math.min(maxW, ratio.pw ? ratio.pw + pad : maxW * 0.66)));
-          h = Math.round(w / ratio.ratio);
-          if (h > maxH) { h = maxH; w = Math.round(h * ratio.ratio); }
-          x = Math.round((innerWidth - w) / 2); y = Math.max(20, Math.round((innerHeight - h) / 2));
+        // the sidebar holds one window: an explicit dock displaces the occupant into the rail
+        const undock = (w: Win): Win => (dock && w.dock && (!exists || w.id !== exists.id) ? { ...w, dock: false, min: true, home: { x: w.x, y: w.y, w: w.w, h: w.h }, wasDock: true } : w);
+        if (exists) {
+          const me = { ...exists, z, min: false, peek: null, dock: dock || (exists.dock && !exists.min) };
+          return ws.map((w) => (w.id === exists.id ? me : undock(w)));
         }
-        return [...ws.map(undock), { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock }];
+        const r = cascadeRect(ratio ? ratio.ratio : null, ratio?.pw, ws.filter((w) => !w.dock && !w.min).length, vp);
+        return [...ws.map(undock), { id: rid(), spec, x: r.x, y: r.y, w: r.w, h: r.h, z, min: false, pinned: false, dock }];
       });
     });
   }, []);
@@ -422,8 +419,9 @@ export default function App() {
       const s = window.getSelection(); const t = s?.toString().trim();
       if (!s || !t || !s.rangeCount) { setQpop(null); return; }
       const node = s.anchorNode?.parentElement;
-      // quote works on chat text, PDF text layers and rendered docs alike
-      if (!node?.closest(".ai-content, .txtlayer, .docview, .reader")) { setQpop(null); return; }
+      // quote works on chat text and rendered docs alike; PDF selections have their own popover
+      // (quote-with-page-and-context, highlight, copy) inside the viewer
+      if (!node?.closest(".ai-content, .docview, .reader") || node.closest(".txtlayer")) { setQpop(null); return; }
       if (node.closest(".thread")) active.current = "thread"; else active.current = "main";
       const r = s.getRangeAt(0).getBoundingClientRect();
       setQpop({ x: r.left + r.width / 2, y: r.top - 8, text: t });

@@ -166,8 +166,11 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
           onKeyDown={onKeyDown} onFocus={() => { setFocused(true); p.onFocus?.(); }} onBlur={() => setFocused(false)}
           onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }} />
-        {p.streaming ? <button className="send" aria-label="Stop" onClick={p.onStop}><Square fill="currentColor" /></button>
-          : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button> : null}
+        {/* the slot is always reserved so the textarea never reflows when the button appears */}
+        <span className="send-slot" aria-hidden={!p.streaming && !canSend}>
+          {p.streaming ? <button className="send" aria-label="Stop" onClick={p.onStop}><Square fill="currentColor" /></button>
+            : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button> : null}
+        </span>
       </div>
     </div>
   );
