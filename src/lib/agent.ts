@@ -22,6 +22,7 @@ import { liftFences, uiIssues } from "./ui-check";
 import { memoryPrompt } from "./memory";
 import { projectSlug, projectText } from "./projects";
 import { unseenCommandFlags } from "./harness/shell-preflight";
+import { needsBlocks, renderedToFile } from "./harness/present";
 
 export type Emit = (e: Record<string, unknown>) => void;
 
@@ -59,7 +60,9 @@ export function needsSearch(q: string) {
 
 async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number, query = ""): Promise<Sys> {
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
-  const memory = (await fs.readFile(path.join(WS, "system/AGENTS.md"), "utf8").catch(() => "")).trim();
+  const agents = (await fs.readFile(path.join(WS, "system/AGENTS.md"), "utf8").catch(() => "")).trim();
+  const instructed = agents.replace(/^#[^\n]*\n?/, "").trim().slice(0, 4000);
+  const userInstructions = instructed && !instructed.startsWith("Standing instructions from the user to the agent.") ? instructed : "";
   const recall = query ? await memoryPrompt(query).catch(() => "") : "";
   const slug = conv.state?.project ? projectSlug(conv.state.project) : "";
   const proj = slug ? await projectText(slug).catch(() => "") : "";
@@ -80,7 +83,7 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
   }
   const parts: [string, string, string][] = [
     ["system", "System prompt", base],
-    ["memory", "Memory", [memory && `# ${memory}`, recall && `# Remembered\n${recall}\nremember only when the user asks, or a decision that will matter in a later chat. forget(id) undoes one.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
+    ["memory", "Memory", [userInstructions && `# Standing instructions from the user (AGENTS.md)\n${userInstructions}`, recall && `# Remembered\n${recall}\nThe user sees every note and can undo one with forget(id); remember only what they ask, or a decision that will matter later.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
     ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, conv.state?.mode === "search" ? SEARCH_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
     ["tree", "Workspace tree", tree],
@@ -324,7 +327,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const stuck = new StuckDetector();
   let opener = new OpenerGate();
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
-  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched;
+  let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, blockRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = presearched, usedPython = false;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
   const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
@@ -468,6 +471,17 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             continue;
           }
         }
+        // Presentation: data the user should read or see, delivered as a wall of text or a linked image, gets one round to become blocks.
+        if (st.quality === "fix" && blockRounds < 1 && text && !signal.aborted && needsBlocks(text, { usedPython: usedPython })) {
+          {
+            const rendered = renderedToFile(text, usedPython);
+            blockRounds++;
+            rewriteStep(text, "");
+            loopMsgs.push({ role: "assistant", content: text });
+            loopMsgs.push({ role: "user", content: `[Automatic format check, not from the user] ${rendered ? "A file path is not a chart the user can read — neither is a description of one." : "This answer carries data as text."} Present it in Blocks, the way this app shows data: <x-chart> or <x-graph> for the figure, <x-table> for rows (6+ rows do not belong in a markdown table), <x-stat>/<x-kv> for specs and numbers. Keep the prose as the one thing the block cannot say. Give the complete answer again, blocks inline (never in a code fence).` });
+            continue;
+          }
+        }
         // One repair round when a block is fenced, unknown, or missing the element its script reads.
         if (st.quality === "fix" && uiRounds < 1 && text && !signal.aborted) {
           const issues = uiIssues(text);
@@ -503,6 +517,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
         if (out.ok && /^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string") { touched.add(args.path); if (isCodeFile(args.path)) lastEdit = callNo; }
         if (VERIFY.test(name)) lastVerify = callNo;
         if (/^web_/.test(name) || /^mcp__.*(search|fetch|browse)/i.test(name)) usedWeb = true;
+        if (name === "run_python") usedPython = true;
         if (out.images?.length) images.push(...out.images);
         if (out.stop) stop = true;
         Object.assign(part, { result: out.result, ok: out.ok, meta: out.meta });

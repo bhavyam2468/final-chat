@@ -17,8 +17,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | **Canvas** | Floating windows or **docked** beside the chat (drag the left edge to resize). Anything chat can show can go in a canvas; native viewers for PDF, Word, Excel/CSV, PowerPoint, zip/tar (browse without extracting), images, audio/video, code |
 | **Context status** | Live token meter in the workspace panel, per-section breakdown, and scoped compaction: fold tool output, fold web results, summarise history, or compact selected turns. Everything is restorable |
 | **Streaming** | Rate-adaptive smoothing for text, markdown and every Blocks component: no jitter, no re-render flashes, stable skeletons while a component streams |
-| **MCP Servers** | Add any stdio or HTTP MCP server via Settings → MCP |
-| **Skills** | Progressive-disclosure skill system (SKILL.md files teach the agent new capabilities on demand) |
+| **MCP Servers** | Curated integrations plus any stdio/HTTP server; remote ones sign in with one click (OAuth, no API key to copy) |
+| **Skills** | Progressive-disclosure skill system (SKILL.md files teach the agent new capabilities on demand); the agent can write and install skills in chat |
 | **Hybrid Firecrawl** | Smart routing: local Firecrawl for free scraping, cloud key only for anti-bot bypass / AI extraction |
 | **FreeLLMAPI** | Local proxy to 200+ AI models; dynamic model picker in Settings |
 
@@ -49,7 +49,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `docker-compose.yml` | Starts Postgres 16 on port 5432 |
 | `.env` | **Local-only** environment variables (not committed) |
 | `DESIGN.md` | Visual/UX design principles for the app |
-| `workspace/` | Agent's working directory (gitignored). Contains `system/SYSTEM.md`, `system/AGENTS.md`, `system/skills/`, `system/mcp/servers.json`, `uploads/`, `artifacts/`, `notes/`, `chats/` |
+| `workspace/` | Agent's working directory (gitignored). Contains `system/SYSTEM.md`, `system/AGENTS.md` (the user's own standing instructions), `system/skills/`, `system/mcp/servers.json`, `system/memory/` (profile + dated episodes), `uploads/`, `artifacts/`, `notes/`, `chats/` |
 | `workspace-template/` | Seed files copied into `workspace/` on first run |
 | `public/blocks/` | Standalone Blocks runtime (extended HTML tags, Pyodide, relational style language) |
 | `agent/` | Reserved for agent-authored scripts/tools |
@@ -72,6 +72,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `api/models/route.ts` | GET/POST — fetch available models from the configured LLM provider |
 | `api/mcp/route.ts` | GET/PUT — read and write MCP server config |
 | `api/mcp/registry` | GET — search the MCP registry |
+| `api/mcp/oauth` | GET/POST/DELETE — one-click OAuth sign-in for a remote MCP server (discovery + dynamic registration + PKCE), tokens stored in the workspace |
+| `api/mcp/oauth/callback` | GET — OAuth redirect target; exchanges the code and returns to the app |
 | `api/skills/route.ts` | GET/POST — list installed skills; install from GitHub URL |
 | `api/workspace/route.ts` | GET/POST/DELETE/PUT — workspace file CRUD |
 | `api/workspace/upload` | POST — upload files into workspace |
@@ -90,7 +92,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `Panels.tsx` | Left panel (chat history, search), right panel (workspace file browser) |
 | `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI |
 | `Block.tsx` | Renders a `<canvas>` block (isolated iframe sandboxed to `/blocks/`) |
-| `Settings.tsx` | Settings modal: Model, Tools (Firecrawl), MCP servers, Skills |
+| `Settings.tsx` | Settings panel (in-layout, beside the chat, not a modal): Model, Tools, Access, MCP, Skills |
 | `ctx.ts` | Shared React contexts (conversation, settings, theme) |
 
 ### `src/lib/` — Backend Logic
@@ -107,6 +109,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `skills.ts` / `market.ts` / `credentials.ts` | Skill discovery and GitHub install, curated MCP/skill catalog, credential resolution (secret → env → CLI login) |
 | `settings.ts` | Settings type, defaults, `getSettings()`, `saveSettings()`, `mask()`, `PRESETS` |
 | `mcp.ts` | MCP client: load servers.json, start stdio/HTTP servers, call tools |
+| `mcp-auth.ts` | OAuth client provider for remote MCP servers: per-server tokens, dynamic client registration, PKCE |
 | `workspace.ts` | Workspace path resolution, `tree()`, `resolvePath()`, `ensureWorkspace()` |
 | `streammark/StreamMarkdown.tsx` | Streaming Markdown renderer (React, memoised blocks) |
 | `streammark/remend.ts` | Core markdown-to-VDOM streaming engine |
@@ -201,19 +204,18 @@ Plain chat stays cheap: a short system prompt, core tools only, no plans or chec
   - Loads when a skill declaring `tools: dev` opens (build, debug, design, host), or always on large context windows (Settings → Tools).
   - Servers run as managed processes, so the agent waits for a port instead of sleeping, and restarts instead of re-spawning.
 - **Planning.** `todo` shows a checklist in the chat, and the current step is recited after each tool result. `ask_user` shows option buttons and ends the turn.
+- **Presentation.** Blocks are the native medium, not decoration: `<ui>` first, prose for what a block cannot say. The loop checks each finished answer and gives one round to convert a markdown table (6+ rows), five or more number-carrying bullets, a spec sheet of lines, or a chart linked from `run_python` into blocks (`x-table`, `x-chart`, `x-graph`, `x-stat`, `x-kv`). The reference lives in `system/skills/blocks/SKILL.md`; the rule and examples live in `SYSTEM.md`.
 - **Quality guard.** HTML/CSS/JSX the agent writes is linted for generic AI styling (novelty fonts, neon, purple gradients, glass, emoji headings, marketing copy, helper text). With `fix`, the agent gets one repair round.
-- **Workflows as skills:**
-  - research: sub-questions, primary sources, cross-checks, and a mandatory "coverage & gaps" section;
-  - learn: diagnosis, small steps, quizzes, a known/shaky/not-covered tracker, and a gap audit;
-  - build, with exact references for web, React+TS, Electron, Go, Rust, Java, Python, Android, iOS and Flutter;
-  - debug and design.
-  Type `/name` in the composer to force one.
+- **Skills (11 shipped, one job each):** blocks (the UI language), canvas, documents (PDF/Office/CSV + sandbox Python), research (search craft, deep research, literature, critique), build (web, React, Electron, Go, Rust, Java, Android, iOS, Flutter), debug, design, memory (remember + context hygiene), extensions (MCP, credentials, skill authoring), terminal (sandbox vs host, home files, sudo), learn. Type `/name` in the composer to force one. The agent can author a skill (`skill_create`) or install one from GitHub (`skill_install`) in chat; Settings → Skills does the same by hand.
+  A skill file the user edited is never overwritten; a shipped skill that no longer ships is moved to `.trash/template-updates` when the workspace syncs.
 
 ## Extensions
 
-Settings → **MCP** lists installed servers with credential badges, a curated catalog (GitHub, Context7, Hugging Face, Postgres, Supabase, paper search, Chroma) and a registry search.
-- Credentials resolve in order: Settings secret → environment → your existing CLI login (`gh auth token`, Hugging Face token file). The CLI login is only used when you have granted home or host-terminal access, so a GitHub login you already have needs no setup.
-- Servers that duplicate built-in tools (filesystem, fetch, puppeteer, memory, git) are flagged.
+Settings → **MCP** lists installed servers with credential badges and a curated catalog. The catalog is picked for what a built-in tool cannot do, and remote servers that support OAuth 2.1 with dynamic client registration connect with **one click and no API key**: Notion, Linear, Jira & Confluence, Figma, Sentry. Keyless servers (DeepWiki, Context7) need nothing at all. Google's own Workspace servers are listed too, with an honest note that they need a Google Cloud OAuth client; anything else is one registry search away.
+- One-click sign-in: the app discovers the authorization server, registers itself, opens the service, and comes back to `/api/mcp/oauth/callback` with a code. Tokens live in `workspace/system/mcp/auth.json` (mode 600) and refresh on their own. When the browser cannot reach the app, the same flow finishes with a pasted code.
+- In chat, `mcp_search` finds a server and `mcp_add` adds it and hands the user a sign-in link.
+- Credentials for token-based servers resolve in order: Settings secret → environment → your existing CLI login (`gh auth token`, Hugging Face token file). The CLI login is only used when you have granted home or host-terminal access, so a GitHub login you already have needs no setup.
+- Servers that duplicate built-in tools (filesystem, fetch, puppeteer, the remember tool, git) are flagged.
 
 Settings → **Skills** installs from GitHub (`owner/repo`, a path, or a URL) with a picker for multi-skill repos, and shows skills added with `npx skills add` (`.agents/skills`). Built-in skills are never overwritten.
 

@@ -27,6 +27,34 @@ async function copyDir(src: string, dst: string, man: Record<string, string>, pr
     if (cur === man[key] || (!man[key] && pristine.has(cur))) { await fs.writeFile(d, tpl); man[key] = th; }
   }
 }
+/**
+ * A shipped skill file that no longer ships is moved to .trash/template-updates so a reorganisation
+ * of the skill set reaches existing workspaces instead of piling up next to it. Anything the user
+ * wrote or edited (hash not in the manifest, not pristine) is left exactly where it is.
+ */
+async function pruneSkills(man: Record<string, string>, pristine: Set<string>) {
+  const aside = async (abs: string, rel: string) => {
+    const dest = path.join(WS, ".trash", "template-updates", rel);
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.rm(dest, { recursive: true, force: true });
+    if (await fs.rename(abs, dest).then(() => true, () => false))
+      for (const k of Object.keys(man)) if (k === rel || k.startsWith(rel + "/")) delete man[k];
+  };
+  const shipped = (h: string, key: string) => !!h && (man[key] === h || pristine.has(h));
+  const walk = async (dir: string) => {
+    for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [] as fss.Dirent[])) {
+      const abs = path.join(dir, e.name);
+      const rel = path.relative(WS, abs).split(path.sep).join("/");
+      if (fss.existsSync(path.join(TEMPLATE, rel))) { if (e.isDirectory()) await walk(abs); continue; }
+      const def = path.join(abs, "SKILL.md");
+      const file = e.isDirectory() ? def : abs;
+      const cur = await fs.readFile(file).catch(() => null);
+      if (cur && shipped(sha1(cur), e.isDirectory() ? `${rel}/SKILL.md` : rel)) await aside(abs, rel);
+    }
+  };
+  await walk(path.join(WS, "system", "skills"));
+}
+
 export async function ensureWorkspace() {
   if (seeded) return;
   await fs.mkdir(WS, { recursive: true });
@@ -35,6 +63,7 @@ export async function ensureWorkspace() {
     const man: Record<string, string> = JSON.parse(await fs.readFile(mp, "utf8").catch(() => "{}"));
     const pristine = new Set<string>(JSON.parse(await fs.readFile(path.join(TEMPLATE, ".pristine.json"), "utf8").catch(() => "[]")));
     await copyDir(TEMPLATE, WS, man, pristine);
+    await pruneSkills(man, pristine);
     await fs.mkdir(path.dirname(mp), { recursive: true });
     await fs.writeFile(mp, JSON.stringify(man));
   }

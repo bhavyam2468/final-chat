@@ -140,3 +140,9 @@ Emulator (optional, heavy): `sdkmanager "emulator" "system-images;android-35;goo
 Checks: check(path) runs `./gradlew -q assembleDebug`. Tests: `./gradlew testDebugUnitTest`. Lint: `./gradlew lintDebug`.
 Errors: "SDK location not found" → local.properties; "requires Java 17" → JAVA_HOME to JDK 17; Compose compiler errors → keep Kotlin and the compose plugin on the same version; unresolved androidx.* → dependency missing in app/build.gradle.kts.
 Release APK/AAB needs a keystore: `keytool -genkeypair -v -keystore release.jks -alias app -keyalg RSA -keysize 2048 -validity 10000` + signingConfigs; ask before creating signing keys.
+
+## Project rules (before writing a line)
+- Read what is there: Kotlin or Java, Compose or XML come from the files — never convert unless asked. Package name from AndroidManifest.xml, code under src/main/java|kotlin in that package, layouts in res/layout. Do not invent a second tree.
+- Dependencies come from the Gradle files. Do not add a library you have not seen in the project or confirmed with web_search; if unsure a class exists, search the project, then the web.
+- A small change stays a small change — never rewrite the app to fix one screen.
+- Running it needs Phone testing (Settings → Access) and Host terminal: adb_devices → adb_install → adb_launch → adb_shot → read the screenshot before adb_tap → adb_logcat for crashes. adb_shell targets the device, not the computer. If Phone testing is off, say so instead of burying adb inside host_shell.

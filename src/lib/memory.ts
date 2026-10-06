@@ -4,14 +4,19 @@ import path from "path";
 import { nanoid } from "nanoid";
 import { WS, ensureWorkspace } from "./workspace";
 import { projectSlug } from "./projects";
+import { pickNotes, profileBody, sliceLines, when, norm, Rankable } from "./memory-rank";
 
-/** Three layers, all visible and deletable: AGENTS.md (the model appends), profile (stable facts), episodes (per-chat notes retrieved by overlap). */
+/**
+ * Three stores, all visible and deletable: profile (stable facts, always in context),
+ * episodes (dated notes retrieved by relevance), project notes (projects/<slug>/NOTES.md).
+ * AGENTS.md is *not* a store — it is the user's own instruction file.
+ */
 
 const dir = () => path.join(WS, "system", "memory");
 const profilePath = () => path.join(dir(), "profile.md");
 const episodesPath = () => path.join(dir(), "episodes.jsonl");
 
-export type Episode = { id: string; text: string; at: string; scope: "profile" | "episode" | "project" };
+export type Episode = Rankable & { scope: "profile" | "episode" | "project" };
 
 async function ready() {
   await ensureWorkspace();
@@ -20,26 +25,22 @@ async function ready() {
   if (!fss.existsSync(episodesPath())) await fs.writeFile(episodesPath(), "");
 }
 
-function words(s: string) {
-  return new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
-}
-
 export async function memoryPrompt(query: string): Promise<string> {
   await ready();
   const profile = (await fs.readFile(profilePath(), "utf8").catch(() => "")).trim();
   const lines = (await fs.readFile(episodesPath(), "utf8").catch(() => "")).split("\n").filter(Boolean);
   const eps: Episode[] = [];
   for (const line of lines) { try { eps.push(JSON.parse(line)); } catch { /* skip a torn line */ } }
-  const q = words(query);
-  const scored = eps.map((e) => ({ e, s: [...words(e.text)].filter((w) => q.has(w)).length })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 4);
+  const picked = pickNotes(eps, query);
   const bits = [
-    profile && profile !== "# Profile" ? profile.slice(0, 1200) : "",
-    scored.length ? "Related notes:\n" + scored.map((x) => `- [${x.e.id}] ${x.e.text}`).join("\n") : "",
+    profileBody(profile) ? sliceLines(profileBody(profile), 1200) : "",
+    picked.length ? "Notes from earlier chats (dated; forget(id) removes one):\n" + picked.map((e) => `- [${e.id}]${when(e.at) ? ` (${when(e.at)})` : ""} ${e.text}`).join("\n") : "",
   ].filter(Boolean);
-  return bits.join("\n\n").slice(0, 1800);
+  return sliceLines(bits.join("\n\n"), 1800);
 }
 
 const notesPath = (project: string) => path.join(WS, "projects", projectSlug(project), "NOTES.md");
+const MAX_EPISODES = 800;
 
 export async function remember(text: string, scope: "profile" | "episode" | "project" = "episode", project?: string): Promise<Episode> {
   await ready();
@@ -50,14 +51,27 @@ export async function remember(text: string, scope: "profile" | "episode" | "pro
   const row: Episode = { id, text: clean, at: new Date().toISOString(), scope };
   if (scope === "profile") {
     const cur = await fs.readFile(profilePath(), "utf8").catch(() => "# Profile\n");
+    if (cur.split("\n").some((l) => norm(l.replace(/^-\s*\[[^\]]*\]\s*/, "")) === norm(clean))) return row; // same fact already there
     await fs.writeFile(profilePath(), cur.replace(/\s*$/, "") + `\n- [${id}] ${clean}\n`);
   } else if (scope === "project" && project) {
     const file = notesPath(project);
     await fs.mkdir(path.dirname(file), { recursive: true });
     const cur = await fs.readFile(file, "utf8").catch(() => `# Notes\n`);
+    if (cur.split("\n").some((l) => norm(l.replace(/^-\s*\[[^\]]*\]\s*/, "")) === norm(clean))) return row;
     await fs.writeFile(file, cur.replace(/\s*$/, "") + `\n- [${id}] ${clean}\n`);
   } else {
-    await fs.appendFile(episodesPath(), JSON.stringify(row) + "\n");
+    const lines = (await fs.readFile(episodesPath(), "utf8").catch(() => "")).split("\n").filter(Boolean);
+    const eps: Episode[] = [];
+    for (const line of lines) { try { eps.push(JSON.parse(line)); } catch { eps.push({ id: "", text: "", at: "", scope: "episode" }); } }
+    const dup = eps.find((e) => e.id && norm(e.text) === norm(clean));
+    if (dup) { // say the same thing again → freshen the note instead of duplicating it
+      const next = lines.map((l) => { try { const e = JSON.parse(l) as Episode; return e.id === dup.id ? JSON.stringify({ ...e, at: row.at }) : l; } catch { return l; } });
+      await fs.writeFile(episodesPath(), next.join("\n") + "\n");
+      return { ...dup, at: row.at };
+    }
+    const kept = eps.filter((e) => e.id).slice(-(MAX_EPISODES - 1));
+    kept.push(row);
+    await fs.writeFile(episodesPath(), kept.map((e) => JSON.stringify(e)).join("\n") + "\n");
   }
   return row;
 }

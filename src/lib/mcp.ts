@@ -4,8 +4,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { WS } from "./workspace";
+import { providerForServer } from "./mcp-auth";
 
-export type ServerCfg = { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string>; enabled?: boolean };
+export type ServerCfg = { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string>; enabled?: boolean; clientId?: string; clientSecret?: string };
 const CFG = () => path.join(WS, "system/mcp/servers.json");
 
 export async function readServers(): Promise<Record<string, ServerCfg>> {
@@ -29,7 +30,9 @@ async function connect(name: string, cfg: ServerCfg, vars: Record<string, string
   const client = new Client({ name: "workspace-agent", version: "1.0.0" });
   if (cfg.url) {
     const headers = Object.fromEntries(Object.entries(cfg.headers || {}).map(([k, v]) => [k, expand(v, vars)]));
-    await client.connect(new StreamableHTTPClientTransport(new URL(expand(cfg.url, vars)), { requestInit: { headers } }));
+    // Remote servers sign in once through OAuth (Settings → Extensions → Connect); the stored token is reused here.
+    const authProvider = await providerForServer(name, { ...cfg, clientId: cfg.clientId ? expand(cfg.clientId, vars) : undefined, clientSecret: cfg.clientSecret ? expand(cfg.clientSecret, vars) : undefined });
+    await client.connect(new StreamableHTTPClientTransport(new URL(expand(cfg.url, vars)), { requestInit: { headers }, ...(authProvider ? { authProvider } : {}) }));
   } else {
     const env = { ...(process.env as Record<string, string>), ...vars, ...Object.fromEntries(Object.entries(cfg.env || {}).map(([k, v]) => [k, expand(v, vars)])) };
     await client.connect(new StdioClientTransport({ command: cfg.command!, args: (cfg.args || []).map((a) => expand(a, vars)), env, cwd: WS, stderr: "ignore" }));
@@ -46,9 +49,25 @@ export async function mcpTools(vars: Record<string, string>) {
     try {
       const c = await Promise.race([connect(name, cfg, vars), new Promise<never>((_, r) => setTimeout(() => r(new Error("timeout")), 25000))]);
       for (const t of c.tools) out.push({ server: name, ...t });
-    } catch (e) { errors.push(`${name}: ${String(e).slice(0, 120)}`); }
+    } catch (e) {
+      const msg = String((e as Error)?.message || e);
+      errors.push(`${name}: ${/unauthor|401/i.test(msg) ? "not signed in — connect it in Settings → MCP" : msg.slice(0, 120)}`);
+    }
   }));
   return { tools: out, errors };
+}
+
+/** Resolve ${VARS} in a server config (url, client id/secret) from the credential store. */
+export const expandCfg = (cfg: ServerCfg, vars: Record<string, string>): ServerCfg => ({
+  ...cfg,
+  ...(cfg.url ? { url: expand(cfg.url, vars) } : {}),
+  ...(cfg.clientId ? { clientId: expand(cfg.clientId, vars) } : {}),
+  ...(cfg.clientSecret ? { clientSecret: expand(cfg.clientSecret, vars) } : {}),
+});
+
+/** After tokens change, every pooled connection is stale. */
+export function dropMcpPool() {
+  for (const k of Object.keys(pool)) { pool[k].client.close().catch(() => {}); delete pool[k]; }
 }
 
 export async function callMcp(server: string, tool: string, args: Record<string, unknown>) {

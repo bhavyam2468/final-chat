@@ -5,7 +5,10 @@ import { spawn } from "child_process";
 import { WS, resolvePath, rel, tree, Node, mimeOf, isImage, readText } from "../workspace";
 import type { Settings } from "../settings";
 import { searchCatalog } from "../blocks/catalog";
-import { callMcp } from "../mcp";
+import { callMcp, readServers, writeServers, dropMcpPool, expandCfg, ServerCfg } from "../mcp";
+import { MCP_CATALOG, registrySearch } from "../market";
+import { startOAuth } from "../mcp-auth";
+import { varsFor, varsIn, credStatus } from "../credentials";
 import { runShell, runPython as execPython, pipInstall, hostDenied, usesSudo, sudoReady } from "../exec";
 import { youtubeId, chatDir } from "../shared";
 import { firecrawlScrape, firecrawlSearch, firecrawlExtract } from "../web";
@@ -14,7 +17,7 @@ import { syntaxError } from "./syntax";
 import { procStart, procLogs, procStop, procRestart } from "../procs";
 import { browse, Step } from "../browser";
 import { runChecks, lintFiles } from "../harness/check";
-import { findSkill, skillMeta, skillFiles } from "../skills";
+import { findSkill, skillMeta, skillFiles, installFromGitHub } from "../skills";
 import { destructive, checkInstalls } from "../harness/guard";
 import { forget, remember } from "../memory";
 import { banPackages, installNames, noteMissing, shellPreflight } from "../harness/shell-preflight";
@@ -47,6 +50,11 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
   const hostArg = host ? { host: b("run on the user's machine (host terminal) instead of your sandbox") } : {};
   const core: ToolDef[] = [
     T("skill_open", "Load a skill's instructions, or one of its reference files", { name: s(), file: s("reference file inside the skill, e.g. reference/android.md") }, ["name"]),
+    T("skill_create", "Write a new skill for the user (a folder with SKILL.md). Use when they ask for one, or when a workflow will repeat. Body: when to use it, the steps, the rules; references go in files", { name: s("lowercase-with-dashes"), description: s("one line, shown in the skills list"), body: s("markdown instructions"), files: arr({ type: "object", properties: { path: s("reference/x.md"), content: s() }, required: ["path", "content"] }, "optional reference files"), requires: s("host-terminal | host-files"), tools: s("dev"), overwrite: b() }, ["name", "description", "body"]),
+    T("skill_install", "Install skills from GitHub (owner/repo, owner/repo/path, or a tree URL). With several skills in a repo and no pick, it returns the list: ask the user which, then call again with pick", { source: s(), pick: arr({ type: "string" }, "skill names to install") }, ["source"]),
+    T("mcp_search", "Search the official MCP registry for a server that does something the built-ins cannot", { query: s() }, ["query"]),
+    T("mcp_add", "Add and enable an MCP server: a catalog id (see Settings → MCP), or a url, or a command. A url server signs in by itself — return the sign-in link to the user", { name: s("server name, e.g. notion"), catalog_id: s(), url: s("remote MCP endpoint"), command: s("stdio server command"), args: arr({ type: "string" }) }, ["name"]),
+    T("mcp_remove", "Remove an MCP server", { name: s() }, ["name"]),
     T("context_add", "Pin a file into context", { path: s() }, ["path"]),
     T("context_remove", "Unpin a file from context", { path: s() }, ["path"]),
     T("compact_context", "Free context. tools=fold old tool outputs; web=old web results to key facts; history=summarise all but last keep_last messages", { scope: { type: "string", enum: ["tools", "web", "history"] }, keep_last: n() }),
@@ -203,7 +211,9 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
   const P = (p: string) => resolvePath(String(p ?? "."), st.access);
   try {
     const activity: Record<string, string> = {
-      skill_open: "Loading skill instructions", context_add: "Checking workspace file", context_remove: "Updating context",
+      skill_open: "Loading skill instructions", skill_create: "Writing skill", skill_install: "Installing skills",
+      mcp_search: "Searching the MCP registry", mcp_add: "Adding MCP server", mcp_remove: "Removing MCP server",
+      context_add: "Checking workspace file", context_remove: "Updating context",
       compact_context: "Summarising conversation", fs_list: "Reading folder contents", fs_read: "Opening file",
       fs_search: "Searching workspace files", fs_write: "Preparing file write", fs_edit: "Reading current file",
       fs_insert: "Reading current file", fs_delete: "Moving item to trash", fs_move: "Checking destination",
@@ -239,6 +249,74 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         const files = await skillFiles(sk.dir);
         if (files.length) extra += `\n\nReference files (skill_open name="${sk.name}" file=…): ${files.join(", ")}`;
         return { ok: true, result: sk.text.replace(/^---[\s\S]*?---\n/, "") + extra };
+      }
+      case "skill_create": {
+        const name = String(a.name || "").trim().toLowerCase().replace(/[^\w.-]/g, "-");
+        const desc = String(a.description || "").replace(/\s+/g, " ").trim();
+        if (!name || !desc) return { ok: false, result: "name and description are required." };
+        if (fss.existsSync(path.join(path.resolve("./workspace-template/system/skills"), name)))
+          return { ok: false, result: `"${name}" is a built-in skill. Pick another name — a skill that shadows a built-in will not be loaded.` };
+        const dir = path.join(WS, "system/skills", name);
+        if (fss.existsSync(path.join(dir, "SKILL.md")) && !a.overwrite) return { ok: false, result: `Skill "${name}" already exists. Pass overwrite=true to replace it, or edit it with fs_edit.` };
+        const fm = ["---", `name: ${name}`, `description: ${desc}`, a.requires ? `requires: ${String(a.requires)}` : "", a.tools ? `tools: ${String(a.tools)}` : "", "---", ""].filter((l) => l !== "").join("\n");
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, "SKILL.md"), fm + "\n" + String(a.body || "").trim() + "\n");
+        const files = Array.isArray(a.files) ? (a.files as { path: string; content: string }[]) : [];
+        for (const f of files) {
+          const target = path.resolve(dir, String(f.path || ""));
+          if (!target.startsWith(dir + path.sep)) return { ok: false, result: "Reference files must stay inside the skill folder." };
+          await fs.mkdir(path.dirname(target), { recursive: true });
+          await fs.writeFile(target, String(f.content ?? ""));
+        }
+        return { ok: true, result: `Skill "${name}" created at system/skills/${name}/SKILL.md${files.length ? ` with ${files.length} reference file(s)` : ""}. It appears in the skills list from the next message. Show the user its path.` };
+      }
+      case "skill_install": {
+        const r = await installFromGitHub(String(a.source || ""), Array.isArray(a.pick) ? (a.pick as string[]) : undefined);
+        if (!r.installed.length && r.available.length > 1 && !a.pick)
+          return { ok: true, result: `This source holds several skills: ${r.available.join(", ")}. Ask the user which to install, then call skill_install again with pick.` };
+        const parts = [r.installed.length ? `Installed: ${r.installed.join(", ")}` : "", r.skipped.length ? `Already built in, skipped: ${r.skipped.join(", ")}` : ""].filter(Boolean);
+        return { ok: parts.length > 0, result: parts.join(". ") || "Nothing installed." };
+      }
+      case "mcp_search": {
+        const items = await registrySearch(String(a.query || ""));
+        if (!items.length) return { ok: false, result: "No server found. Try another word, or give the user the URL of a server they already know." };
+        return { ok: true, result: cut(items.slice(0, 12).map((x) => `- ${x.name}${x.url ? ` · ${x.url}` : ""}${x.overlap ? ` (built in: ${x.overlap})` : ""}\n  ${(x.description || "").slice(0, 160)}`).join("\n"), 6000) };
+      }
+      case "mcp_add": {
+        const name = String(a.name || "").trim().toLowerCase().replace(/[^\w.-]/g, "-");
+        if (!name) return { ok: false, result: "A name is required." };
+        const cat = a.catalog_id ? MCP_CATALOG.find((e) => e.id === String(a.catalog_id)) : undefined;
+        if (a.catalog_id && !cat) return { ok: false, result: `Unknown catalog id "${a.catalog_id}".` };
+        const cfg: ServerCfg | null = cat ? { ...cat.config, enabled: true } : a.url ? { url: String(a.url), enabled: true } : a.command ? { command: String(a.command), args: (a.args as string[]) || [], enabled: true } : null;
+        if (!cfg) return { ok: false, result: "Give a catalog_id, a url, or a command." };
+        const servers = await readServers();
+        await writeServers({ ...servers, [name]: cfg });
+        dropMcpPool();
+        let note = "";
+        if (cfg.url && !Object.keys(cfg.headers || {}).length) {
+          const origin = process.env.APP_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
+          try {
+            const r = await startOAuth(name, expandCfg(cfg, varsFor(st, varsIn(cfg))), origin);
+            note = r.connected ? " It is already signed in." : r.url ? `
+Sign-in link (works once, ask the user to open it): ${r.url}
+They can also press Connect in Settings → MCP.` : "";
+          } catch (e) { note = `\nSign-in could not start automatically (${String((e as Error).message || e).slice(0, 200)}); the user can connect it from Settings → MCP.`; }
+        } else if (Object.keys(cfg.headers || {}).length || cfg.env) {
+          const vars = varsIn(cfg);
+          const missing = vars.filter((v) => !credStatus(st, [v])[v]);
+          note = missing.length ? `\nIt needs ${missing.join(", ")}: tell the user exactly where to create that (Settings → Tools → Secrets).` : "\nIts credentials are already available.";
+        }
+        return { ok: true, result: `${name} added and enabled${cat ? ` (${cat.title})` : ""}. Tools appear as mcp__${name}__… from the next message.${note}` };
+      }
+      case "mcp_remove": {
+        const name = String(a.name || "");
+        const servers = await readServers();
+        if (!servers[name]) return { ok: false, result: `No server named "${name}".` };
+        const next = { ...servers };
+        delete next[name];
+        await writeServers(next);
+        dropMcpPool();
+        return { ok: true, result: `${name} removed.` };
       }
       case "context_add": {
         const p = rel(P(a.path)); await fs.access(P(a.path));
