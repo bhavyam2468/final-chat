@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PanelLeft, SquarePen, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
+import { PanelLeft, SquarePen, MessageSquare, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
@@ -553,7 +553,7 @@ export default function App() {
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
           <button className={"ib" + (surface === "general" && !conv ? " on" : "")} aria-label="New chat" title="New chat · opens General mode" onClick={newChat}><SquarePen /></button>
-          {(surface === "general" || conv?.mode === "general") && <button className="general-quick" onClick={promote} title="Promote this conversation to chat">Open in chat</button>}
+          {(surface === "general" || conv?.mode === "general") && <button className="ib" aria-label="Open in chat" onClick={promote} title="Open in chat"><MessageSquare /></button>}
         </div>
         <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
