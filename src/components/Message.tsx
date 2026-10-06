@@ -293,7 +293,7 @@ function ActivityGroup({ children, active, count }: { children: React.ReactNode;
 function CanvasCard({ title, body, done, attrs }: { title: string; body: string; done: boolean; attrs: Record<string, string> }) {
   const app = useApp();
   const liveAtMount = useRef(!done);
-  const dock = attrs.dock !== undefined && attrs.dock !== "false";
+  const dock = attrs.dock === undefined ? true : !(attrs.dock === "false" || attrs.dock === "float");
   const open = useCallback(() => {
     const t = body.trim();
     const yt = youtubeId(t);
