@@ -4,8 +4,9 @@ import { X, Plus, Check } from "lucide-react";
 
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 type Cred = { name: string; label: string; help?: string; optional?: boolean; source?: string | null };
-type Entry = { id: string; title: string; description: string; config: Srv; creds: Cred[]; installed: boolean; enabled: boolean; missingBin: string | null; needs?: string };
-type Market = { native: boolean; mcp: Entry[]; installed: Record<string, { vars: Record<string, string | null>; overlap: string | null }>; builtin: Record<string, string>; skills: { source: string; title: string; description: string }[] };
+type Entry = { id: string; title: string; description: string; config: Srv; creds: Cred[]; installed: boolean; enabled: boolean; missingBin: string | null; needs?: string; oauth?: boolean; prereg?: boolean; featured?: boolean };
+type Installed = { vars: Record<string, string | null>; overlap: string | null; oauth?: boolean; connected?: boolean; pending?: boolean; error?: string };
+type Market = { native: boolean; mcp: Entry[]; installed: Record<string, Installed>; builtin: Record<string, string>; skills: { source: string; title: string; description: string }[] };
 type Reg = { name: string; description: string; pkg: { registry: string; id: string } | null; url: string | null; overlap: string | null };
 
 const srcLabel = (s: string | null | undefined) => (!s ? "missing" : s === "secret" ? "saved" : s === "env" ? "from environment" : `from ${s}`);
@@ -47,20 +48,22 @@ export function Mcp({ servers, saveSrv, reload, saveSecret, flash }: { servers: 
             <button className={"sw" + (c.enabled ? " on" : "")} aria-label={`Toggle ${name}`} onClick={() => saveSrv({ ...servers, [name]: { ...c, enabled: !c.enabled } })} />
           </div>
           {info?.overlap && <small className="note">Duplicates a built-in tool: {info.overlap}.</small>}
+          {c.url && <OAuthRow name={name} info={info} reload={reload} flash={flash} />}
           {info && Object.entries(info.vars).map(([k, src]) => <CredRow key={k} name={k} source={src} help={help(k)} save={secret} />)}
         </div>
       );
     })}
 
-    {available.length > 0 && <h4 className="sec">Catalog</h4>}
+    {available.length > 0 && <h4 className="sec">Add an integration <small>one click when the service supports it; no API keys to copy</small></h4>}
     {available.map((e) => (
       <div key={e.id} className="srv col">
         <div className="row">
-          <div className="t">{e.title}<small>{e.description}</small></div>
-          <button className="mini" disabled={!!e.missingBin} onClick={async () => { await fetch("/api/market", { method: "POST", body: JSON.stringify({ id: e.id }) }); await reload(); flash(`Added ${e.title}`); }}>Add</button>
+          <div className="t">{e.title}{e.oauth && <span className="badge ok">one-click sign-in</span>}<small>{e.description}</small></div>
+          <button className="mini" disabled={!!e.missingBin} onClick={async () => { await fetch("/api/market", { method: "POST", body: JSON.stringify({ id: e.id }) }); await reload(); flash(e.oauth || e.prereg ? `Added ${e.title} — press Connect` : `Added ${e.title}`); }}>Add</button>
         </div>
         {e.missingBin && <small className="note">Needs {e.missingBin === "uv" ? "uv (curl -LsSf https://astral.sh/uv/install.sh | sh)" : e.missingBin}.</small>}
-        {e.creds.map((c) => <div key={c.name} className="cred"><code>{c.name}</code><span className={"badge" + (c.source ? " ok" : "")}>{c.source ? srcLabel(c.source) : "needed"}</span></div>)}
+        {e.prereg && <small className="note">Google Cloud OAuth client: {e.creds.map((c) => c.name).join(" + ")} in Tools → Secrets, then Connect.</small>}
+        {!e.prereg && e.creds.map((c) => <div key={c.name} className="cred"><code>{c.name}</code><span className={"badge" + (c.source ? " ok" : "")}>{c.source ? srcLabel(c.source) : "needed"}</span></div>)}
       </div>
     ))}
     {m && !m.native && <small className="note">Existing CLI logins (gh, hf) are reused once Home folder or Host terminal access is on.</small>}
@@ -82,6 +85,49 @@ export function Mcp({ servers, saveSrv, reload, saveSecret, flash }: { servers: 
         }}><Plus /></button></div>
     ))}
   </>;
+}
+
+/**
+ * Sign-in for a remote server: one click opens the service, which returns to this app with a code.
+ * When the browser cannot reach the app (hosted or remote), the same flow finishes with a pasted code.
+ */
+function OAuthRow({ name, info, reload, flash }: { name: string; info?: Installed; reload: () => Promise<void>; flash: (m: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [url, setUrl] = useState("");
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState("");
+  if (!info?.oauth) return null;
+  const post = (body: Record<string, unknown>) => fetch("/api/mcp/oauth", { method: "POST", body: JSON.stringify({ name, ...body }) }).then((r) => r.json());
+  const connect = async () => {
+    setBusy(true); setErr("");
+    const r = await post({}).catch((e) => ({ error: String(e) }));
+    setBusy(false);
+    if (r.error) { setErr(r.error); flash("Sign-in failed"); return; }
+    if (r.connected) { flash(`${name} is connected`); await reload(); return; }
+    if (r.url) { setUrl(r.url); window.open(r.url, "_blank", "noopener"); }
+  };
+  const finish = async () => {
+    setBusy(true); setErr("");
+    const r = await post({ code }).catch((e) => ({ error: String(e) }));
+    setBusy(false);
+    if (r.error) { setErr(r.error); return; }
+    setUrl(""); setCode(""); flash(`${name} is connected`); await reload();
+  };
+  return (
+    <div className="cred" style={{ flexWrap: "wrap" }}>
+      <span className={"badge" + (info.connected ? " ok" : "")}>{info.connected ? "connected" : info.pending ? "finish sign-in" : "not signed in"}</span>
+      <button className="mini" disabled={busy} onClick={connect}>{busy ? "…" : info.connected ? "Reconnect" : "Connect"}</button>
+      {info.connected && <button className="mini" onClick={async () => { await fetch("/api/mcp/oauth?name=" + encodeURIComponent(name), { method: "DELETE" }); await reload(); flash("Signed out"); }}>Sign out</button>}
+      {url && <div style={{ flexBasis: "100%" }}>
+        <small className="note">Approve access in the tab that opened, or open this link: <a href={url} target="_blank" rel="noreferrer">sign in</a>. If the browser cannot reach this app, copy the code the service shows into the box.</small>
+        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+          <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="authorization code" aria-label="Authorization code" onKeyDown={(e) => e.key === "Enter" && code && finish()} />
+          <button className="ib sm" aria-label="Finish sign-in" disabled={!code || busy} onClick={finish}><Check /></button>
+        </div>
+      </div>}
+      {(err || info.error) && <small className="note" style={{ flexBasis: "100%", color: "var(--accent)" }}>{err || info.error}</small>}
+    </div>
+  );
 }
 
 type Sk = { name: string; description: string; tools: string; requires: string; root: string; builtin: boolean; source: string };

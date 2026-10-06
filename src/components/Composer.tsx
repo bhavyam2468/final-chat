@@ -81,12 +81,12 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
       const t = e.target as HTMLElement;
       if (t.closest("input, textarea, select, [contenteditable=true], iframe")) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key.length === 1 && !document.querySelector(".scrim")) ta.current?.focus();
+      if (e.key.length === 1 && !document.querySelector(".scrim, .panel.settings")) ta.current?.focus();
     };
     // Ctrl/Cmd+V anywhere pastes into the message box, exactly like typing does
     const onPaste = (e: ClipboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t?.closest?.("input, textarea, select, [contenteditable=true], iframe") || document.querySelector(".scrim") || !e.clipboardData) return;
+      if (t?.closest?.("input, textarea, select, [contenteditable=true], iframe") || document.querySelector(".scrim, .panel.settings") || !e.clipboardData) return;
       const files = [...e.clipboardData.files];
       const txt = e.clipboardData.getData("text/plain");
       if (!files.length && !txt) return;

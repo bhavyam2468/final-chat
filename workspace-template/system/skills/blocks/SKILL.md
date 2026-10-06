@@ -1,12 +1,12 @@
 ---
 name: blocks
-description: BlocksUI language for <ui>: components, reactive bindings, JS/Python logic, relational layout. Open before writing <ui>.
+description: BlocksUI — how this app shows anything the user reads as data, compares, manipulates or keeps; components, reactive bindings, JS/Python logic, relational layout. Open before writing <ui>.
 ---
 # BlocksUI
 `<ui>` = HTML + x-* components + bindings + optional logic + `<style type="rel">` relations. The system owns all visuals (theme, spacing, radius, animation, responsiveness). Never write CSS, inline style, colors or px sizes. It streams: write `<style type="rel">` first, then data, then markup top-down, then `<script>`.
 
-## Restraint and placement
-Use <ui> when interaction, visualization or live state beats text; pick the fewest components that do the job. A sentence beats a card, a table beats a chart for <6 numbers. No decorative badges/icons/stats. Never wrap one element in a card.
+## When a block, and how much
+The medium rules are in SYSTEM.md → Presentation; this file is how to write one. A block carries anything the user should read as data, compare, see drawn, work through, answer or keep — a markdown table, a list of numbers, a chart rendered to a file: blocks. Restraint applies to decoration, not to data: a sentence still beats a card, one number is not a chart, no badges/icons/stat-rows for show, never one element wrapped in a card.
 Inline in the reply by default. The same markup works unchanged inside <canvas title="…"><ui>…</ui></canvas>; use canvas only for something the user keeps using outside the conversation.
 Layout is automatic: each block takes a full line, adjacent buttons sit side by side at their own width, forms stack fields and keep buttons compact. Mark the main action button.primary (or type=submit). Async @click handlers show a spinner in their button.
 Every name you use must exist (named input, x-state, data script, element id, or an assignment). Unknown names render as blank and are reported to the user as an issue.

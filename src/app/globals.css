@@ -437,7 +437,12 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 @keyframes fadeIn { from { opacity: 0; } }
 .modal { width: min(620px, calc(100vw - 32px)); max-height: 84vh; display: flex; flex-direction: column; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); animation: winIn .25s var(--ease); overflow: hidden; }
 .modal .tabs { display: flex; gap: 2px; padding: 10px 10px 0; }
+.panel.settings .tabs { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
+.panel.settings { min-height: 62vh; container-type: inline-size; }
+.rstack.multi > .panel.settings { flex: 3 1 0; }
+@container (max-width: 460px) { .panel.settings .grid2 { grid-template-columns: 1fr; } }
 .modal .content { padding: 16px 20px 20px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.panel.settings .content { padding: 4px 14px 16px; overflow-y: auto; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
 .field input, .field select, .field textarea { padding: 8px 11px; border-radius: var(--r); border: 1px solid var(--line); background: transparent; color: var(--fg); outline: none; font-size: 14px; }
 .field input:focus, .field select:focus { border-color: color-mix(in srgb, var(--fg) 40%, transparent); }
@@ -562,7 +567,7 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 .hljs-type, .hljs-class .hljs-title, .hljs-tag, .hljs-name { color: #b08a4a; }
 .hljs-meta, .hljs-variable { color: var(--fg); }
 .srv.off { opacity: .5; } .sw:disabled { cursor: not-allowed; }
-.modal .content .srv small { white-space: normal; }
+.modal .content .srv small, .panel.settings .srv small { white-space: normal; }
 .note { color: var(--muted); font-size: 12px; }
 
 /* ---- harness UI: live tool verbs, plan, questions, screenshots, form submissions */
@@ -613,9 +618,9 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 .fc-rows th { color: var(--muted); font-weight: 500; }
 
 /* settings: extensions */
-.modal h4.sec { margin: 14px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
-.modal h4.sec:first-child { margin-top: 0; }
-.modal h4.sec small { font-weight: 400; margin-left: 6px; }
+.modal h4.sec, .panel.settings h4.sec { margin: 14px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.modal h4.sec:first-child, .panel.settings h4.sec:first-child { margin-top: 0; }
+.modal h4.sec small, .panel.settings h4.sec small { font-weight: 400; margin-left: 6px; }
 .srv.col { flex-direction: column; align-items: stretch; gap: 6px; }
 .srv .row { display: flex; align-items: center; gap: 10px; }
 .badge { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: var(--r); background: var(--surface); color: var(--muted); margin-left: 4px; vertical-align: 1px; font-weight: 400; }

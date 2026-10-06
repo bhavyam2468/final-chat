@@ -35,7 +35,10 @@ type Meta = { icon: typeof FileText; live: string; done: string; arg?: string };
 const M = (icon: Meta["icon"], live: string, done: string, arg?: string): Meta => ({ icon, live, done, arg });
 /** Each known tool gets a human label; unknown/MCP calls use the same readable generic presentation. */
 const TOOL_META: Record<string, Meta> = {
-  skill_open: M(BookOpen, "Loading skill", "Loaded skill", "name"), context_add: M(Layers, "Adding file to context", "Added file to context", "path"),
+  skill_open: M(BookOpen, "Loading skill", "Loaded skill", "name"), skill_create: M(BookOpen, "Writing skill", "Wrote skill", "name"),
+  skill_install: M(Package, "Installing skills", "Installed skills", "source"), mcp_search: M(Search, "Searching MCP servers", "Searched MCP servers", "query"),
+  mcp_add: M(Package, "Adding MCP server", "Added MCP server", "name"), mcp_remove: M(Trash2, "Removing MCP server", "Removed MCP server", "name"),
+  context_add: M(Layers, "Adding file to context", "Added file to context", "path"),
   context_remove: M(Layers, "Removing file from context", "Removed file from context", "path"), compact_context: M(Layers, "Summarising conversation", "Summarised conversation", "scope"),
   fs_list: M(FolderTree, "Listing folder", "Listed folder", "path"), fs_read: M(FileText, "Reading file", "Read file", "path"), fs_search: M(Search, "Searching files", "Searched files", "pattern"),
   fs_write: M(FilePen, "Writing file", "Wrote file", "path"), fs_edit: M(FilePen, "Updating file", "Updated file", "path"), fs_insert: M(FilePen, "Adding to file", "Added to file", "path"),

@@ -54,12 +54,14 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
   );
 
   return (
-    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog">
-        <div className="tabs">
-          <div className="seg">{(["model", "tools", "access", "mcp", "skills"] as const).map((t) => <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{t === "mcp" ? "MCP" : t[0].toUpperCase() + t.slice(1)}</button>)}</div>
-          <span style={{ flex: 1 }} /><small style={{ color: "var(--muted)", alignSelf: "center", fontSize: 12 }}>{msg}</small>
-          <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button>
+    <div className="panel settings" role="region" aria-label="Settings">
+        <div className="panel-head">
+          <span>Settings</span><span className="sp" />
+          <small style={{ color: "var(--muted)", fontSize: 12 }}>{msg}</small>
+          <button className="ib sm" aria-label="Close settings" onClick={onClose}><X /></button>
+        </div>
+        <div className="tabs" role="tablist">
+          <div className="seg">{(["model", "tools", "access", "mcp", "skills"] as const).map((t) => <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>{t === "mcp" ? "MCP" : t[0].toUpperCase() + t.slice(1)}</button>)}</div>
         </div>
         <div className="content">
           {tab === "model" && <>
@@ -166,7 +168,6 @@ export function Settings({ onClose, theme, setTheme }: { onClose: () => void; th
           {tab === "mcp" && <Mcp servers={servers} saveSrv={saveSrv} reload={reloadSrv} saveSecret={(k, v) => saveS({ secrets: { [k]: v } })} flash={flash} />}
           {tab === "skills" && <Skills flash={flash} />}
         </div>
-      </div>
     </div>
   );
 }

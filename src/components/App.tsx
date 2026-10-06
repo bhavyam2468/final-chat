@@ -430,18 +430,22 @@ export default function App() {
   useEffect(() => {
     const hasFiles = (e: DragEvent) => [...(e.dataTransfer?.types || [])].includes("Files");
     const enter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setFileDrag((n) => n + 1); } };
-    const leave = (e: DragEvent) => { if (hasFiles(e)) setFileDrag((n) => Math.max(0, n - 1)); };
+    // entering a child element fires dragleave on its parent, so nesting is counted — but leaving the window
+    // (relatedTarget is null) ends the drag outright, otherwise the count can never come back down.
+    const leave = (e: DragEvent) => { if (hasFiles(e)) setFileDrag((n) => (e.relatedTarget ? Math.max(0, n - 1) : 0)); };
     const over = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
     const drop = (e: DragEvent) => {
       if (!hasFiles(e)) return;
+      setFileDrag(0); // a drop ends the drag wherever it lands, the input bar included
       if ((e.target as HTMLElement).closest(".composer")) return; // the input bar attaches to the message
-      e.preventDefault(); setFileDrag(0);
+      e.preventDefault();
       const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
       const dir = convRef.current ? chatDir(convRef.current.id) + "/uploads" : "uploads";
       void upload(files, dir).then(() => refreshTree());
     };
-    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop);
-    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); };
+    const end = () => setFileDrag(0);
+    addEventListener("dragenter", enter); addEventListener("dragleave", leave); addEventListener("dragover", over); addEventListener("drop", drop); addEventListener("dragend", end); addEventListener("blur", end);
+    return () => { removeEventListener("dragenter", enter); removeEventListener("dragleave", leave); removeEventListener("dragover", over); removeEventListener("drop", drop); removeEventListener("dragend", end); removeEventListener("blur", end); };
   }, [refreshTree]);
 
   // ---- auto-scroll while streaming
@@ -458,7 +462,7 @@ export default function App() {
       else if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); setPanels((p) => ({ ...p, chats: !p.chats })); }
       else if (mod && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(); }
       else if (mod && e.key === ".") { e.preventDefault(); setPanels((p) => ({ ...p, ws: !p.ws })); }
-      else if (e.key === "Escape" && !(e.target as HTMLElement).closest("input,textarea")) { if (thread) setThread(null); else setPanels({ chats: false, ws: false, art: false, src: false }); }
+      else if (e.key === "Escape" && !(e.target as HTMLElement).closest("input,textarea")) { if (thread) setThread(null); else if (settings) setSettings(false); else setPanels({ chats: false, ws: false, art: false, src: false }); }
     };
     addEventListener("keydown", k); return () => removeEventListener("keydown", k);
   }, [newChat, thread]);
@@ -528,7 +532,7 @@ export default function App() {
   };
 
   const anchor = thread ? msgs.find((m) => m.id === thread) : null;
-  const rightCount = [!!thread, panels.ws, panels.art, panels.src].filter(Boolean).length;
+  const rightCount = [!!thread, panels.ws, panels.art, panels.src, settings].filter(Boolean).length;
   const tog = (k: keyof typeof panels) => setPanels((p) => ({ ...p, [k]: !p[k] }));
   const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
   const chromeIdle = idle && !hasOpenPanel;
@@ -539,7 +543,7 @@ export default function App() {
   return (
     <AppCtx.Provider value={api}>
       <div className={"shell" + (mainPath.length === 0 && !thread ? " home" : "") + (docked ? " has-dock" : "") + (panels.chats ? " has-l" : "") + (rightCount > 0 ? " has-r" : "")}
-        style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--lw" as string]: pw.l + "px", ["--rw" as string]: pw.r + "px" }}>
+        style={{ ["--dockw" as string]: docked ? dockW + "px" : "0px", ["--lw" as string]: pw.l + "px", ["--rw" as string]: (settings ? Math.max(pw.r, 400) : pw.r) + "px" }}>
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
           <button className={"ib" + (surface === "search" && !conv ? " on" : "")} aria-label="Search" title="Search" onClick={goSearch}><Search /></button>
@@ -569,7 +573,8 @@ export default function App() {
           onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) (conv.mode === "search" ? goSearch() : newChat()); refreshConvs(); }} /></div>}
 
         {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}><div className="rsz" onPointerDown={resize("r")} aria-hidden />
-          {thread && anchor && <div className="panel thread">
+          {settings && <Settings onClose={() => setSettings(false)} theme={theme} setTheme={setTheme} />}
+            {thread && anchor && <div className="panel thread">
             <div className="panel-head"><span>Thread</span><span className="sp" /><button className="ib sm" aria-label="Close thread" onClick={() => setThread(null)}><X /></button></div>
             <div className="anchor">{anchor.content.replace(/<[^>]+>/g, "").slice(0, 300)}</div>
             <div className="panel-body">{threadPath.map((m, i) => renderTurn(m, true, i === threadPath.length - 1))}</div>
@@ -588,7 +593,6 @@ export default function App() {
         <CanvasLayer wins={wins} setWins={setWins} dockW={dockW} setDockW={setDockW} />
         {qpop && <button className="qpop" style={{ left: qpop.x, top: qpop.y }} onMouseDown={(e) => e.preventDefault()}
           onClick={() => { setQuotes((q) => ({ ...q, [active.current]: qpop.text })); setQpop(null); window.getSelection()?.removeAllRanges(); }}>Quote</button>}
-        {settings && <Settings onClose={() => setSettings(false)} theme={theme} setTheme={setTheme} />}
       </div>
     </AppCtx.Provider>
   );

@@ -208,6 +208,14 @@ function scenario(messages) {
   if (q.includes("<search_results") && !afterTool) return searchAnswer(q);
   if (q.includes("ui_event")) return { text: "You scored well on mechanics; kinetics and function graphs need work. Next: 10 targeted questions on first-order kinetics and cubic root counting via turning points." };
   if (/jee|mock test/.test(q)) return afterTool ? { text: JEE } : { text: "Checking recent paper patterns.", call: { name: "web_search", args: { query: "JEE Main 2026 question paper pattern physics chemistry maths", limit: 3 } } };
+  // Presentation guard: a wall of tabular text first, blocks once the harness asks for them.
+  const asked = [...messages].filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join(" ").toLowerCase();
+  if (/compare options|benchmark these/.test(asked) && !afterTool) {
+    const nudged = /automatic format check/i.test(asked);
+    const rows = [["Runtime", "Cold start", "Memory", "Size"], ["bun", "42 ms", "58 MB", "94 MB"], ["node", "130 ms", "72 MB", "110 MB"], ["deno", "85 ms", "64 MB", "102 MB"], ["go", "9 ms", "12 MB", "8 MB"], ["python", "210 ms", "38 MB", "26 MB"], ["ruby", "180 ms", "44 MB", "31 MB"], ["julia", "1.2 s", "210 MB", "180 MB"]];
+    if (nudged) return { text: "Sorted by cold start:\n\n<ui><x-table>Runtime,Cold start,Memory,Size\n" + rows.slice(1).map((r) => r.join(",")).join("\n") + "</x-table></ui>\n\nGo wins on every axis; bun is the fastest of the script runtimes." };
+    return { text: "Here is the comparison:\n\n| " + rows[0].join(" | ") + " |\n|" + rows[0].map(() => "---").join("|") + "|\n" + rows.slice(1).map((r) => "| " + r.join(" | ") + " |").join("\n") + "\n\nGo wins on every axis; bun is the fastest of the script runtimes." };
+  }
   const open = q.match(/open\s+(\S+)/);
   if (open) return afterTool ? { text: "Opened beside the chat." } : { call: { name: "canvas_open", args: { target: open[1], dock: true } } };
   if (/samples|files/.test(q)) return { text: "The example files:\n\n[deck.pptx](uploads/samples/deck.pptx)\n\n[budget.xlsx](uploads/samples/budget.xlsx)\n\n[project.zip](uploads/samples/project.zip)\n\n[chart.png](uploads/samples/chart.png)\n\nAsk to open any of them." };
