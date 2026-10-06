@@ -19,6 +19,13 @@ type Props = {
 };
 type Draft = { text: string; chips: Attachment[] };
 const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
+const persistDraft = (k: string, text: string, chips: Chip[]) => {
+  try {
+    const done = chips.filter((c) => !c.loading).map(({ path, name, mime, size }) => ({ path, name, mime, size }));
+    if (!text && !done.length) localStorage.removeItem("draft:" + k);
+    else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done }));
+  } catch { /* storage quota or private browsing */ }
+};
 
 export async function upload(files: File[], dir?: string): Promise<Attachment[]> {
   const fd = new FormData();
@@ -31,6 +38,7 @@ export async function upload(files: File[], dir?: string): Promise<Attachment[]>
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, ref) {
   const app = useApp();
   const ta = useRef<HTMLTextAreaElement>(null);
+  const measure = useRef<HTMLDivElement | null>(null);
   const fileIn = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(p.initial?.content || "");
   const [chips, setChips] = useState<Chip[]>(() => (p.initial?.attachments || []).map((a) => ({ ...a, key: a.path })));
@@ -39,23 +47,69 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   const [menuIdx, setMenuIdx] = useState(0);
   const [caret, setCaret] = useState(0);
 
-  // drafts: save on every change (cheap), load when the chat changes
+  // Draft writes are debounced: synchronous localStorage serialisation on every keypress caused
+  // noticeable input stalls for longer prompts and attachment lists.
   const keyRef = useRef(p.draftKey);
-  useEffect(() => {
-    if (!p.draftKey) return;
+  const latest = useRef<{ text: string; chips: Chip[] }>({ text, chips });
+  latest.current = { text, chips };
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useLayoutEffect(() => {
+    const previous = keyRef.current;
+    if (previous && previous !== p.draftKey) {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+      persistDraft(previous, latest.current.text, latest.current.chips);
+    }
     keyRef.current = p.draftKey;
-    const d = readDraft(p.draftKey);
-    setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path })));
+    if (p.draftKey) {
+      const d = readDraft(p.draftKey);
+      setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path })));
+    }
   }, [p.draftKey]);
   useEffect(() => {
     const k = keyRef.current; if (!k) return;
-    const done = chips.filter((c) => !c.loading).map(({ path, name, mime, size }) => ({ path, name, mime, size }));
-    if (!text && !done.length) localStorage.removeItem("draft:" + k);
-    else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done }));
+    const snapshot = { text, chips };
+    const timer = setTimeout(() => { persistDraft(k, snapshot.text, snapshot.chips); if (draftTimer.current === timer) draftTimer.current = null; }, 180);
+    draftTimer.current = timer;
+    return () => { clearTimeout(timer); if (draftTimer.current === timer) draftTimer.current = null; };
   }, [text, chips]);
+  useEffect(() => () => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    const k = keyRef.current;
+    if (k) persistDraft(k, latest.current.text, latest.current.chips);
+    measure.current?.remove(); measure.current = null;
+  }, []);
 
-  const autosize = useCallback(() => { const t = ta.current; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }, []);
+  const autosize = useCallback(() => {
+    const t = ta.current; if (!t || typeof window === "undefined") return;
+    let mirror = measure.current;
+    if (!mirror) {
+      mirror = document.createElement("div");
+      mirror.setAttribute("aria-hidden", "true");
+      Object.assign(mirror.style, { position: "fixed", top: "0", left: "-100000px", visibility: "hidden", pointerEvents: "none", zIndex: "-1", whiteSpace: "pre-wrap", overflowWrap: "break-word" });
+      document.body.appendChild(mirror); measure.current = mirror;
+    }
+    const cs = getComputedStyle(t);
+    mirror.style.width = `${Math.max(1, t.clientWidth)}px`;
+    mirror.style.fontFamily = cs.fontFamily; mirror.style.fontSize = cs.fontSize; mirror.style.fontWeight = cs.fontWeight; mirror.style.fontStyle = cs.fontStyle;
+    mirror.style.lineHeight = cs.lineHeight; mirror.style.letterSpacing = cs.letterSpacing; mirror.style.wordSpacing = cs.wordSpacing;
+    mirror.style.padding = cs.padding; mirror.style.border = cs.border; mirror.style.boxSizing = cs.boxSizing; mirror.style.minHeight = cs.minHeight;
+    mirror.style.margin = cs.margin; mirror.style.textAlign = cs.textAlign; mirror.style.textIndent = cs.textIndent; mirror.style.textTransform = cs.textTransform;
+    mirror.style.whiteSpace = "pre-wrap"; mirror.style.overflowWrap = cs.overflowWrap === "normal" ? "break-word" : cs.overflowWrap; mirror.style.wordBreak = cs.wordBreak;
+    mirror.style.maxHeight = "none"; mirror.style.height = "auto";
+    mirror.textContent = (t.value || " ") + "\u200b";
+    const natural = mirror.getBoundingClientRect().height, max = Math.max(32, window.innerHeight * 0.4);
+    const next = Math.ceil(Math.min(natural, max));
+    if (Math.abs(t.getBoundingClientRect().height - next) > 0.75) t.style.height = `${next}px`;
+    t.style.overflowY = natural > max + 1 ? "auto" : "hidden";
+  }, []);
   useLayoutEffect(autosize, [text, autosize]);
+  useLayoutEffect(() => {
+    const t = ta.current, parent = t?.parentElement; if (!t || !parent) return;
+    let width = parent.clientWidth;
+    const ro = new ResizeObserver(() => { if (parent.clientWidth !== width) { width = parent.clientWidth; autosize(); } });
+    ro.observe(parent); return () => ro.disconnect();
+  }, [autosize]);
 
   const addFiles = useCallback(async (list: FileList | File[]) => {
     const files = [...list]; if (!files.length) return;
@@ -150,7 +204,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
       {items.length > 0 && focused && <div className="menu" role="listbox">{items.map((it, i) => { const I = it.icon; return <button key={it.key} className={i === menuIdx ? "on" : ""} onMouseDown={(e) => { e.preventDefault(); it.run(); }}><I />{it.label}<small>{it.hint}</small></button>; })}</div>}
-      {p.quote && <div className="cquote"><p>{p.quote}</p><button className="ib sm" aria-label="Remove quote" onClick={p.onClearQuote}><X /></button></div>}
+      {p.quote && <div className="cquote"><p title={p.quote}>{p.quote}</p><button className="ib sm" aria-label="Remove quote" onClick={p.onClearQuote}><X /></button></div>}
       {chips.length > 0 && <div className="chips">{chips.map((c) => {
         const isImg = c.mime.startsWith("image/");
         return <div key={c.key} className={`chip${isImg ? " img" : ""}${c.loading ? " loading" : ""}`} title={c.name}>

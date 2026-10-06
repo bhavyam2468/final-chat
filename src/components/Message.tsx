@@ -293,7 +293,7 @@ function ActivityGroup({ children, active, count }: { children: React.ReactNode;
 function CanvasCard({ title, body, done, attrs }: { title: string; body: string; done: boolean; attrs: Record<string, string> }) {
   const app = useApp();
   const liveAtMount = useRef(!done);
-  const dock = attrs.dock !== undefined && attrs.dock !== "false";
+  const dock = attrs.dock === undefined ? undefined : attrs.dock !== "false";
   const open = useCallback(() => {
     const t = body.trim();
     const yt = youtubeId(t);
@@ -446,7 +446,7 @@ type Props = {
 export const Message = memo(function Message({ m, streaming, sib, onNav, onEdit, onRegenerate, onThread, threadCount, last, quiet }: Props) {
   if (m.role === "user") return (
     <div className="turn user">
-      {m.quote && <div className="quoteline">{m.quote}</div>}
+      {m.quote && <div className="quoteline" title={m.quote}>{m.quote}</div>}
       <Attachments items={m.attachments} />
       {m.content && (m.content.startsWith("<ui_event") ? <UiEvent content={m.content} /> : <div className="bubble">{m.content}</div>)}
       <div className="actions">

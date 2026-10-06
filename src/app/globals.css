@@ -180,7 +180,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .composer.inline { max-width: none; box-shadow: none; }
 .composer.drag { border-color: var(--accent); }
 .composer .row { display: flex; align-items: flex-end; gap: 4px; padding: 6px; }
-.composer textarea { flex: 1; min-height: 32px; max-height: 40vh; padding: 5px 6px; background: none; border: 0; outline: none; resize: none; line-height: 1.5; }
+.composer textarea { flex: 1; min-height: 32px; max-height: 40vh; padding: 5px 6px; background: none; border: 0; outline: none; resize: none; line-height: 1.5; overflow-y: hidden; scrollbar-gutter: stable; transition: none; }
 .composer .send { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r); background: var(--fg); color: var(--bg); animation: pop .2s var(--ease); flex: none; }
 .composer .send svg { width: 16px; height: 16px; }
 @keyframes pop { from { transform: scale(.6); opacity: 0; } }
@@ -232,48 +232,60 @@ input, textarea, select { font: inherit; color: inherit; }
    The content IS the window. Unpinned bars float over it and hide (immersive fullscreen content);
    hovering the top/bottom edge slides a bar in over the content; pinning makes the bars real layout
    (header above the content, footer below). The footer scrolls inline instead of overflowing. */
-.win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; animation: winIn .28s var(--ease); min-width: 240px; min-height: 120px; }
-@keyframes winIn { from { opacity: 0; transform: scale(.96); } }
-.win-bar { position: absolute; left: 0; right: 0; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 5px 6px; background: color-mix(in srgb, var(--float) 88%, transparent); backdrop-filter: blur(10px); transition: opacity .25s, transform .25s var(--ease); font-size: 12.5px; }
-.win-bar.top { top: 0; cursor: grab; }
+.win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; min-width: 240px; min-height: 120px; transform: translateZ(0); transition: left .34s var(--ease), top .34s var(--ease), width .34s var(--ease), height .34s var(--ease), box-shadow .24s, border-color .24s; }
+.win.entering { animation: canvas-enter .38s cubic-bezier(.2, .9, .28, 1) both; }
+.win.minimizing { animation: canvas-minimize .19s cubic-bezier(.45, 0, .8, .35) both; pointer-events: none; }
+.win.closing { animation: canvas-close .15s ease-in both; pointer-events: none; }
+@keyframes canvas-enter { from { opacity: 0; transform: translate3d(0, 10px, 0) scale(.985); filter: blur(2px); } to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); filter: blur(0); } }
+@keyframes canvas-minimize { to { opacity: 0; transform: translate3d(0, 10px, 0) scale(.96); filter: blur(2px); } }
+@keyframes canvas-close { to { opacity: 0; transform: scale(.98); filter: blur(1px); } }
+.win-bar { position: absolute; left: 0; right: 0; z-index: 6; display: flex; align-items: center; gap: 2px; padding: 5px 6px; background: color-mix(in srgb, var(--float) 88%, transparent); backdrop-filter: blur(10px); transition: opacity .22s, transform .22s var(--ease); font-size: 12.5px; }
+.win-bar.top { top: 0; cursor: grab; padding-left: 24px; padding-right: 24px; }
+.win-bar.top:active { cursor: grabbing; }
 .win-bar.bot { bottom: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .win-bar.bot > * { flex: none; }
 .win-bar .sp { flex: 1 1 0px !important; min-width: 0; }
 .bar-sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; flex: none; }
-.win-bar .title { flex: 1; padding-left: 8px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* unpinned: bars are overlays, hidden by default (the canvas opens immersive) */
+.win-bar .title { flex: 1; min-width: 0; padding-left: 8px; padding-right: 42px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Unpinned toolbars stay immersive until the pointer reaches an edge. */
 .win:not(.pinned) .win-bar { opacity: 0; pointer-events: none; }
 .win:not(.pinned) .win-bar.top { transform: translateY(-100%); }
 .win:not(.pinned) .win-bar.bot { transform: translateY(100%); }
 .win:not(.pinned).show-t .win-bar.top, .win:not(.pinned).show-b .win-bar.bot { opacity: 1; transform: none; pointer-events: auto; }
-/* a faint hint that the bars exist while the pointer is in the window */
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::before,
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::after { content: ""; position: absolute; left: 0; right: 0; height: 22px; z-index: 2; pointer-events: none; opacity: .55; }
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::before { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::after { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
-/* pinned: bars join the layout — content sits between them, never under them */
+.win:not(.pinned):hover::before, .win:not(.pinned):hover::after { content: ""; position: absolute; left: 0; right: 0; height: 20px; z-index: 4; pointer-events: none; opacity: .45; }
+.win:not(.pinned):hover::before { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--float) 78%, transparent), transparent); }
+.win:not(.pinned):hover::after { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--float) 78%, transparent), transparent); }
+/* Pinned bars become layout, keeping content clear of both controls. */
 .win.pinned .win-bar { position: relative; opacity: 1; transform: none; pointer-events: auto; }
 .win.pinned .win-bar.top { border-bottom: 1px solid var(--line); }
 .win.pinned .win-bar.bot { border-top: 1px solid var(--line); }
 .win-body { flex: 1; min-height: 0; overflow: auto; position: relative; }
 .win-body.k-ui { display: flex; flex-direction: column; overflow: hidden; padding-left: 0; padding-right: 0; }
 .win-body.k-ui .blk-frame.fill { flex: 1 1 auto; height: auto; min-height: 0; width: 100%; }
-.win.min { height: 36px !important; min-height: 0; min-width: 0; transition: left .2s var(--ease), top .2s var(--ease); }
-.win.min .win-bar.top { height: 36px; cursor: pointer; position: relative; opacity: 1; transform: none; pointer-events: auto; }
-.win.min .win-body, .win.min .win-bar.bot { display: none; }
-.win-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 4; }
-/* parked at the screen edge: a sliver that peeks on hover and restores on click */
-.win.peek { cursor: pointer; box-shadow: none; transition: left .25s var(--ease), top .25s var(--ease), width .25s var(--ease), height .25s var(--ease), transform .2s var(--ease); }
-.win.peek .win-bar, .win.peek .win-body, .win.peek .win-resize { display: none; }
-.win.peek::before { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 50%, transparent), transparent); }
-.win.peek-r:hover { transform: translateX(-10px); }
-.win.peek-l:hover { transform: translateX(10px); }
-.win.dockpeek { cursor: pointer; transition: width .2s var(--ease); }
-.win.dockpeek:hover { width: 26px; } /* peek out on hover; click or dwell restores the full dock */
-body.dragging .win.docked { transition: none; }
-.win.dockpeek .win-bar, .win.dockpeek .win-body, .win.dockpeek .win-dockresize { display: none; }
-.win.dockpeek::before { content: ""; position: absolute; inset: 4px 5px; border-radius: 6px; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent); }
-.win.dockpeek:hover::after { content: ""; position: absolute; left: -6px; top: 0; bottom: 0; width: 6px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.win-grip { position: absolute; z-index: 8; display: block; touch-action: none; user-select: none; }
+.win-grip::after { content: ""; position: absolute; border-radius: 99px; background: color-mix(in srgb, var(--fg) 34%, transparent); opacity: 0; transition: opacity .16s, background .16s, transform .16s; pointer-events: none; }
+.win:hover .win-grip::after, .win-grip:focus-visible::after, .win-grip:active::after { opacity: .9; }
+.grip-n, .grip-s { left: calc(50% - 22px); right: calc(50% - 22px); height: 12px; cursor: ns-resize; }
+.grip-n { top: 0; } .grip-s { bottom: 0; }
+.grip-e, .grip-w { top: 18px; bottom: 18px; width: 12px; cursor: ew-resize; }
+.grip-e { right: 0; } .grip-w { left: 0; }
+.grip-n::after, .grip-s::after { width: 40px; height: 2px; left: 50%; transform: translateX(-50%); }
+.grip-n::after { top: 3px; } .grip-s::after { bottom: 3px; }
+.grip-e::after, .grip-w::after { width: 2px; height: 38px; top: 50%; transform: translateY(-50%); }
+.grip-e::after { right: 3px; } .grip-w::after { left: 3px; }
+.grip-ne, .grip-nw, .grip-se, .grip-sw { width: 20px; height: 20px; }
+.grip-ne { right: 0; top: 0; cursor: nesw-resize; } .grip-nw { left: 0; top: 0; cursor: nwse-resize; }
+.grip-se { right: 0; bottom: 0; cursor: nwse-resize; } .grip-sw { left: 0; bottom: 0; cursor: nesw-resize; }
+.grip-ne::after, .grip-nw::after, .grip-se::after, .grip-sw::after { width: 8px; height: 8px; border: 1px solid color-mix(in srgb, var(--fg) 42%, transparent); background: var(--float); }
+.grip-ne::after { right: 4px; top: 4px; } .grip-nw::after { left: 4px; top: 4px; }
+.grip-se::after { right: 4px; bottom: 4px; } .grip-sw::after { left: 4px; bottom: 4px; }
+.win.edge-ready { outline: 1px solid color-mix(in srgb, var(--fg) 24%, transparent); outline-offset: 3px; box-shadow: var(--shadow), 0 0 0 7px color-mix(in srgb, var(--fg) 5%, transparent); }
+.win.edge-snapped { border-color: color-mix(in srgb, var(--fg) 18%, var(--line)); }
+.win.edge-snapped.snap-left { border-left: 2px solid color-mix(in srgb, var(--fg) 18%, var(--line)); }
+.win.edge-snapped.snap-right { border-right: 2px solid color-mix(in srgb, var(--fg) 18%, var(--line)); }
+.win.moving { cursor: grabbing; }
+.win.resizing { user-select: none; }
+.win.snap-settle { transition: left .38s cubic-bezier(.2, .9, .28, 1), top .38s cubic-bezier(.2, .9, .28, 1), width .38s cubic-bezier(.2, .9, .28, 1), height .38s cubic-bezier(.2, .9, .28, 1); }
 .seg { display: inline-flex; padding: 2px; border-radius: var(--r); background: var(--surface); }
 /* inline-flex + nowrap: Tailwind preflight makes svg display:block, which broke "Preview" onto two lines */
 .seg button { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; padding: 3px 10px; border-radius: calc(var(--r) - 3px); color: var(--muted); font-size: 12px; }
@@ -283,17 +295,25 @@ body.dragging .win.docked { transition: none; }
 .win .reader { padding: 16px 24px 24px; }
 /* the image is the anchor: centred when small, scrollable when large, never clipped off-centre */
 .win .imgview { width: 100%; height: 100%; display: flex; overflow: auto; padding: 10px; position: relative; }
-.win .imgview img { margin: auto; max-width: 100%; max-height: 100%; border-radius: var(--r); display: block; }
-.ink { position: absolute; inset: 0; z-index: 2; touch-action: none; }
-.ink.on { cursor: crosshair; }
-.ink:not(.on) { pointer-events: none; }
-.pdfwrap { padding: 0 8px; }
-.pdf-page { position: relative; margin: 8px auto; box-shadow: 0 1px 8px rgba(0,0,0,.12); border-radius: 4px; overflow: hidden; background: white; container-type: size; }
-.pdf-page canvas { display: block; }
-/* invisible but selectable text over each page: select it and Quote, like chat text */
-.txtlayer { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
-.txtlayer span { position: absolute; white-space: pre; color: transparent; cursor: text; line-height: 1.15; }
-.txtlayer span::selection { background: var(--mark); }
+.win .imgstage { position: relative; flex: none; margin: auto; }
+.win .imgstage img { width: 100%; height: 100%; object-fit: contain; border-radius: var(--r); display: block; }
+.ink { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; pointer-events: none; }
+.ink-mark { z-index: 1; }
+.ink-pen { z-index: 3; }
+.ink-pen.active { pointer-events: auto; cursor: crosshair; }
+.pdfwrap { min-width: 0; padding: 8px; }
+.win-body.k-pdf { overscroll-behavior: contain; scroll-padding: 8px; scrollbar-gutter: stable; }
+.pdf-page { position: relative; margin: 8px auto; box-shadow: 0 2px 14px rgba(0,0,0,.14); border-radius: 5px; overflow: hidden; background: white; container-type: size; isolation: isolate; }
+.pdf-page .pdf-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; z-index: 0; }
+/* PDF.js text is a true positioned text layer, not a second loosely-flowing copy. */
+.txtlayer { position: absolute; inset: 0; z-index: 2; overflow: hidden; user-select: text; -webkit-user-select: text; }
+.txtlayer span { position: absolute; display: block; white-space: pre; overflow: visible; color: transparent; cursor: text; font-family: Arial, sans-serif; font-weight: 400; letter-spacing: 0; transform-origin: top left; user-select: text; -webkit-user-select: text; }
+.txtlayer span::selection { color: transparent; background: var(--mark); }
+.pdf-loading { position: sticky; top: 10px; z-index: 5; width: fit-content; max-width: 90%; margin: 14px auto; padding: 7px 12px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 99px; background: color-mix(in srgb, var(--float) 92%, transparent); color: var(--muted); font-size: 12px; box-shadow: var(--shadow); }
+.pdf-page-skeleton { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; gap: 9px; color: #81796e; background: linear-gradient(112deg, #f5f3ee, #fff 48%, #f2efe9); font: 12px/1.4 ui-sans-serif, system-ui, sans-serif; pointer-events: none; }
+.pdf-page-skeleton .spin { width: 14px; height: 14px; border-color: rgba(90,80,65,.18); border-top-color: rgba(90,80,65,.65); }
+.pdf-page-error { position: absolute; z-index: 5; top: 12px; left: 50%; transform: translateX(-50%); padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--float); color: var(--danger); font-size: 12px; box-shadow: var(--shadow); }
+.pdf-page-error:hover { color: var(--fg); }
 /* snip: drag a region, it lands in the input bar */
 .snip { position: absolute; inset: 0; z-index: 6; cursor: crosshair; touch-action: none; background: color-mix(in srgb, var(--bg) 25%, transparent); }
 .snip-rect { position: fixed; border: 1.5px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 4px; pointer-events: none; z-index: 7; }
@@ -310,20 +330,50 @@ body.dragging .win.docked { transition: none; }
 .blk-frame { width: 100%; border: 0; display: block; margin: 12px 0; background: transparent; transition: height .25s var(--ease); color-scheme: normal; }
 .blk-frame.fill { height: 100%; margin: 0; }
 
-/* ============ Canvas: integrated (docked) mode ============ */
-body.dragging iframe { pointer-events: none; } body.dragging { user-select: none; cursor: ew-resize; }
-.scroll, .dock, .chrome.r, .rstack { transition: margin-right .32s var(--ease), right .32s var(--ease), padding-right .32s var(--ease); }
-body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.dragging .rstack { transition: none; }
+/* ============ Canvas: integrated sidebar + task tray ============ */
+body.dragging iframe { pointer-events: none; }
+body.dragging { user-select: none; cursor: ew-resize; }
+body.canvas-gesture { user-select: none; }
+body.canvas-gesture iframe { pointer-events: none; }
+body.canvas-gesture .win { transition: none !important; }
+body.canvas-gesture.dock-gesture { cursor: col-resize; }
+.scroll, .dock, .chrome.r, .rstack { transition: margin-right .38s var(--ease), right .38s var(--ease), padding-right .38s var(--ease); }
+body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.dragging .rstack,
+body.canvas-gesture .scroll, body.canvas-gesture .dock, body.canvas-gesture .chrome.r, body.canvas-gesture .rstack { transition: none; }
 .shell.has-dock .scroll { margin-right: calc(var(--dockw) + 16px); }
 .shell.has-dock .dock { right: calc(var(--dockw) + 16px); }
 .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: calc(var(--dockw) + 24px); }
-.win.docked { top: 8px; right: 8px; bottom: 8px; left: auto; width: var(--dockw); height: auto; animation: dockIn .32s var(--ease); min-width: 0; }
-@keyframes dockIn { from { opacity: 0; transform: translateX(24px); } }
+.win.docked { top: 8px; left: calc(100vw - var(--dockw) - 8px); right: auto; bottom: auto; width: var(--dockw); height: calc(100vh - 16px); min-width: 0; min-height: 0; border-radius: var(--r); }
 .win.docked .win-bar.top { cursor: default; }
-.win-dockresize { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 5; }
-.win-dockresize::after { content: ""; position: absolute; left: 2px; top: 50%; height: 36px; width: 3px; margin-top: -18px; border-radius: 3px; background: var(--line); transition: background .15s, height .15s; }
-.win-dockresize:hover::after { background: var(--muted); height: 56px; margin-top: -28px; }
-@media (max-width: 759px) { .win.docked { left: 8px; width: auto; } .shell.has-dock .scroll { margin-right: 0; } .shell.has-dock .dock, .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: 0; } }
+.win-dockresize { position: absolute; left: 0; top: 0; bottom: 0; width: 12px; cursor: ew-resize; z-index: 9; touch-action: none; }
+.win-dockresize::after { content: ""; position: absolute; left: 5px; top: 50%; height: 38px; width: 2px; margin-top: -19px; border-radius: 3px; background: color-mix(in srgb, var(--fg) 22%, transparent); transition: background .16s, height .16s, transform .16s; }
+.win-dockresize:hover::after, .win-dockresize:active::after { background: color-mix(in srgb, var(--fg) 48%, transparent); height: 56px; margin-top: -28px; }
+.canvas-tray { position: fixed; z-index: 75; left: 14px; bottom: calc(88px + env(safe-area-inset-bottom)); width: min(560px, calc(100vw - 28px)); max-height: 190px; padding: 8px; display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--float) 93%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(16px); animation: tray-in .22s var(--ease) both; transition: bottom .24s var(--ease); }
+@keyframes tray-in { from { opacity: 0; transform: translateY(8px) scale(.99); } }
+.canvas-tray-head { display: flex; align-items: center; gap: 7px; padding: 0 4px; color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.canvas-tray-head svg { width: 13px; height: 13px; }
+.canvas-tray-head small { margin-left: auto; padding: 1px 6px; border: 1px solid var(--line); border-radius: 99px; font-size: 10px; letter-spacing: 0; }
+.canvas-tray-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 142px; overflow: auto; scrollbar-width: thin; }
+.canvas-task { flex: 1 1 172px; min-width: 150px; max-width: 100%; display: flex; align-items: center; min-height: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); animation: task-in .2s var(--ease) both; }
+.canvas-task.closing { animation: task-out .15s ease-in both; pointer-events: none; }
+@keyframes task-in { from { opacity: 0; transform: translateY(4px) scale(.98); } }
+@keyframes task-out { to { opacity: 0; transform: scale(.94); } }
+.canvas-task-restore { flex: 1; min-width: 0; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 9px; text-align: left; color: var(--fg); font-size: 12px; }
+.canvas-task-restore:hover { color: var(--accent); }
+.canvas-task-restore svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.canvas-task-restore span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-task-close { width: 27px; height: 28px; display: grid; place-items: center; flex: none; margin-right: 2px; border-radius: 7px; color: var(--muted); }
+.canvas-task-close:hover { color: var(--danger); background: var(--line); }
+.canvas-task-close svg { width: 13px; height: 13px; }
+@media (max-width: 759px) {
+  .win.docked { top: 8px; left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; }
+  .shell.has-dock .scroll { margin-right: 0; }
+  .shell.has-dock .dock, .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: 0; }
+  .canvas-tray { left: 8px; right: 8px; bottom: calc(86px + env(safe-area-inset-bottom)); width: auto; }
+}
+.shell.has-dock .canvas-tray { right: calc(var(--dockw) + 24px); }
+@media (max-width: 759px) { .shell.has-dock .canvas-tray { right: 8px; } }
+
 
 /* ============ Canvas viewers ============ */
 .win-bar .sp { flex: 1; }
@@ -338,7 +388,7 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
 .v-msg { height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 13px; padding: 24px; text-align: center; }
 .v-msg.err { color: var(--danger); }
 .win .iframe.black, .win iframe.full.black { background: black; }
-.pdfwrap { padding: 0 16px; }
+.pdfwrap { padding: 8px 16px; }
 .win-body.k-pdf, .win-body.k-doc, .win-body.k-slides { background: var(--surface); }
 .win .reader.code { padding: 8px 12px 16px; }
 .sheet { overflow: visible; font-size: 12.5px; font-variant-numeric: tabular-nums; }

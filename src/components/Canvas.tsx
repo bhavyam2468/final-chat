@@ -1,11 +1,11 @@
 "use client";
 /* Canvas windows. Philosophy: the content IS the window. Bars float over it and stay out of the way
    (immersive by default, both floating and docked); hovering the top/bottom edge slides them in over
-   the content; pinning turns them into real layout (content sits between them). Drag a window to the
-   screen edge and it parks as a peek; click the peek to restore. Viewers contribute type-specific
-   actions to the bottom bar, which scrolls inline instead of overflowing. */
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan } from "lucide-react";
+   the content; pinning turns them into real layout (content sits between them). Edge snapping keeps
+   the whole window visible, and minimized items stay grouped in a restore tray. Viewers contribute
+   type-specific actions to the bottom bar, which scrolls inline instead of overflowing. */
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, Highlighter, Undo2, AppWindow, FileText } from "lucide-react";
 import { CanvasSpec, fileUrl, useApp } from "./ctx";
 import { Block } from "./Block";
 import { StreamMarkdown, CodeBlock } from "@/lib/streammark/StreamMarkdown";
@@ -15,9 +15,10 @@ import { canvasPath } from "@/lib/shared";
 import { ChatView } from "./ChatView";
 
 export type Rect = { x: number; y: number; w: number; h: number };
-export type Win = { id: string; spec: CanvasSpec; x: number; y: number; w: number; h: number; z: number; min: boolean; pinned: boolean; dock: boolean; peek?: Rect | null; dockPeek?: boolean; prevDockW?: number };
+export type Win = { id: string; spec: CanvasSpec; x: number; y: number; w: number; h: number; z: number; min: boolean; pinned: boolean; dock: boolean; entering?: boolean; minimizing?: boolean; closing?: boolean; snap?: "left" | "right" };
 
-type Stroke = { c: string; w: number; p: [number, number][] };
+type Stroke = { c: string; w: number; p: [number, number][]; kind?: "pen" | "highlight"; unit?: "page" };
+const EMPTY_STROKES: Stroke[] = [];
 const KINDS: [RegExp, string][] = [
   [/^(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/, "image"], [/^pdf$/, "pdf"], [/^html?$/, "html"], [/^ui$/, "ui"], [/^(md|markdown|mdx)$/, "md"],
   [/^(xlsx|xlsm|xls|ods|csv|tsv)$/, "sheet"], [/^(docx|doc|odt|rtf)$/, "doc"], [/^(pptx|ppt|odp|key)$/, "slides"],
@@ -48,136 +49,390 @@ export function contentRatio(spec: CanvasSpec): Promise<{ ratio: number; pw?: nu
   });
 }
 
-function Ink({ strokes, onChange, active }: { strokes: Stroke[]; onChange: (s: Stroke[]) => void; active: boolean }) {
-  const cv = useRef<HTMLCanvasElement>(null);
+function Ink({ strokes, onChange, mode }: { strokes: Stroke[]; onChange: (s: Stroke[]) => void; mode: "pen" | "highlight" | null }) {
+  const mark = useRef<HTMLCanvasElement>(null);
+  const ink = useRef<HTMLCanvasElement>(null);
   const cur = useRef<Stroke | null>(null);
   const draw = useCallback(() => {
-    const c = cv.current; if (!c) return;
-    const r = c.getBoundingClientRect(), dpr = devicePixelRatio || 1;
-    c.width = r.width * dpr; c.height = r.height * dpr;
-    const g = c.getContext("2d")!; g.scale(dpr, dpr); g.lineCap = "round"; g.lineJoin = "round";
-    for (const s of [...strokes, ...(cur.current ? [cur.current] : [])]) {
-      g.strokeStyle = s.c; g.lineWidth = s.w; g.globalAlpha = s.c.startsWith("rgba") ? 1 : 0.9; g.beginPath();
-      s.p.forEach(([x, y], i) => (i ? g.lineTo(x * r.width, y * r.height) : g.moveTo(x * r.width, y * r.height)));
-      g.stroke();
-    }
+    const paint = (canvas: HTMLCanvasElement | null, kind: "pen" | "highlight") => {
+      if (!canvas) return;
+      const r = canvas.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      const g = canvas.getContext("2d"); if (!g) return;
+      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
+      g.lineCap = "round"; g.lineJoin = "round";
+      for (const s of [...strokes, ...(cur.current ? [cur.current] : [])]) {
+        const strokeKind = s.kind || (s.w >= 10 && s.c.startsWith("rgba(") ? "highlight" : "pen");
+        if (strokeKind !== kind || !s.p.length) continue;
+        g.strokeStyle = s.c; g.globalAlpha = 1;
+        g.lineWidth = Math.max(kind === "highlight" ? 8 : 1, s.unit === "page" ? s.w * r.width : s.w);
+        g.beginPath();
+        const x = (pt: [number, number]) => pt[0] * r.width;
+        const y = (pt: [number, number]) => pt[1] * r.height;
+        g.moveTo(x(s.p[0]), y(s.p[0]));
+        if (s.p.length === 2) g.lineTo(x(s.p[1]), y(s.p[1]));
+        else for (let i = 1; i < s.p.length - 1; i++) {
+          const a = s.p[i], b = s.p[i + 1];
+          g.quadraticCurveTo(x(a), y(a), (x(a) + x(b)) / 2, (y(a) + y(b)) / 2);
+        }
+        if (s.p.length > 2) g.lineTo(x(s.p.at(-1)!), y(s.p.at(-1)!));
+        g.stroke();
+      }
+      g.globalAlpha = 1;
+    };
+    paint(mark.current, "highlight"); paint(ink.current, "pen");
   }, [strokes]);
-  useEffect(() => { draw(); const ro = new ResizeObserver(draw); if (cv.current) ro.observe(cv.current); return () => ro.disconnect(); }, [draw]);
-  const pt = (e: React.PointerEvent): [number, number] => { const r = cv.current!.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  useEffect(() => {
+    draw();
+    const ro = new ResizeObserver(draw);
+    const parent = ink.current?.parentElement;
+    if (parent) ro.observe(parent);
+    window.addEventListener("resize", draw);
+    return () => { ro.disconnect(); window.removeEventListener("resize", draw); };
+  }, [draw]);
   const accent = typeof window !== "undefined" ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() : "#c07040";
-  return <canvas ref={cv} className={"ink" + (active ? " on" : "")} style={{ width: "100%", height: "100%" }}
-    onPointerDown={(e) => { if (!active) return; (e.target as Element).setPointerCapture(e.pointerId); cur.current = { c: e.shiftKey ? "rgba(214,170,88,.45)" : accent, w: e.shiftKey ? 14 : 2.2, p: [pt(e)] }; }}
-    onPointerMove={(e) => { if (!cur.current) return; cur.current.p.push(pt(e)); draw(); }}
-    onPointerUp={() => { if (cur.current && cur.current.p.length > 1) onChange([...strokes, cur.current]); cur.current = null; draw(); }} />;
+  const pt = (e: React.PointerEvent<HTMLCanvasElement>): [number, number] => { const r = e.currentTarget.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  const finish = () => {
+    if (!cur.current) return;
+    const stroke = cur.current; cur.current = null;
+    if (stroke.p.length === 1) stroke.p.push(stroke.p[0]);
+    onChange([...strokes, stroke]); draw();
+  };
+  const start = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!mode) return;
+    e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
+    const r = e.currentTarget.getBoundingClientRect();
+    cur.current = mode === "highlight"
+      ? { c: "rgba(246, 202, 84, .36)", w: 16 / Math.max(r.width, 1), unit: "page", kind: "highlight", p: [pt(e)] }
+      : { c: accent || "#c07040", w: 2.2 / Math.max(r.width, 1), unit: "page", kind: "pen", p: [pt(e)] };
+    draw();
+  };
+  const move = (e: React.PointerEvent<HTMLCanvasElement>) => { if (!cur.current) return; cur.current.p.push(pt(e)); draw(); };
+  return <>
+    <canvas ref={mark} className="ink ink-mark" aria-hidden="true" />
+    <canvas ref={ink} className={"ink ink-pen" + (mode ? " active" : "")} aria-label={mode === "highlight" ? "Draw a PDF highlight" : "Draw an annotation"}
+      onPointerDown={start} onPointerMove={move} onPointerUp={finish} onPointerCancel={finish} />
+  </>;
 }
 
-type TxtItem = { s: string; x: number; y: number; w: number; h: number };
-/** Real PDF pages on canvases, an invisible-but-selectable text layer over them (quote it like chat text),
-    and keyboard control: arrows/PageUp/PageDown scroll, +/- zoom with a snap that makes the page cover
-    the viewport when it's close. */
-function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Record<string, Stroke[]>; setInk?: (k: string, s: Stroke[]) => void; pen?: boolean; setBar?: (n: React.ReactNode) => void }) {
-  const [pages, setPages] = useState<{ w: number; h: number }[]>([]);
-  const [texts, setTexts] = useState<TxtItem[][] | null>(null);
+type TxtItem = { s: string; x: number; y: number; w: number; h: number; angle: number };
+type PdfViewport = { width: number; height: number; transform?: number[] };
+type PdfPageProxy = {
+  getViewport: (o: { scale: number }) => PdfViewport;
+  getTextContent?: () => Promise<{ items: unknown[] }>;
+  render: (o: unknown) => { promise: Promise<void>; cancel?: () => void };
+};
+type PdfDocumentProxy = { numPages: number; getPage: (n: number) => Promise<PdfPageProxy>; destroy?: () => Promise<void> | void };
+type RenderOp = { token: number; task?: { promise: Promise<void>; cancel?: () => void } };
+
+const multiplyTransform = (a: number[], b: number[]) => [
+  a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1],
+  a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3],
+  a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5],
+];
+
+/**
+ * A small, virtualised PDF reader. Only visible and nearby pages are rasterised. Rendering into a
+ * staging canvas and swapping on success means zoom/resize never clears the last good page, while
+ * per-page render tokens prevent a late task from overwriting a newer size or rotation.
+ */
+function PdfView({ path, ink, setInk, setBar }: { path: string; ink?: Record<string, Stroke[]>; setInk?: (k: string, s: Stroke[]) => void; setBar?: (n: React.ReactNode) => void }) {
+  const [pages, setPages] = useState<{ w: number; h: number; transform: number[] }[]>([]);
+  const [texts, setTexts] = useState<Record<number, TxtItem[]>>({});
   const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [pageErrors, setPageErrors] = useState<Record<number, string>>({});
+  const [rendered, setRendered] = useState<Record<number, boolean>>({});
+  const [visible, setVisible] = useState<Record<number, boolean>>({});
   const [zoom, setZoom] = useState(1);
   const [cur, setCur] = useState(1);
+  const [pageInput, setPageInput] = useState("1");
+  const [tool, setTool] = useState<"pen" | "highlight" | null>(null);
   const refs = useRef<(HTMLCanvasElement | null)[]>([]);
+  const pageEls = useRef<(HTMLDivElement | null)[]>([]);
   const wrap = useRef<HTMLDivElement>(null);
-  const doc = useRef<{ getPage: (n: number) => Promise<unknown>; numPages: number } | null>(null);
-  const renderAll = useCallback(async (dims: { w: number; h: number }[], alive: () => boolean) => {
-    const pdf = doc.current as unknown as { getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }> } | null;
-    if (!pdf) return;
-    for (let i = 1; i <= dims.length && alive(); i++) {
-      const page = await pdf.getPage(i), c = refs.current[i - 1]; if (!c) continue;
-      const scale = (c.parentElement!.clientWidth / dims[i - 1].w) * (devicePixelRatio || 1);
-      const vp = page.getViewport({ scale }); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext("2d")!, viewport: vp, canvas: c }).promise;
+  const doc = useRef<PdfDocumentProxy | null>(null);
+  const renderOps = useRef<Map<number, RenderOp>>(new Map());
+  const resizeTimers = useRef<Map<number, number>>(new Map());
+  const renderKeys = useRef<Map<number, string>>(new Map());
+  const textLoaded = useRef<Set<number>>(new Set());
+  const visiblePages = useRef<Set<number>>(new Set());
+  const nextToken = useRef(0);
+  const pagesRef = useRef(pages); pagesRef.current = pages;
+  const zoomAnchor = useRef<{ page: number; top: number } | null>(null);
+
+  const renderPage = useCallback(async (i: number, force = false) => {
+    const pdf = doc.current, canvas = refs.current[i], pageEl = pageEls.current[i], dims = pagesRef.current[i];
+    if (!pdf || !canvas || !pageEl || !dims || pageEl.clientWidth < 1) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const key = `${Math.round(pageEl.clientWidth)}:${dpr}`;
+    if (!force && renderKeys.current.get(i) === key) return;
+    const old = renderOps.current.get(i); old?.task?.cancel?.();
+    const token = ++nextToken.current;
+    const op: RenderOp = { token }; renderOps.current.set(i, op);
+    try {
+      const page = await pdf.getPage(i + 1);
+      if (renderOps.current.get(i)?.token !== token) return;
+      const scale = (pageEl.clientWidth / dims.w) * dpr;
+      const viewport = page.getViewport({ scale });
+      const staging = document.createElement("canvas");
+      staging.width = Math.max(1, Math.ceil(viewport.width)); staging.height = Math.max(1, Math.ceil(viewport.height));
+      const context = staging.getContext("2d", { alpha: false });
+      if (!context) throw new Error("Could not allocate a PDF canvas.");
+      const task = page.render({ canvasContext: context, viewport, canvas: staging });
+      op.task = task;
+      await task.promise;
+      if (renderOps.current.get(i)?.token !== token || !canvas.isConnected) return;
+      canvas.width = staging.width; canvas.height = staging.height;
+      const visible = canvas.getContext("2d", { alpha: false });
+      if (!visible) throw new Error("Could not display this PDF page.");
+      visible.drawImage(staging, 0, 0);
+      renderKeys.current.set(i, key);
+      setRendered((oldRendered) => oldRendered[i] ? oldRendered : { ...oldRendered, [i]: true });
+      setPageErrors((oldErrors) => { if (!oldErrors[i]) return oldErrors; const next = { ...oldErrors }; delete next[i]; return next; });
+    } catch (e) {
+      const name = (e as { name?: string })?.name || "";
+      if (name !== "RenderingCancelledException" && renderOps.current.get(i)?.token === token) {
+        setPageErrors((oldErrors) => ({ ...oldErrors, [i]: String((e as Error)?.message || "Page render failed").slice(0, 140) }));
+      }
+    } finally {
+      if (renderOps.current.get(i)?.token === token) renderOps.current.delete(i);
     }
   }, []);
+  const loadText = useCallback(async (i: number) => {
+    if (textLoaded.current.has(i)) return;
+    const pdf = doc.current, v = pagesRef.current[i];
+    if (!pdf || !v) return;
+    textLoaded.current.add(i);
+    try {
+      const page = await pdf.getPage(i + 1);
+      const content = await page.getTextContent?.();
+      if (doc.current !== pdf) return;
+      const matrix = v.transform;
+      const raw = content?.items as { str?: string; transform?: number[]; width?: number; height?: number }[] | undefined;
+      const items = (raw || []).filter((it) => typeof it.str === "string" && it.str.length > 0 && it.transform?.length === 6).map((it) => {
+        const t = multiplyTransform(matrix, it.transform!);
+        const h = Math.max(1, Math.hypot(t[2], t[3]) || Math.abs(it.height || 10));
+        const scale = Math.hypot(matrix[0], matrix[1]) || 1;
+        const w = Math.max(1, (it.width || it.str!.length * h * 0.45) * scale);
+        return { s: it.str!, x: t[4] / v.w, y: Math.max(0, (t[5] - h) / v.h), w: w / v.w, h: h / v.h, angle: Math.atan2(t[1], t[0]) * 180 / Math.PI };
+      });
+      setTexts((old) => ({ ...old, [i]: items }));
+    } catch {
+      if (doc.current === pdf) setTexts((old) => ({ ...old, [i]: [] }));
+    }
+  }, []);
+
   useEffect(() => {
     let dead = false;
+    let loaded: PdfDocumentProxy | null = null;
+    const ops = renderOps.current;
+    for (const op of ops.values()) op.task?.cancel?.();
+    ops.clear(); renderKeys.current.clear(); doc.current = null;
+    setPages([]); setTexts({}); setRendered({}); setVisible({}); textLoaded.current.clear(); visiblePages.current.clear(); setFailed(false); setLoading(true); setPageErrors({}); setCur(1); setZoom(1); setPageInput("1"); setTool(null);
     (async () => {
       try {
         const { getDocumentProxy } = await import("unpdf");
-        const buf = new Uint8Array(await (await fetch(fileUrl(path))).arrayBuffer());
-        const pdf = await getDocumentProxy(buf);
-        doc.current = pdf as never;
-        const dims: { w: number; h: number }[] = [];
-        for (let i = 1; i <= pdf.numPages; i++) { const vp = (await pdf.getPage(i)).getViewport({ scale: 1 }); dims.push({ w: vp.width, h: vp.height }); }
-        if (dead) return; setPages(dims);
-        await new Promise((r) => setTimeout(r, 30));
-        await renderAll(dims, () => !dead);
-        // selectable text layer (first 80 pages keeps it cheap); spans are transparent but selectable
-        try {
-          const all: TxtItem[][] = [];
-          for (let i = 1; i <= Math.min(dims.length, 80) && !dead; i++) {
-            const page = (await (doc.current as never as { getPage: (n: number) => Promise<unknown> }).getPage(i)) as { getTextContent?: () => Promise<{ items: unknown[] }> };
-            if (typeof page.getTextContent !== "function") break;
-            const tc = await page.getTextContent();
-            const d = dims[i - 1];
-            all.push((tc.items as { str?: string; transform?: number[]; width?: number; height?: number }[])
-              .filter((it) => it.str && it.transform)
-              .map((it) => ({ s: it.str!, x: it.transform![4] / d.w, y: (d.h - it.transform![5]) / d.h, w: (it.width || 0) / d.w, h: (it.height || Math.abs(it.transform![3]) || 10) / d.h })));
+        const response = await fetch(fileUrl(path), { cache: "no-store" });
+        if (!response.ok) throw new Error(`Could not load PDF (${response.status}).`);
+        const buf = new Uint8Array(await response.arrayBuffer());
+        const pdf = await getDocumentProxy(buf) as unknown as PdfDocumentProxy;
+        if (dead) { await pdf.destroy?.(); return; }
+        loaded = pdf; doc.current = pdf;
+        const dims: { w: number; h: number; transform: number[] }[] = Array.from({ length: pdf.numPages });
+        let cursor = 1;
+        await Promise.all(Array.from({ length: Math.min(4, pdf.numPages) }, async () => {
+          while (!dead) {
+            const i = cursor++; if (i > pdf.numPages) return;
+            const page = await pdf.getPage(i);
+            const v = page.getViewport({ scale: 1 });
+            dims[i - 1] = { w: v.width, h: v.height, transform: v.transform || [1, 0, 0, -1, 0, v.height] };
           }
-          if (!dead && all.length) setTexts(all);
-        } catch { /* no text layer: selection falls back to snipping */ }
-      } catch (e) { console.warn(e); if (!dead) setFailed(true); }
+        }));
+        if (dead) return;
+        setPages(dims); setLoading(false);
+      } catch (e) {
+        console.warn("PDF preview failed", e);
+        if (!dead) { setLoading(false); setFailed(true); }
+      }
     })();
-    return () => { dead = true; };
-  }, [path, renderAll]);
-  useEffect(() => { if (!pages.length) return; let dead = false; const t = setTimeout(() => renderAll(pages, () => !dead), 120); return () => { dead = true; clearTimeout(t); }; }, [zoom, pages, renderAll]);
+    return () => {
+      dead = true;
+      for (const op of ops.values()) op.task?.cancel?.();
+      ops.clear();
+      if (doc.current === loaded) doc.current = null;
+      void loaded?.destroy?.();
+    };
+  }, [path]);
+
   useEffect(() => {
-    const el = wrap.current?.closest(".win-body"); if (!el) return;
-    const on = () => { const mid = el.getBoundingClientRect().top + el.clientHeight / 3; let best = 1; refs.current.forEach((c, i) => { if (c && c.getBoundingClientRect().top < mid) best = i + 1; }); setCur(best); };
-    el.addEventListener("scroll", on, { passive: true }); return () => el.removeEventListener("scroll", on);
+    if (!pages.length || !wrap.current) return;
+    const body = wrap.current.closest(".win-body") as HTMLElement | null;
+    const shown = visiblePages.current, timers = resizeTimers.current;
+    const io = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const i = Number((entry.target as HTMLElement).dataset.index);
+        if (entry.isIntersecting) {
+          shown.add(i); setVisible((old) => old[i] ? old : { ...old, [i]: true });
+          void renderPage(i); void loadText(i);
+        } else {
+          shown.delete(i);
+          setVisible((old) => { if (!old[i]) return old; const next = { ...old }; delete next[i]; return next; });
+          const timer = timers.get(i); if (timer) clearTimeout(timer); timers.delete(i);
+          const op = renderOps.current.get(i); op?.task?.cancel?.(); renderOps.current.delete(i);
+          renderKeys.current.delete(i);
+          const canvas = refs.current[i];
+          if (canvas?.width) { canvas.width = 0; canvas.height = 0; }
+          setRendered((oldRendered) => { if (!oldRendered[i]) return oldRendered; const next = { ...oldRendered }; delete next[i]; return next; });
+        }
+      }
+    }, { root: body, rootMargin: "720px 0px", threshold: 0.01 });
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const i = Number((entry.target as HTMLElement).dataset.index);
+        if (!shown.has(i)) continue;
+        window.clearTimeout(timers.get(i));
+        const timer = window.setTimeout(() => void renderPage(i), 100);
+        timers.set(i, timer);
+      }
+    });
+    pageEls.current.forEach((el) => { if (el) { io.observe(el); ro.observe(el); } });
+    return () => { io.disconnect(); ro.disconnect(); shown.clear(); for (const t of timers.values()) clearTimeout(t); timers.clear(); };
+  }, [pages, renderPage, loadText]);
+
+  useEffect(() => {
+    const body = wrap.current?.closest(".win-body") as HTMLElement | null;
+    if (!body || !pages.length) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const pivot = body.getBoundingClientRect().top + body.clientHeight * 0.38;
+        let lo = 0, hi = pageEls.current.length - 1, best = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1, page = pageEls.current[mid];
+          if (!page) break;
+          const r = page.getBoundingClientRect();
+          if (pivot < r.top) hi = mid - 1;
+          else if (pivot > r.bottom) lo = mid + 1;
+          else { best = mid; break; }
+        }
+        if (best < 0) {
+          let score = Infinity;
+          for (const i of [Math.max(0, Math.min(pageEls.current.length - 1, lo - 1)), Math.max(0, Math.min(pageEls.current.length - 1, lo))]) {
+            const page = pageEls.current[i]; if (!page) continue;
+            const r = page.getBoundingClientRect(), d = pivot < r.top ? r.top - pivot : pivot - r.bottom;
+            if (d < score) { score = d; best = i; }
+          }
+        }
+        const pageNo = Math.max(1, best + 1);
+        setCur((old) => old === pageNo ? old : pageNo);
+      });
+    };
+    body.addEventListener("scroll", onScroll, { passive: true }); onScroll();
+    return () => { body.removeEventListener("scroll", onScroll); if (raf) cancelAnimationFrame(raf); };
   }, [pages]);
-  const go = (n: number) => refs.current[n - 1]?.parentElement?.scrollIntoView({ behavior: "smooth", block: "start" });
-  // zoom steps of .25, but snap to 1 (= page covers the canvas width) when a step lands close to it
-  const zoomBy = useCallback((d: number) => setZoom((z) => { let n = Math.max(0.5, Math.min(3, +(z + d * 0.25).toFixed(2))); if (Math.abs(n - 1) < 0.13) n = 1; return n; }), []);
+
+  const go = useCallback((n: number) => {
+    const body = wrap.current?.closest(".win-body") as HTMLElement | null, page = pageEls.current[n - 1];
+    if (!body || !page) return;
+    const top = body.scrollTop + page.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
+    body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }, []);
+  useEffect(() => setPageInput(String(cur)), [cur]);
+  const commitPage = useCallback((value = pageInput) => {
+    const n = Number(value);
+    if (Number.isInteger(n) && n >= 1 && n <= pages.length) go(n);
+    else setPageInput(String(cur));
+  }, [cur, go, pageInput, pages.length]);
+  const setZoomAnchored = useCallback((n: number) => {
+    if (n === zoom) return;
+    const body = wrap.current?.closest(".win-body") as HTMLElement | null, page = pageEls.current[cur - 1];
+    if (body && page) zoomAnchor.current = { page: cur, top: page.getBoundingClientRect().top };
+    setZoom(n);
+  }, [cur, zoom]);
+  useLayoutEffect(() => {
+    const a = zoomAnchor.current;
+    if (!a) return;
+    const body = wrap.current?.closest(".win-body") as HTMLElement | null, page = pageEls.current[a.page - 1];
+    if (body && page) body.scrollTop += page.getBoundingClientRect().top - a.top;
+    zoomAnchor.current = null;
+  }, [zoom]);
+  const zoomBy = useCallback((d: number) => {
+    let n = Math.max(0.5, Math.min(3, +(zoom + d * 0.25).toFixed(2)));
+    if (Math.abs(n - 1) < 0.13) n = 1;
+    setZoomAnchored(n);
+  }, [setZoomAnchored, zoom]);
+
   useEffect(() => {
-    const winEl = wrap.current?.closest(".win"); const body = wrap.current?.closest(".win-body") as HTMLElement | null;
+    const winEl = wrap.current?.closest(".win"), body = wrap.current?.closest(".win-body") as HTMLElement | null;
     if (!winEl || !body || !pages.length) return;
     let hot = false;
     const en = () => { hot = true; }, ex = () => { hot = false; };
     winEl.addEventListener("mouseenter", en); winEl.addEventListener("mouseleave", ex);
     const onKey = (e: KeyboardEvent) => {
       if (!hot || e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target as HTMLElement;
-      if (t.closest("input,textarea,select,[contenteditable=true]")) return;
-      const v = Math.max(80, body.clientHeight * 0.12);
-      if (e.key === "ArrowDown") body.scrollBy(0, v);
-      else if (e.key === "ArrowUp") body.scrollBy(0, -v);
-      else if (e.key === "ArrowRight") body.scrollBy(v, 0);
-      else if (e.key === "ArrowLeft") body.scrollBy(-v, 0);
-      else if (e.key === "PageDown" || e.key === " ") body.scrollBy(0, body.clientHeight * 0.9);
-      else if (e.key === "PageUp") body.scrollBy(0, -body.clientHeight * 0.9);
+      const target = e.target as HTMLElement;
+      if (target.closest("input,textarea,select,[contenteditable=true],button,[role=button]")) return;
+      const step = Math.max(72, body.clientHeight * 0.14);
+      if (e.key === "ArrowDown") body.scrollBy({ top: step, behavior: "smooth" });
+      else if (e.key === "ArrowUp") body.scrollBy({ top: -step, behavior: "smooth" });
+      else if (e.key === "ArrowRight") body.scrollBy({ left: step, behavior: "smooth" });
+      else if (e.key === "ArrowLeft") body.scrollBy({ left: -step, behavior: "smooth" });
+      else if (e.key === "PageDown" || e.key === " ") go(Math.min(pages.length, cur + 1));
+      else if (e.key === "PageUp") go(Math.max(1, cur - 1));
+      else if (e.key === "Home") go(1);
+      else if (e.key === "End") go(pages.length);
       else if (e.key === "+" || e.key === "=") zoomBy(1);
       else if (e.key === "-" || e.key === "_") zoomBy(-1);
-      else if (e.key === "0") setZoom(1);
+      else if (e.key === "0") setZoomAnchored(1);
       else return;
       e.preventDefault();
     };
-    addEventListener("keydown", onKey);
-    return () => { winEl.removeEventListener("mouseenter", en); winEl.removeEventListener("mouseleave", ex); removeEventListener("keydown", onKey); };
-  }, [pages, zoomBy]);
+    window.addEventListener("keydown", onKey);
+    return () => { winEl.removeEventListener("mouseenter", en); winEl.removeEventListener("mouseleave", ex); window.removeEventListener("keydown", onKey); };
+  }, [pages, cur, zoomBy, go, setZoomAnchored]);
+
   useEffect(() => {
     if (!setBar) return;
+    const key = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") { commitPage((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).blur(); } };
+    const currentMarks = ink?.[String(cur)] || [];
     setBar(pages.length ? <>
-      <span className="v-meta num"><input className="v-page" value={cur} onChange={(e) => { const n = +e.target.value; if (n >= 1 && n <= pages.length) go(n); }} aria-label="Page" /> / {pages.length}</span>
-      <button className="ib sm" aria-label="Zoom out" title="Zoom out (-)" onClick={() => zoomBy(-1)}><ZoomOut /></button>
+      <span className="v-meta num"><input className="v-page" type="text" inputMode="numeric" value={pageInput} onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ""))} onBlur={() => commitPage()} onKeyDown={key} aria-label="Go to page" title="Go to page" /> / {pages.length}</span>
+      <button className="ib sm" aria-label="Zoom out" title="Zoom out (-)" disabled={zoom <= 0.5} onClick={() => zoomBy(-1)}><ZoomOut /></button>
       <span className="v-meta num">{Math.round(zoom * 100)}%</span>
-      <button className="ib sm" aria-label="Zoom in" title="Zoom in (+)" onClick={() => zoomBy(1)}><ZoomIn /></button>
-      <button className={"ib sm" + (zoom === 1 ? " on" : "")} aria-label="Fit to canvas" title="Fit page to canvas (0)" onClick={() => setZoom(1)}><Scan /></button>
+      <button className="ib sm" aria-label="Zoom in" title="Zoom in (+)" disabled={zoom >= 3} onClick={() => zoomBy(1)}><ZoomIn /></button>
+      <button className={"ib sm" + (zoom === 1 ? " on" : "")} aria-label="Fit to canvas" title="Fit width (0)" onClick={() => setZoomAnchored(1)}><Scan /></button>
+      {setInk && <>
+        <span className="bar-sep" />
+        <button className={"ib sm" + (tool === "pen" ? " on" : "")} aria-label="Pen annotation" title="Draw with pen" onClick={() => setTool(tool === "pen" ? null : "pen")}><PenLine /></button>
+        <button className={"ib sm" + (tool === "highlight" ? " on" : "")} aria-label="Highlight annotation" title="Highlight text" onClick={() => setTool(tool === "highlight" ? null : "highlight")}><Highlighter /></button>
+        {tool && <>
+          <button className="ib sm" aria-label="Undo last annotation on this page" title="Undo last annotation" disabled={!currentMarks.length} onClick={() => setInk(String(cur), currentMarks.slice(0, -1))}><Undo2 /></button>
+          <button className="ib sm" aria-label="Clear annotations on this page" title="Clear marks on this page" disabled={!currentMarks.length} onClick={() => setInk(String(cur), [])}><Eraser /></button>
+        </>}
+      </>}
     </> : null);
-  }, [pages, cur, zoom, setBar, zoomBy]);
+  }, [pages, cur, pageInput, commitPage, zoom, tool, ink, setInk, setBar, zoomBy, setZoomAnchored, go]);
+
   if (failed) return <iframe className="full" src={fileUrl(path)} title={path} />;
-  return <div ref={wrap} className="pdfwrap">{pages.map((d, i) => (
-    <div key={i} className="pdf-page" style={{ aspectRatio: `${d.w}/${d.h}`, width: `${zoom * 100}%` }}>
-      <canvas ref={(el) => { refs.current[i] = el; }} style={{ width: "100%", height: "100%" }} />
-      {texts?.[i] && <div className="txtlayer" aria-label="PDF text">{texts[i].map((t, k) => (
-        <span key={k} style={{ left: `${t.x * 100}cqw`, top: `${t.y * 100}cqh`, fontSize: `${t.h * 100}cqh`, width: `${t.w * 100}cqw` }}>{t.s}</span>))}</div>}
-      {setInk && <Ink strokes={ink?.[i + 1] || []} onChange={(s) => setInk(String(i + 1), s)} active={!!pen} />}
-    </div>))}</div>;
+  return <div ref={wrap} className="pdfwrap" aria-busy={loading}>
+    {loading && <div className="pdf-loading"><span className="spin" />Loading document</div>}
+    {!loading && !pages.length && <div className="pdf-loading">This PDF has no pages.</div>}
+    {pages.map((d, i) => (
+      <div key={`${path}:${i}`} ref={(el) => { pageEls.current[i] = el; }} data-index={i} className="pdf-page" style={{ aspectRatio: `${d.w}/${d.h}`, width: `${zoom * 100}%` }}>
+        <canvas ref={(el) => { refs.current[i] = el; }} className="pdf-canvas" />
+        {setInk && visible[i] && (tool !== null || (ink?.[i + 1]?.length || 0) > 0) && <Ink strokes={ink?.[i + 1] || EMPTY_STROKES} onChange={(s) => setInk(String(i + 1), s)} mode={tool} />}
+        {visible[i] && texts[i] && <div className="txtlayer" data-pdf-path={path} data-pdf-page={i + 1} data-pdf-text={texts[i].map((t) => t.s).join(" ")} aria-label={`Text from page ${i + 1}`}>
+          {texts[i].map((t, k) => <span key={k} style={{ left: `${t.x * 100}cqw`, top: `${t.y * 100}cqh`, width: `${t.w * 100}cqw`, fontSize: `${t.h * 100}cqh`, lineHeight: `${t.h * 100}cqh`, transform: `rotate(${t.angle}deg)` }}>{t.s}</span>)}
+        </div>}
+        {visible[i] && !rendered[i] && !pageErrors[i] && <div className="pdf-page-skeleton" aria-hidden="true"><span className="spin" />Preparing page {i + 1}</div>}
+        {visible[i] && pageErrors[i] && <button className="pdf-page-error" onClick={() => { renderKeys.current.delete(i); void renderPage(i, true); }} title={pageErrors[i]}>Retry page render</button>}
+      </div>))}
+  </div>;
 }
 
 /** Drag a rectangle over the rendered content; the region is composited from the visible
@@ -215,6 +470,32 @@ function SnipLayer({ winId, onDone }: { winId: string; onDone: (b: Blob) => void
   </div>;
 }
 
+/* eslint-disable @next/next/no-img-element -- natural dimensions are measured for precise annotation alignment */
+function ImageView({ path, strokes, onChange, mode }: { path: string; strokes: Stroke[]; onChange: (s: Stroke[]) => void; mode: "pen" | "highlight" | null }) {
+  const host = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const fit = useCallback(() => {
+    const box = host.current, img = image.current;
+    if (!box || !img?.naturalWidth || !img.naturalHeight) return;
+    const maxW = Math.max(1, box.clientWidth - 20), maxH = Math.max(1, box.clientHeight - 20);
+    const scale = Math.min(1, maxW / img.naturalWidth, maxH / img.naturalHeight);
+    const next = { w: Math.max(1, Math.round(img.naturalWidth * scale)), h: Math.max(1, Math.round(img.naturalHeight * scale)) };
+    setSize((old) => old?.w === next.w && old.h === next.h ? old : next);
+  }, []);
+  useLayoutEffect(fit, [fit]);
+  useEffect(() => {
+    const box = host.current; if (!box) return;
+    const ro = new ResizeObserver(fit); ro.observe(box); return () => ro.disconnect();
+  }, [fit]);
+  return <div ref={host} className="imgview">
+    <div className="imgstage" style={{ width: size?.w || 1, height: size?.h || 1, visibility: size ? "visible" : "hidden" }}>
+      <img ref={image} src={fileUrl(path)} alt="" onLoad={fit} />
+      <Ink strokes={strokes} onChange={onChange} mode={mode} />
+    </div>
+  </div>;
+}
+/* eslint-enable @next/next/no-img-element */
+
 const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; winId: string; ctl?: React.ReactNode }) {
   const app = useApp();
   const md = useMdHandlers();
@@ -223,7 +504,8 @@ const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; wi
   const [mode, setMode] = useState<"a" | "b">("a");
   const [src, setSrc] = useState<string>(spec.kind === "ui" ? spec.source : "");
   const [dirty, setDirty] = useState(false);
-  const [pen, setPen] = useState(false);
+  const [inkTool, setInkTool] = useState<"pen" | "highlight" | null>(null);
+  const pen = inkTool !== null;
   const [snip, setSnip] = useState(false);
   const [notes, setNotes] = useState<string | null>(null);
   const [ink, setInkAll] = useState<Record<string, Stroke[]>>({});
@@ -257,7 +539,7 @@ const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; wi
     if (text !== null) await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path: notesPath(path) + ".md", content: `# Notes: ${path}\n\n${text}\n\n## Annotations\n${counts || "- none"}\n` }) });
     app.refreshTree();
   }, [path, ink, notes, k, app, annot]);
-  const setInk = (key: string, s: Stroke[]) => { const n = { ...ink, [key]: s }; setInkAll(n); saveNotes(n); };
+  const setInk = useCallback((key: string, s: Stroke[]) => { const n = { ...ink, [key]: s }; setInkAll(n); void saveNotes(n); }, [ink, saveNotes]);
   const openNotes = async () => {
     if (notes !== null) { await saveNotes(); setNotes(null); return; }
     const r = await fetch(fileUrl(notesPath(path!) + ".md"), { cache: "no-store" });
@@ -271,16 +553,16 @@ const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; wi
   };
 
   const editor = <textarea className="editor" value={src} spellCheck={false} onChange={(e) => { setSrc(e.target.value); setDirty(true); }} aria-label="Source" />;
-  const Pdf = useCallback((p: { path: string }) => <PdfView path={p.path} />, []);
+  const Pdf = useCallback((p: { path: string }) => <PdfView path={p.path} ink={ink} setInk={setInk} />, [ink, setInk]);
   let body: React.ReactNode = null;
   if (spec.kind === "youtube") body = <iframe className="full black" src={`https://www.youtube-nocookie.com/embed/${spec.id}?autoplay=1`} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen title="YouTube" />;
   else if (spec.kind === "web") body = <iframe key={rev} className="full" src={spec.url} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" title={spec.title} />;
   else if (spec.kind === "md") body = <div className="reader"><StreamMarkdown text={spec.body} {...md} /></div>;
   else if (spec.kind === "chat") body = <ChatView id={spec.id} setBar={setBar} />;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
-  else if (k === "image") body = <div className="imgview">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
-  else if (k === "pdf") body = <PdfView path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} />;
-  else if (k === "html") body = mode === "a" ? <div style={{ position: "relative", height: "100%" }}><iframe key={rev} className="full" src={fileUrl(path!)} sandbox="allow-scripts allow-forms allow-popups allow-modals" title={path} /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div> : editor;
+  else if (k === "image") body = <ImageView path={path!} strokes={ink.view || []} onChange={(s) => setInk("view", s)} mode={inkTool} />;
+  else if (k === "pdf") body = <PdfView path={path!} ink={ink} setInk={setInk} setBar={setBar} />;
+  else if (k === "html") body = mode === "a" ? <div style={{ position: "relative", height: "100%" }}><iframe key={rev} className="full" src={fileUrl(path!)} sandbox="allow-scripts allow-forms allow-popups allow-modals" title={path} /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} mode={inkTool} /></div> : editor;
   else if (k === "md") body = mode === "a" ? <div className="reader"><StreamMarkdown text={src} {...md} /></div> : editor;
   else if (k === "text") body = mode === "a" ? <div className="reader code"><CodeBlock code={src} lang={extOf(path!)} done /></div> : editor;
   else if (k === "sheet") body = <SheetView path={path!} setBar={setBar} />;
@@ -304,9 +586,13 @@ const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; wi
       {!bar && <span className="sp" />}
       {snippable && <button className={"ib sm" + (snip ? " on" : "")} aria-label="Snip to input" title="Snip a region into the input bar" onClick={() => setSnip(!snip)}><Scissors /></button>}
       {(k === "ui" || spec.kind === "web" || k === "html") && <button className="ib sm" aria-label="Reload" title="Reload" onClick={() => setRev((r) => r + 1)}><RotateCw /></button>}
-      {annot && (k !== "html" || mode === "a") && <>
-        <button className={"ib sm" + (pen ? " on" : "")} aria-label="Annotate" title="Pen (hold Shift to highlight)" onClick={() => setPen(!pen)}><PenLine /></button>
-        {pen && <button className="ib sm" aria-label="Clear marks" title="Clear marks" onClick={() => { setInkAll({}); saveNotes({}); }}><Eraser /></button>}
+      {annot && k !== "pdf" && (k !== "html" || mode === "a") && <>
+        <button className={"ib sm" + (inkTool === "pen" ? " on" : "")} aria-label="Pen annotation" title="Draw with pen" onClick={() => setInkTool(inkTool === "pen" ? null : "pen")}><PenLine /></button>
+        <button className={"ib sm" + (inkTool === "highlight" ? " on" : "")} aria-label="Highlight annotation" title="Highlight text" onClick={() => setInkTool(inkTool === "highlight" ? null : "highlight")}><Highlighter /></button>
+        {pen && <>
+          <button className="ib sm" aria-label="Undo last mark" title="Undo last mark" disabled={!ink.view?.length} onClick={() => setInk("view", (ink.view || []).slice(0, -1))}><Undo2 /></button>
+          <button className="ib sm" aria-label="Clear marks" title="Clear marks" disabled={!ink.view?.length} onClick={() => setInk("view", [])}><Eraser /></button>
+        </>}
       </>}
       {notable && <button className={"ib sm" + (notes !== null ? " on" : "")} aria-label="Notes" title="Notes (saved to notes/)" onClick={openNotes}><NotebookPen /></button>}
       {path && <button className="ib sm" aria-label="Ask about this" title="Ask about this" onClick={() => app.mention(path)}><MessageSquareQuote /></button>}
@@ -318,85 +604,199 @@ const Viewer = memo(function Viewer({ spec, winId, ctl }: { spec: CanvasSpec; wi
 });
 
 export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; setWins: React.Dispatch<React.SetStateAction<Win[]>>; dockW: number; setDockW: (w: number) => void }) {
-  // which floating bars are revealed (hover zones); hidden = immersive fullscreen content
   const [show, setShow] = useState<Record<string, { t: boolean; b: boolean }>>({});
-  const timers = useRef<Record<string, NodeJS.Timeout>>({});
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const dragEnd = useRef(0);
   const reveal = (id: string, zone: "t" | "b" | null) => {
     if (timers.current[id]) { clearTimeout(timers.current[id]); delete timers.current[id]; }
     setShow((s) => { const c = s[id] || { t: false, b: false }; const n = zone === null ? { t: false, b: false } : { ...c, [zone]: true }; if (n.t === c.t && n.b === c.b) return s; return { ...s, [id]: n }; });
-    if (zone) timers.current[id] = setTimeout(() => setShow((s) => ({ ...s, [id]: { t: false, b: false } })), 900);
+    if (zone) timers.current[id] = setTimeout(() => setShow((s) => ({ ...s, [id]: { t: false, b: false } })), 1100);
   };
-  const upd = (id: string, p: Partial<Win>) => setWins((ws) => ws.map((w) => (w.id === id ? { ...w, ...p } : w)));
-  const front = (id: string) => setWins((ws) => { const top = Math.max(0, ...ws.map((w) => w.z)); const me = ws.find((w) => w.id === id); if (me && me.z === top) return ws; return ws.map((w) => (w.id === id ? { ...w, z: top + 1 } : w)); });
-  const setDock = (id: string, dock: boolean) => setWins((ws) => ws.map((w) => (w.id === id ? { ...w, dock, min: false, dockPeek: false } : dock && w.dock ? { ...w, dock: false, min: true } : w)));
-  const dragEnd = useRef(0); // the click that ends a drag must not restore; later clicks do
-  const hoverT = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restore = (w: Win) => {
-    if (hoverT.current) { clearTimeout(hoverT.current); hoverT.current = null; }
-    if (w.peek) upd(w.id, { ...w.peek, peek: null });
-    else if (w.dockPeek) { upd(w.id, { dockPeek: false }); setDockW(w.prevDockW || 560); }
+  useEffect(() => () => { for (const timer of Object.values(timers.current)) clearTimeout(timer); }, []);
+  useEffect(() => {
+    const ids = new Set(wins.filter((w) => w.entering).map((w) => w.id));
+    if (!ids.size) return;
+    const timer = window.setTimeout(() => setWins((ws) => ws.map((w) => ids.has(w.id) ? { ...w, entering: false } : w)), 480);
+    return () => clearTimeout(timer);
+  }, [wins, setWins]);
+  const front = (id: string) => setWins((ws) => {
+    const top = Math.max(0, ...ws.map((w) => w.z));
+    return ws.map((w) => w.id === id ? { ...w, z: top + 1 } : w);
+  });
+  const minimize = (id: string) => {
+    setWins((ws) => ws.map((w) => w.id === id ? { ...w, minimizing: true } : w));
+    window.setTimeout(() => setWins((ws) => ws.map((w) => w.id === id && w.minimizing ? { ...w, min: true, minimizing: false, entering: false, snap: undefined } : w)), 190);
   };
-  const drag = (e: React.PointerEvent, w: Win, kind: "move" | "resize" | "dock") => {
-    if ((e.target as HTMLElement).closest("button") && kind === "move") return;
-    if (w.dock && kind === "move") return;
-    e.preventDefault(); front(w.id); document.body.classList.add("dragging");
-    const sx = e.clientX, sy = e.clientY, o = { ...w }, ow = dockW;
-    let movedNow = false, live = ow;
-    const mv = (ev: PointerEvent) => {
+  const close = (id: string) => {
+    setWins((ws) => ws.map((w) => w.id === id ? { ...w, closing: true, minimizing: false } : w));
+    window.setTimeout(() => setWins((ws) => ws.filter((w) => w.id !== id || !w.closing)), 150);
+  };
+  const restore = (id: string) => setWins((ws) => {
+    const top = Math.max(0, ...ws.map((w) => w.z));
+    const otherDock = ws.some((w) => w.id !== id && w.dock && !w.min);
+    return ws.map((w) => w.id === id ? { ...w, min: false, dock: w.dock && !otherDock, z: top + 1, entering: true } : w);
+  });
+  const setDock = (id: string, dock: boolean) => setWins((ws) => {
+    if (dock && ws.some((w) => w.id !== id && w.dock && !w.min)) return ws;
+    const top = Math.max(0, ...ws.map((w) => w.z));
+    return ws.map((w) => w.id === id ? { ...w, dock, min: false, z: top + 1, snap: undefined, entering: true } : w);
+  });
+  const findEl = (id: string) => document.querySelector(`[data-win="${CSS.escape(id)}"]`) as HTMLElement | null;
+  const rectFor = (w: Win, dir: string, dx: number, dy: number) => {
+    const minW = Math.min(260, Math.max(80, innerWidth - 16)), minH = Math.min(160, Math.max(80, innerHeight - 16));
+    const maxW = Math.max(minW, innerWidth - 16), maxH = Math.max(minH, innerHeight - 16);
+    const width = Math.max(minW, Math.min(maxW, w.w + (dir.includes("e") ? dx : dir.includes("w") ? -dx : 0)));
+    const height = Math.max(minH, Math.min(maxH, w.h + (dir.includes("s") ? dy : dir.includes("n") ? -dy : 0)));
+    const x = Math.max(8, Math.min(innerWidth - width - 8, dir.includes("w") ? w.x + w.w - width : w.x));
+    const y = Math.max(8, Math.min(innerHeight - height - 8, dir.includes("n") ? w.y + w.h - height : w.y));
+    return { x, y, w: width, h: height };
+  };
+  const startDockResize = (e: React.PointerEvent, w: Win) => {
+    e.preventDefault(); e.stopPropagation(); front(w.id);
+    const sx = e.clientX, start = dockW, pid = e.pointerId;
+    const shell = document.querySelector(".shell") as HTMLElement | null;
+    document.body.classList.add("canvas-gesture", "dock-gesture");
+    findEl(w.id)?.classList.add("gesture");
+    let live = start;
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return;
+      const max = Math.max(280, innerWidth - 360), min = Math.min(320, max);
+      live = Math.round(Math.max(min, Math.min(max, start + sx - ev.clientX)));
+      shell?.style.setProperty("--dockw", `${live}px`);
+    };
+    const end = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return;
+      removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end);
+      document.body.classList.remove("canvas-gesture", "dock-gesture"); findEl(w.id)?.classList.remove("gesture");
+      setDockW(live);
+    };
+    addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
+  };
+  const startMove = (e: React.PointerEvent, w: Win) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    e.preventDefault(); e.stopPropagation(); front(w.id);
+    const el = findEl(w.id); if (!el) return;
+    const sx = e.clientX, sy = e.clientY, pid = e.pointerId;
+    const start = { x: w.x, y: w.y }, activeDock = wins.some((x) => x.id !== w.id && x.dock && !x.min);
+    let moved = false, last = start;
+    document.body.classList.add("canvas-gesture"); el.classList.add("gesture", "moving");
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return;
       const dx = ev.clientX - sx, dy = ev.clientY - sy;
-      if (Math.abs(dx) + Math.abs(dy) > 4) movedNow = true;
-      if (kind === "dock") { live = Math.round(Math.min(innerWidth - 380, Math.max(24, ow - dx))); setDockW(live); }
-      else if (kind === "resize") upd(w.id, { w: Math.max(260, o.w + dx), h: Math.max(160, o.h + dy) });
-      else upd(w.id, { x: Math.min(innerWidth - 40, Math.max(-o.w + 40, o.x + dx)), y: Math.min(innerHeight - 40, Math.max(0, o.y + dy)), peek: null });
+      if (!moved && Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      const x = Math.max(8, Math.min(innerWidth - w.w - 8, start.x + dx));
+      const y = Math.max(8, Math.min(innerHeight - w.h - 8, start.y + dy));
+      last = { x, y }; el.style.left = `${x}px`; el.style.top = `${y}px`;
+      const edge = ev.clientX < 24 ? "left" : ev.clientX > innerWidth - 24 ? "right" : "";
+      el.classList.toggle("edge-ready", !!edge); el.dataset.snap = edge;
     };
-    const up = (ev: PointerEvent) => {
-      removeEventListener("pointermove", mv); removeEventListener("pointerup", up); document.body.classList.remove("dragging");
-      if (movedNow) dragEnd.current = Date.now();
-      if (kind === "dock") { // dragged thinner than the snap point: park as a peek at the edge
-        if (live < 120 && !w.dockPeek) { upd(w.id, { dockPeek: true, prevDockW: ow >= 120 ? ow : w.prevDockW || 560 }); setDockW(16); }
-        return;
+    const end = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return;
+      move(ev);
+      removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end);
+      document.body.classList.remove("canvas-gesture"); el.classList.remove("gesture", "moving", "edge-ready");
+      el.removeAttribute("data-snap");
+      if (!moved) return;
+      dragEnd.current = Date.now();
+      let snap: "left" | "right" | undefined;
+      const edge = ev.clientX < 24 ? "left" : ev.clientX > innerWidth - 24 ? "right" : "";
+      if (edge) {
+        const avail = innerWidth - (activeDock ? dockW + 24 : 0) - 32;
+        if (avail >= 260) {
+          snap = edge;
+          const width = Math.min(w.w, avail), height = Math.min(w.h, innerHeight - 32);
+          last = { x: edge === "left" ? 16 : innerWidth - (activeDock ? dockW + 24 : 0) - width - 16, y: Math.max(16, Math.min(innerHeight - height - 16, last.y)), };
+          el.classList.add("snap-settle"); el.style.left = `${last.x}px`; el.style.top = `${last.y}px`; el.style.width = `${width}px`; el.style.height = `${height}px`;
+          requestAnimationFrame(() => window.setTimeout(() => el.classList.remove("snap-settle"), 450));
+          setWins((ws) => ws.map((x) => x.id === w.id ? { ...x, ...last, w: width, h: height, snap } : x));
+          return;
+        }
       }
-      if (kind !== "move" || !movedNow) return;
-      if (ev.clientX > innerWidth - 28) upd(w.id, { peek: { x: o.x, y: o.y, w: o.w, h: o.h }, x: innerWidth - 14, y: Math.min(o.y, innerHeight - 120), w: 14, h: Math.max(120, o.h) });
-      else if (ev.clientX < 28) upd(w.id, { peek: { x: o.x, y: o.y, w: o.w, h: o.h }, x: -o.w + 14, y: Math.min(o.y, innerHeight - 120) });
+      setWins((ws) => ws.map((x) => x.id === w.id ? { ...x, ...last, snap: undefined } : x));
     };
-    addEventListener("pointermove", mv); addEventListener("pointerup", up);
+    addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
   };
-  // minimised windows park as a tray along the top of the chat column; double-click or the button restores them
-  const tray = wins.filter((w) => w.min && !w.dock).map((w) => w.id);
-  const trayIdx = (id: string) => tray.indexOf(id);
-  const trayPos = (i: number) => {
-    const chatW = (typeof window === "undefined" ? 1200 : innerWidth) - (wins.some((w) => w.dock) ? dockW + 16 : 0);
-    const per = Math.max(1, Math.floor((chatW - 96 - 150) / 180)); // keep clear of the top-left and top-right icons
-    return { left: 96 + (i % per) * 180, top: 8 + Math.floor(i / per) * 42, width: 172 };
+  const startResize = (e: React.PointerEvent, w: Win, dir: string) => {
+    e.preventDefault(); e.stopPropagation(); front(w.id);
+    const el = findEl(w.id); if (!el) return;
+    const sx = e.clientX, sy = e.clientY, pid = e.pointerId;
+    let last = { x: w.x, y: w.y, w: w.w, h: w.h };
+    document.body.classList.add("canvas-gesture"); el.classList.add("gesture", "resizing");
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return;
+      last = rectFor(w, dir, ev.clientX - sx, ev.clientY - sy);
+      el.style.left = `${last.x}px`; el.style.top = `${last.y}px`; el.style.width = `${last.w}px`; el.style.height = `${last.h}px`;
+    };
+    const end = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return;
+      move(ev); removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end);
+      document.body.classList.remove("canvas-gesture"); el.classList.remove("gesture", "resizing");
+      setWins((ws) => ws.map((x) => x.id === w.id ? { ...x, ...last, snap: undefined } : x));
+    };
+    addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
   };
+  const resizeByKey = (e: React.KeyboardEvent<HTMLDivElement>, w: Win, dir: string) => {
+    const delta = e.shiftKey ? 40 : 12, horizontal = dir.includes("e") || dir.includes("w"), vertical = dir.includes("n") || dir.includes("s");
+    const dx = horizontal ? (e.key === "ArrowRight" ? delta : e.key === "ArrowLeft" ? -delta : 0) : 0;
+    const dy = vertical ? (e.key === "ArrowDown" ? delta : e.key === "ArrowUp" ? -delta : 0) : 0;
+    if (!dx && !dy) return;
+    e.preventDefault();
+    const next = rectFor(w, dir, dx, dy);
+    setWins((ws) => ws.map((x) => x.id === w.id ? { ...x, ...next, snap: undefined } : x));
+  };
+
+  const minimized = wins.filter((w) => w.min);
+  const [trayBottom, setTrayBottom] = useState(88);
+  useEffect(() => {
+    if (!minimized.length) return;
+    const stack = document.querySelector(".dock-stack") as HTMLElement | null;
+    if (!stack) return;
+    const update = () => {
+      const next = Math.max(80, Math.round(window.innerHeight - stack.getBoundingClientRect().top + 12));
+      setTrayBottom((old) => old === next ? old : next);
+    };
+    update();
+    const ro = new ResizeObserver(update); ro.observe(stack);
+    window.addEventListener("resize", update);
+    return () => { ro.disconnect(); window.removeEventListener("resize", update); };
+  }, [minimized.length, wins]);
+  const grips = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
   return <>
-    {wins.map((w) => (
-      <div key={w.id} data-win={w.id} className={`win${w.min && !w.dock ? " min" : ""}${w.pinned ? " pinned" : ""}${w.dock ? " docked" : ""}${w.peek ? " peek" + (w.peek.x > w.x ? " peek-r" : " peek-l") : ""}${w.dockPeek ? " dockpeek" : ""}${(show[w.id]?.t) ? " show-t" : ""}${(show[w.id]?.b) ? " show-b" : ""}`}
-        style={w.dock ? { zIndex: 30 } : w.min ? { ...trayPos(trayIdx(w.id)), zIndex: 40 + w.z } : { left: w.x, top: w.y, width: w.w, height: w.h, zIndex: 40 + w.z }}
+    {wins.filter((w) => !w.min).map((w) => {
+      const canDock = !wins.some((other) => other.id !== w.id && other.dock && !other.min);
+      return <div key={w.id} data-win={w.id} className={`win${w.pinned ? " pinned" : ""}${w.dock ? " docked" : ""}${w.entering ? " entering" : ""}${w.minimizing ? " minimizing" : ""}${w.closing ? " closing" : ""}${w.snap ? ` edge-snapped snap-${w.snap}` : ""}${show[w.id]?.t ? " show-t" : ""}${show[w.id]?.b ? " show-b" : ""}`}
+        style={w.dock ? { zIndex: 30 } : { left: w.x, top: w.y, width: w.w, height: w.h, zIndex: 40 + w.z }}
         onPointerDown={() => front(w.id)}
-        onClick={() => { if (Date.now() - dragEnd.current < 400) return; restore(w); }}
-        onPointerEnter={() => { if (w.dockPeek) { if (hoverT.current) clearTimeout(hoverT.current); hoverT.current = setTimeout(() => restore(w), 450); } }}
         onPointerMove={(e) => {
-          if (w.pinned || w.min || w.peek || w.dockPeek) return;
-          const r = e.currentTarget.getBoundingClientRect();
-          const y = e.clientY - r.top;
-          reveal(w.id, y < 52 ? "t" : r.height - y < 52 ? "b" : null);
+          if (w.pinned) return;
+          const r = e.currentTarget.getBoundingClientRect(), y = e.clientY - r.top;
+          reveal(w.id, y < 48 ? "t" : r.height - y < 48 ? "b" : null);
         }}
-        onPointerLeave={() => { if (hoverT.current) { clearTimeout(hoverT.current); hoverT.current = null; } if (!w.pinned) reveal(w.id, null); }}>
-        <div className="win-bar top" onPointerDown={(e) => !w.min && drag(e, w, "move")} onClick={(e) => { if (w.min && !(e.target as HTMLElement).closest("button")) upd(w.id, { min: false }); if (!(e.target as HTMLElement).closest("button")) e.stopPropagation(); }} onDoubleClick={() => !w.dock && !w.min && upd(w.id, { min: true })}>
+        onPointerLeave={() => { if (!w.pinned) reveal(w.id, null); }}>
+        <div className="win-bar top" onPointerDown={(e) => !w.dock && startMove(e, w)} onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest("button")) minimize(w.id); }}>
           <span className="title">{w.spec.title}</span>
-          {!w.min && <button className="ib sm" aria-label={w.pinned ? "Unpin bars" : "Pin bars"} title={w.pinned ? "Unpin bars (bars float over content)" : "Pin bars (part of the layout)"} onClick={() => upd(w.id, { pinned: !w.pinned })}>{w.pinned ? <PinOff /> : <Pin />}</button>}
-          <button className="ib sm" aria-label="Close" title="Close" onClick={() => setWins((ws) => ws.filter((x) => x.id !== w.id))}><X /></button>
+          <button className="ib sm" aria-label={w.pinned ? "Unpin bars" : "Pin bars"} title={w.pinned ? "Unpin bars" : "Pin bars"} onClick={() => setWins((ws) => ws.map((x) => x.id === w.id ? { ...x, pinned: !x.pinned } : x))}>{w.pinned ? <PinOff /> : <Pin />}</button>
+          <button className="ib sm" aria-label="Close canvas" title="Close canvas" onClick={() => close(w.id)}><X /></button>
         </div>
-        <Viewer spec={w.spec} winId={w.id} ctl={!w.min ? <>
+        <Viewer spec={w.spec} winId={w.id} ctl={<>
           <span className="bar-sep" />
-          <button className="ib sm" aria-label={w.dock ? "Float" : "Dock beside chat"} title={w.dock ? "Float" : "Dock beside chat"} onClick={() => setDock(w.id, !w.dock)}>{w.dock ? <PictureInPicture2 /> : <PanelRight />}</button>
-          {!w.dock && <button className="ib sm" aria-label="Minimize" title="Minimize" onClick={() => upd(w.id, { min: true })}><Minus /></button>}
-        </> : undefined} />
-        {w.dock ? <div className="win-dockresize" onPointerDown={(e) => drag(e, w, "dock")} aria-label="Resize" role="separator" aria-orientation="vertical" />
-          : <div className="win-resize" onPointerDown={(e) => drag(e, w, "resize")} />}
-      </div>
-    ))}
+          <button className="ib sm" aria-label={w.dock ? "Float canvas" : "Dock beside chat"} title={w.dock ? "Float canvas" : canDock ? "Dock beside chat" : "Sidebar in use; minimize or float that canvas first"} disabled={!w.dock && !canDock} onClick={() => setDock(w.id, !w.dock)}>{w.dock ? <PictureInPicture2 /> : <PanelRight />}</button>
+          <button className="ib sm" aria-label="Minimize canvas" title="Minimize" onClick={() => minimize(w.id)}><Minus /></button>
+        </>} />
+        {w.dock ? <div className="win-dockresize" onPointerDown={(e) => startDockResize(e, w)} aria-label="Resize sidebar" title="Drag to resize sidebar" role="separator" aria-orientation="vertical" /> : <>
+          {grips.map((dir) => <div key={dir} className={`win-grip grip-${dir}`} role="separator" tabIndex={0} aria-label={`Resize window ${dir}`} aria-orientation={dir === "n" || dir === "s" ? "horizontal" : "vertical"}
+            onPointerDown={(e) => startResize(e, w, dir)} onKeyDown={(e) => resizeByKey(e, w, dir)} />)}
+        </>}
+      </div>;
+    })}
+    {minimized.length > 0 && <div className="canvas-tray" style={{ bottom: `calc(${trayBottom}px + env(safe-area-inset-bottom))` }} role="toolbar" aria-label="Minimized canvases">
+      <div className="canvas-tray-head"><AppWindow /><span>Minimized</span><small>{minimized.length}</small></div>
+      <div className="canvas-tray-list">{minimized.map((w) => <div key={w.id} className={"canvas-task" + (w.closing ? " closing" : "")}>
+        <button className="canvas-task-restore" onClick={() => restore(w.id)} aria-label={`Restore ${w.spec.title}`} title={`Restore ${w.spec.title}`}>
+          {w.spec.kind === "file" ? <FileText /> : <AppWindow />}<span>{w.spec.title}</span>
+        </button>
+        <button className="canvas-task-close" onClick={() => close(w.id)} aria-label={`Close ${w.spec.title}`} title="Close"><X /></button>
+      </div>)}</div>
+    </div>}
   </>;
 }
