@@ -289,6 +289,9 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         if (a.catalog_id && !cat) return { ok: false, result: `Unknown catalog id "${a.catalog_id}".` };
         const cfg: ServerCfg | null = cat ? { ...cat.config, enabled: true } : a.url ? { url: String(a.url), enabled: true } : a.command ? { command: String(a.command), args: (a.args as string[]) || [], enabled: true } : null;
         if (!cfg) return { ok: false, result: "Give a catalog_id, a url, or a command." };
+        const missing = varsIn(cfg).filter((v) => !credStatus(st, [v])[v]);
+        if (missing.length)
+          return { ok: false, result: `${name} needs ${missing.join(", ")} before it can connect. Tell the user the exact variables and where to create them (${(cat?.creds || []).filter((c) => missing.includes(c.name)).map((c) => `${c.name}: ${c.help || c.label}`).join("; ") || "Settings → Tools → Secrets"}). Nothing was added yet — call mcp_add again once they are in place.` };
         const servers = await readServers();
         await writeServers({ ...servers, [name]: cfg });
         dropMcpPool();
@@ -301,11 +304,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
 Sign-in link (works once, ask the user to open it): ${r.url}
 They can also press Connect in Settings → MCP.` : "";
           } catch (e) { note = `\nSign-in could not start automatically (${String((e as Error).message || e).slice(0, 200)}); the user can connect it from Settings → MCP.`; }
-        } else if (Object.keys(cfg.headers || {}).length || cfg.env) {
-          const vars = varsIn(cfg);
-          const missing = vars.filter((v) => !credStatus(st, [v])[v]);
-          note = missing.length ? `\nIt needs ${missing.join(", ")}: tell the user exactly where to create that (Settings → Tools → Secrets).` : "\nIts credentials are already available.";
-        }
+        } else if (varsIn(cfg).length) note = "\nIts credentials are already available.";
         return { ok: true, result: `${name} added and enabled${cat ? ` (${cat.title})` : ""}. Tools appear as mcp__${name}__… from the next message.${note}` };
       }
       case "mcp_remove": {
