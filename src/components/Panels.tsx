@@ -15,8 +15,11 @@ export function ChatsPanel({ convs, current, running = [], onOpen, onDelete, onC
   const [hits, setHits] = useState<{ convId: string; title: string; messageId: string; snippet: string }[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   // Chats: full conversations. History: searches (temporary, messages only) until "Open in chat" converts one.
-  const [tab, setTab] = useState<"chat" | "search">(() => (convs.find((c) => c.id === current)?.mode === "search" ? "search" : "chat"));
-  useEffect(() => { const m = convs.find((c) => c.id === current)?.mode; if (m) setTab(m); }, [current, convs]); // follow the open item so a new search shows under History
+  const mode = convs.find((c) => c.id === current)?.mode;
+  const tabKey = `${current || ""}:${mode || ""}`;
+  const [tabChoice, setTabChoice] = useState<{ key: string; tab: "chat" | "search" }>(() => ({ key: tabKey, tab: mode || "chat" }));
+  const tab = tabChoice.key === tabKey ? tabChoice.tab : mode || "chat";
+  const setTab = (next: "chat" | "search") => setTabChoice({ key: tabKey, tab: next });
   const list = convs.filter((c) => (c.mode || "chat") === tab);
   useEffect(() => {
     if (!q.trim()) return; // results are only shown while there is a query
@@ -153,6 +156,35 @@ export function ContextStatus({ c }: { c: CtxRef }) {
     workspace root; ".." climbs a level (chat → workspace). Nothing auto-expands. */
 export function WorkspacePanel({ onClose, ctx }: { onClose: () => void; ctx?: CtxRef | null }) {
   const app = useApp();
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [defaults, setDefaults] = useState<{ path: string; label: string }[] | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
+  const [restoreMessage, setRestoreMessage] = useState("");
+  const loadDefaults = async () => {
+    const r = await fetch("/api/workspace/defaults").then((x) => x.json()).catch(() => ({}));
+    if (Array.isArray(r.defaults)) setDefaults(r.defaults);
+    else setRestoreError(String(r.error || "Could not load shipped defaults."));
+  };
+  const toggleRestore = () => {
+    const next = !restoreOpen;
+    setRestoreOpen(next); setRestoreError(""); setRestoreMessage("");
+    if (next && defaults === null) void loadDefaults();
+  };
+  const restore = async (path?: string) => {
+    const name = path ? defaults?.find((d) => d.path === path)?.label || path : "all shipped system defaults";
+    const detail = path ? `Restore ${name}?` : "Restore all shipped workspace defaults, including prompts, memory, MCP settings, skills and the workspace guide?";
+    if (!confirm(`${detail}\n\nYour edited copies will be backed up under workspace/.trash/defaults. Files you added that are not in the shipped template will be left alone.`)) return;
+    setRestoreBusy(true); setRestoreError(""); setRestoreMessage("");
+    const r = await fetch("/api/workspace/defaults", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(path ? { paths: [path] } : { all: true }) }).then((x) => x.json()).catch(() => ({}));
+    setRestoreBusy(false);
+    if (!r.ok) setRestoreError(String(r.error || "Restore failed."));
+    else {
+      const n = Array.isArray(r.restored) ? r.restored.length : 0;
+      setRestoreMessage(n ? `Restored ${n} file${n === 1 ? "" : "s"}. Previous versions are in workspace/.trash/defaults.` : "Already at shipped defaults; nothing changed.");
+      app.refreshTree();
+    }
+  };
   // null = "follow the open chat's folder"; any navigation makes it explicit
   const [cwd, setCwd] = useState<string | null>(null);
   const dir = cwd === null ? (app.convId ? chatDir(app.convId) : "") : cwd;
@@ -163,9 +195,18 @@ export function WorkspacePanel({ onClose, ctx }: { onClose: () => void; ctx?: Ct
   return (
     <div className="panel">
       <div className="panel-head"><span>Workspace</span><span className="sp" />
+        <button className={"ib sm" + (restoreOpen ? " on" : "")} aria-label="Restore system defaults" title="Restore system defaults" onClick={toggleRestore}><Undo2 /></button>
         <label className="ib sm" aria-label="Upload here" title={`Upload to ${dir || "workspace"}/`} style={{ cursor: "pointer" }}><Upload /><input type="file" multiple hidden onChange={async (e) => { if (e.target.files) { await upload([...e.target.files], dir || undefined); app.refreshTree(); } e.target.value = ""; }} /></label>
         <button className="ib sm" aria-label="Close" onClick={onClose}><X /></button>
       </div>
+      {restoreOpen && <div className="restore-box">
+        <div className="restore-copy">Restore files shipped in the workspace template. Edited copies are backed up; files you added stay untouched.</div>
+        <button className="restore-all" disabled={restoreBusy || defaults === null} onClick={() => void restore()}><Undo2 /><span>Restore all defaults</span>{restoreBusy && <i className="spin" />}</button>
+        <div className="restore-heading">Restore one file</div>
+        <div className="restore-list">{defaults?.map((d) => <button key={d.path} disabled={restoreBusy} onClick={() => void restore(d.path)} title={d.path}><span>{d.label}</span><small>{d.path.replace(/^system\//, "")}</small></button>) || (restoreError ? <button className="restore-retry" onClick={() => { setRestoreError(""); void loadDefaults(); }}>Retry loading defaults</button> : <div className="restore-loading">Loading default files…</div>)}</div>
+        {restoreError && <div className="restore-feedback error">{restoreError}</div>}
+        {restoreMessage && <div className="restore-feedback">{restoreMessage}</div>}
+      </div>}
       <div className="crumbs-bar">
         {dir !== "" && <button className="ib sm" aria-label="Up a folder" title="Up a folder" onClick={up}><ArrowUpLeft /></button>}
         <button className={"crumb" + (dir === "" ? " on" : "")} onClick={() => setCwd("")}><Home />workspace</button>

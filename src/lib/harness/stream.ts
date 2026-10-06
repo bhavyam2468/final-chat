@@ -16,7 +16,7 @@ const CLOSE = /<\/(think|thinking|reasoning)>/i;
 const TAGS = ["<think>", "</think>", "<thinking>", "</thinking>", "<reasoning>", "</reasoning>"];
 
 /** retract: text emitted in earlier chunks of this step that turned out to be reasoning (orphan closer). */
-export type Split = { text: string; reasoning: string; orphan?: boolean; retract?: string };
+export type Split = { text: string; reasoning: string; orphan?: boolean; retract?: string; reasoningEnd?: boolean };
 
 export class ReasoningSplitter {
   private inside = false;
@@ -26,7 +26,7 @@ export class ReasoningSplitter {
   push(d: string): Split {
     let s = this.hold + d;
     this.hold = "";
-    let text = "", reasoning = "", orphan = false, retract = "";
+    let text = "", reasoning = "", orphan = false, retract = "", reasoningEnd = false;
     // hold a trailing partial tag ("<thi") until the next chunk decides it
     const lt = s.lastIndexOf("<");
     if (lt >= 0 && lt > s.length - 13 && !s.slice(lt).includes(">") && TAGS.some((t) => t.startsWith(s.slice(lt).toLowerCase()))) { this.hold = s.slice(lt); s = s.slice(0, lt); }
@@ -37,6 +37,7 @@ export class ReasoningSplitter {
         reasoning += s.slice(0, m.index);
         s = s.slice(m.index + m[0].length).replace(/^\s+/, "");
         this.inside = false;
+        reasoningEnd = true;
       } else {
         const o = OPEN.exec(s), c = CLOSE.exec(s);
         if (c && (!o || c.index < o.index)) {
@@ -45,7 +46,7 @@ export class ReasoningSplitter {
           reasoning = retract + reasoning + text + s.slice(0, c.index);
           text = "";
           s = s.slice(c.index + c[0].length).replace(/^\s+/, "");
-          orphan = true; this.started = false;
+          orphan = true; reasoningEnd = true; this.started = false;
           continue;
         }
         if (!o) { text += s; break; }
@@ -56,9 +57,94 @@ export class ReasoningSplitter {
     }
     if (!this.started && text) { text = text.replace(/^\s+/, ""); if (text) this.started = true; }
     this.emitted += text;
-    return { text, reasoning, ...(orphan ? { orphan, retract } : {}) };
+    return { text, reasoning, ...(orphan ? { orphan, retract } : {}), ...(reasoningEnd ? { reasoningEnd: true } : {}) };
   }
   end(): Split { const h = this.hold; this.hold = ""; return this.inside ? { text: "", reasoning: h } : { text: h, reasoning: "" }; }
+}
+
+/**
+ * Parse whatever complete (or currently streamed) fields are available in a JSON object.
+ * Tool-call arguments often arrive as several SSE deltas, so a normal JSON.parse hides every
+ * argument until the final brace. This exposes decoded string prefixes without ever rendering
+ * the raw JSON to users. Incomplete nested objects/arrays are intentionally omitted.
+ */
+export function parsePartialJsonObject(source: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(source);
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch { /* streamed prefix */ }
+
+  const out: Record<string, unknown> = {};
+  let i = 0;
+  const skip = () => { while (/\s/.test(source[i] || "")) i++; };
+  const stringAt = (): { value: string; closed: boolean } | null => {
+    if (source[i] !== '"') return null;
+    const start = ++i;
+    let j = start;
+    for (; j < source.length; j++) {
+      if (source[j] === "\\") { j++; continue; }
+      if (source[j] === '"') {
+        const raw = source.slice(start, j);
+        i = j + 1;
+        try { return { value: JSON.parse(`"${raw}"`) as string, closed: true }; }
+        catch { return { value: raw, closed: true }; }
+      }
+    }
+    let raw = source.slice(start);
+    raw = raw.replace(/\\u[\da-f]{0,3}$/i, "").replace(/\\$/, "");
+    i = source.length;
+    try { return { value: JSON.parse(`"${raw}"`) as string, closed: false }; }
+    catch { return { value: raw.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t").replace(/\\(["\\/])/g, "$1"), closed: false }; }
+  };
+  const valueAt = (): { value: unknown; complete: boolean } | null => {
+    skip();
+    if (source[i] === '"') { const s = stringAt(); return s && { value: s.value, complete: s.closed }; }
+    if (source[i] === "{" || source[i] === "[") {
+      const start = i;
+      const stack: string[] = [];
+      let quoted = false, escaped = false;
+      for (; i < source.length; i++) {
+        const ch = source[i];
+        if (quoted) { if (escaped) escaped = false; else if (ch === "\\") escaped = true; else if (ch === '"') quoted = false; continue; }
+        if (ch === '"') quoted = true;
+        else if (ch === "{") stack.push("}");
+        else if (ch === "[") stack.push("]");
+        else if ((ch === "}" || ch === "]") && stack.at(-1) === ch) {
+          stack.pop();
+          if (!stack.length) { i++; try { return { value: JSON.parse(source.slice(start, i)), complete: true }; } catch { return null; } }
+        }
+      }
+      i = source.length;
+      return null;
+    }
+    const start = i;
+    while (i < source.length && source[i] !== "," && source[i] !== "}") i++;
+    const raw = source.slice(start, i).trim();
+    if (!raw) return null;
+    try { return { value: JSON.parse(raw), complete: true }; } catch { return null; }
+  };
+
+  skip();
+  if (source[i] !== "{") return out;
+  i++;
+  while (i < source.length) {
+    skip();
+    if (source[i] === ",") { i++; continue; }
+    if (source[i] === "}" || i >= source.length) break;
+    const key = stringAt();
+    if (!key?.closed) break;
+    skip();
+    if (source[i] !== ":") break;
+    i++;
+    const value = valueAt();
+    if (!value) break;
+    out[key.value] = value.value;
+    if (!value.complete) break;
+    skip();
+    if (source[i] !== ",") break;
+    i++;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- filler

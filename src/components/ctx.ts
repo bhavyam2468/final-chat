@@ -3,12 +3,12 @@ import { createContext, useContext } from "react";
 
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
-  | { type: "reasoning"; text: string; ms?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string };
+  | { type: "reasoning"; id?: string; text: string; ms?: number; startedAt?: number }
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string; live?: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
 export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
-  content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null;
+  content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null; streamStartedAt?: number;
 };
 export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null; mode?: "chat" | "search"; state?: { mode?: "chat" | "search"; project?: string } };
 export type TreeNode = { name: string; path: string; dir: boolean; size?: number; children?: TreeNode[] };
