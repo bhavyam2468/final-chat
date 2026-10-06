@@ -54,7 +54,17 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done }));
   }, [text, chips]);
 
-  const autosize = useCallback(() => { const t = ta.current; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }, []);
+  const autosize = useCallback(() => {
+    const t = ta.current; if (!t) return;
+    // Do not collapse to `auto` visibly on every keystroke. Measure in the same
+    // layout pass and only touch style when a line was actually added/removed.
+    const previous = t.style.height;
+    t.style.height = "0px";
+    const next = Math.min(t.scrollHeight, window.innerHeight * 0.4);
+    t.style.height = previous;
+    if (Math.abs(t.getBoundingClientRect().height - next) > 0.5) t.style.height = next + "px";
+    t.style.overflowY = t.scrollHeight > window.innerHeight * 0.4 ? "auto" : "hidden";
+  }, []);
   useLayoutEffect(autosize, [text, autosize]);
 
   const addFiles = useCallback(async (list: FileList | File[]) => {
