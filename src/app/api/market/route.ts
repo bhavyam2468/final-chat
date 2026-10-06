@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { spawnSync } from "child_process";
-import { MCP_CATALOG, SKILL_REPOS, BUILTIN, overlapOf } from "@/lib/market";
+import { MCP_CATALOG, SKILL_REPOS, BUILTIN, overlapOf, keyless } from "@/lib/market";
 import { readServers, writeServers } from "@/lib/mcp";
 import { authStatus } from "@/lib/mcp-auth";
 import { credStatus, varsIn, nativeAllowed } from "@/lib/credentials";
@@ -20,7 +20,7 @@ export async function GET() {
   return Response.json({
     native: nativeAllowed(st),
     mcp: MCP_CATALOG.map((e) => ({ ...e, installed: !!servers[e.id], enabled: !!servers[e.id]?.enabled, creds: e.creds.map((c) => ({ ...c, source: credStatus(st, [c.name])[c.name] })), missingBin: e.needs && !bins[e.needs] ? e.needs : null })),
-    installed: Object.fromEntries(Object.entries(servers).map(([k, c]) => [k, { vars: credStatus(st, varsIn(c)), overlap: overlapOf(k), oauth: !!c.url && !!MCP_CATALOG.find((e) => e.id === k)?.oauth, ...auth[k] }])),
+    installed: Object.fromEntries(Object.entries(servers).map(([k, c]) => [k, { vars: credStatus(st, varsIn(c)), overlap: overlapOf(k), oauth: !!c.url && !varsIn(c).length && !keyless(k), ...auth[k] }])),
     builtin: BUILTIN,
     skills: SKILL_REPOS,
   });

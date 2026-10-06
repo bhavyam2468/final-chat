@@ -124,6 +124,12 @@ export const SKILL_REPOS: SkillRepo[] = [
   { source: "addyosmani/agent-skills", title: "Addy Osmani skills", description: "Web performance, accessibility and engineering workflows." },
 ];
 
+/** A catalog server that works with no account at all (nothing to sign in for). */
+export const keyless = (id: string) => {
+  const e = MCP_CATALOG.find((x) => x.id === id);
+  return !!e && !e.oauth && !e.prereg && e.creds.every((c) => c.optional);
+};
+
 export type RegEntry = { name: string; description: string; url: string | null; pkg: { registry: string; id: string } | null; overlap: string | null };
 
 /** Search the official MCP registry (registry.modelcontextprotocol.io) — public, no key. */
