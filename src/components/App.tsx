@@ -553,6 +553,7 @@ export default function App() {
         <div className={"chrome l" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.chats ? " on" : "")} aria-label="Chats" onClick={() => tog("chats")}><PanelLeft /></button>
           <button className={"ib" + (surface === "general" && !conv ? " on" : "")} aria-label="New chat" title="New chat · opens General mode" onClick={newChat}><SquarePen /></button>
+          {(surface === "general" || conv?.mode === "general") && <button className="general-quick" onClick={promote} title="Promote this conversation to chat">Open in chat</button>}
         </div>
         <div className={"chrome r" + (chromeIdle ? " is-idle" : "")}>
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
@@ -562,10 +563,6 @@ export default function App() {
         </div>
 
         <div className="scroll" ref={scroller}>
-          {(surface === "general" || conv?.mode === "general") && <div className="general-toolbar">
-            <div><span className="general-kicker">General</span><span className="general-copy">A separate space for unrelated questions</span></div>
-            <button className="promote" onClick={promote}>Open in chat</button>
-          </div>}
           <main className="column">{mainPath.map((m, i) => renderTurn(m, false, i === mainPath.length - 1))}</main>
         </div>
 
