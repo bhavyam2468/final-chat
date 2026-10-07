@@ -10,6 +10,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Square, RotateCw, Plus, Copy, Clipboard, Eraser } from "lucide-react";
 import { CanvasSpec, useApp } from "./ctx";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/700.css";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
@@ -41,7 +44,8 @@ const FALLBACK_BRIGHT = ["#5f5f5f", "#e09690", "#9dcf9e", "#e6d9a3", "#b3c9ef", 
 function termTheme(): import("@xterm/xterm").ITheme {
   const cs = getComputedStyle(document.documentElement);
   const v = (n: string, fb: string) => solid(cs.getPropertyValue(n) || "", fb);
-  const bg = mix(v("--bg", "#171613"), v("--fg", "#e8e2d4"), 0.1, "#100f0d");
+  // mix() weights its FIRST argument: 90% background + 10% foreground lifts the app surface just a touch
+  const bg = mix(v("--bg", "#171613"), v("--fg", "#e8e2d4"), 0.9, "#100f0d");
   const fg = v("--fg", "#e8e2d4");
   const cols = Array.from({ length: 8 }, (_, i) => v(`--ans-${i}`, FALLBACK[i]));
   const bright = Array.from({ length: 8 }, (_, i) => v(`--ans-b${i}`, FALLBACK_BRIGHT[i]));
@@ -58,8 +62,8 @@ async function mountTerm(holder: HTMLDivElement, opts: { readOnly?: boolean; fon
   const { Terminal } = await import("@xterm/xterm");
   const { FitAddon } = await import("@xterm/addon-fit");
   const term = new Terminal({
-    fontFamily: 'var(--font-mono), ui-monospace, "JetBrains Mono", Menlo, monospace',
-    fontSize: opts.fontSize ?? 13.5, lineHeight: 1.25,
+    fontFamily: '"JetBrains Mono", var(--font-mono), ui-monospace, Menlo, monospace',
+    fontSize: opts.fontSize ?? 14, lineHeight: 1.32, letterSpacing: 0.2,
     cursorBlink: true, cursorStyle: "bar", cursorWidth: 2,
     scrollback: 8000, convertEol: false, allowProposedApi: true,
     disableStdin: !!opts.readOnly,
