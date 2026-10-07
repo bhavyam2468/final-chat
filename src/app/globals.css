@@ -467,6 +467,10 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
     animation: none !important; transition: none !important;
   }
   .scroll, .dock, .chrome.r, .rstack, .pdfwrap, .win-body.k-pdf { scroll-behavior: auto !important; transition: none !important; }
+  /* the palette opens by animating its grid row 0fr -> 1fr; without motion it must simply be open */
+  .pal { grid-template-rows: 1fr !important; animation: none !important; transition: none !important; }
+  .pal-in, .pal-row, .pal-back, .qstrip-head, .qitem, .ppill, .pdot, .pexit,
+  .send-slot.two .send.ghost { animation: none !important; transition: none !important; }
 }
 
 /* ============ Canvas viewers ============ */

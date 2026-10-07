@@ -182,7 +182,7 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
   );
 }
 
-function NewTerm({ host, setBar, onNew }: { host?: boolean; setBar: (n: React.ReactNode) => void; onNew: (id: string) => void }) {
+function NewTerm({ host, onNew }: { host?: boolean; onNew: (id: string) => void }) {
   const body = useRef<HTMLDivElement>(null);
   const [err, setErr] = useState("");
   const create = useCallback(() => {
@@ -232,5 +232,5 @@ export function TermView({ spec, setBar }: { spec: Extract<CanvasSpec, { kind: "
   const [sid, setSid] = useState<string | null>(spec.id || null);
   if (spec.proc) return <ProcLog name={spec.proc} setBar={setBar} />;
   if (sid) return <Shell key={sid} id={sid} host={spec.host} setBar={setBar} />;
-  return <NewTerm host={spec.host} setBar={setBar} onNew={setSid} />;
+  return <NewTerm host={spec.host} onNew={setSid} />;
 }

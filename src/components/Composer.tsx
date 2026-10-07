@@ -278,7 +278,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   } : null;
 
   return (
-    <div className={`composer${open ? " open" : ""}${p.inline ? " inline" : ""}${drag ? " drag" : ""}${mode ? " pal-open" : ""}`}
+    <div className={`composer${open ? " open" : ""}${p.inline ? " inline" : ""}${drag ? " drag" : ""}${mode && paletteApi ? " pal-open" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
       {mode && paletteApi && <Palette ref={palRef} mode={mode} query={palQuery} arg={palArg} api={paletteApi} collapse={() => collapsePalette(false)} onPanel={openPanel} />}

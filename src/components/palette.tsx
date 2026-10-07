@@ -188,7 +188,7 @@ export const Palette = forwardRef<PaletteHandle, {
       return out;
     }
     return out;
-  }, [mode, q, api, app, hits, skills, dir, collapse, onPanel]);
+  }, [mode, q, arg, api, app, hits, skills, dir, collapse, onPanel]);
 
   const shown = acts || rows;
   if (acts) { /* clamp index into drilled actions */ if (idx >= shown.length) setIdx(0); }
