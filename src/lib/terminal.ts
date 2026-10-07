@@ -33,15 +33,32 @@ export type Term = {
 const MAX_LOG = 300_000;
 const MAX_SESSIONS = 12;
 
-const g = globalThis as unknown as { __terms?: Map<string, Term>; __ptyLib?: typeof import("node-pty") | null };
+/**
+ * The slice of node-pty this file uses. Described structurally rather than through the package's own
+ * declarations: node-pty is an optional dependency, so a checkout without it (no C toolchain) must still
+ * type-check and build — and it does, through the `script` fallback below.
+ */
+type PtySession = {
+  pid: number;
+  cols: number;
+  rows: number;
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  kill: () => void;
+  onData: (cb: (chunk: string) => void) => void;
+  onExit: (cb: (e: { exitCode: number }) => void) => void;
+};
+type PtyLib = { spawn: (file: string, args: string[], opts: { name: string; cols: number; rows: number; cwd: string; env: Record<string, string | undefined> }) => PtySession };
+
+const g = globalThis as unknown as { __terms?: Map<string, Term>; __ptyLib?: PtyLib | null };
 const terms: Map<string, Term> = (g.__terms ??= new Map());
 
 /** node-pty when it built; null → `script` fallback (fixed size). */
-function ptyLib(): typeof import("node-pty") | null {
+function ptyLib(): PtyLib | null {
   if (g.__ptyLib) return g.__ptyLib;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const lib = require("node-pty") as typeof import("node-pty");
+    const lib = require("node-pty") as PtyLib;
     g.__ptyLib = lib;
     return lib;
   } catch {
