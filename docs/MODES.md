@@ -19,7 +19,7 @@ nothing; `general` is *not* a mode, it is the separate quiet surface for unrelat
 |---|---|---|
 | `chat` | Normal conversation | — (all allowed; the skill sets the order of work) |
 | `search` | Web first, sourced, read-only | `fs_write, fs_edit, fs_insert, fs_move, fs_delete, shell, host_shell, pip_install, skill_create, mcp_add, proc_start, proc_write, proc_signal, proc_restart, proc_stop, run_python, file_run, check, browser` |
-| `plan` | Read-only reconnaissance, then a plan | `fs_write, fs_edit, fs_insert, fs_move, fs_delete, shell, host_shell, pip_install, skill_create, mcp_add, proc_start, proc_write, proc_signal, proc_restart, proc_stop, check, browser` |
+| `plan` | Read-only reconnaissance, then a plan | `fs_write, fs_edit, fs_insert, fs_move, fs_delete, shell, host_shell, pip_install, skill_create, mcp_add, proc_start, proc_write, proc_signal, proc_restart, proc_stop, check, browser, workflow_start` |
 | `debug` | Reproduce, read the real error, minimal fix | — (all allowed; the skill sets the order of work) |
 | `build` | Implement, run it, report what changed | — (all allowed; the skill sets the order of work) |
 | `learn` | Teach in small steps, check understanding | `fs_write, fs_edit, fs_insert, fs_move, fs_delete, shell, host_shell, pip_install, skill_create, mcp_add, proc_start, proc_write, proc_signal, proc_restart, proc_stop, check` |

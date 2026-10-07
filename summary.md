@@ -99,6 +99,14 @@
 4. `execTool()` (`tools/index.ts`) refuses a denied name a second time with a mode-specific message — the gate that catches queued/steered messages and mid-run mode switches.
 5. The UI mirror: `/mode` opens the palette's `modes` panel, the composer shows one chip, `App.applyMode()` maps `state.mode` ({"general"} = the quiet surface, a mode id = a posture) to (surface, mode), and `chooseMode()` PATCHes the conversation. Docs: `docs/MODES.md`; proof: `dev/modes-e2e.mjs`.
 
+#### Workflows (a window, not a block)
+1. `src/lib/workflows/types.ts` is the contract: `WorkflowDef` (id, name, hint, icon, input, budget, steps, panes, deliver, prompts), `StepSpec{id,title,note,kind}`, `Budget`, `PaneDef`, `RunState`, `RunEvent`, `Source`.
+2. `deep-research.ts` is the built-in: eight `StepSpec`s over the engine's kinds (plan, search, select, read, gaps, write, check, deliver) plus seven prompts as data. `index.ts` is the registry (`listWorkflows`/`workflowOf`/`loadWorkflow`) and merges a tolerant `workspace/workflows/<id>.json` override field by field.
+3. `runner.ts` executes a run in `globalThis.__wfRuns`: every model call is isolated (`complete()` with its own system prompt and no history), pages are read at `mapLimit 3`, `run.json` is written coalesced at 300 ms with `report.md` beside it (newest 20 runs kept), `attachRun()` serves replay-then-live NDJSON, and `deliver()` appends exactly one assistant message — parts `[run, text]` — to the newest main-line leaf.
+4. API: `GET /api/workflows` (definitions + `active` + `recent(150s)`), `POST` start/stop, `GET /api/workflows/run?id=&stream=1`. The chat page polls every 4 s while visible and pulls the conversation when a new `recent[].messageId` appears.
+5. UI: `Workflow.tsx` is a *chrome* canvas window (`{ratio:1.62, pw:1040}`) rendering itself from the run snapshot — head with status/elapsed/stats, a step rail, and panes (native: steps/plan/sources/report/log; BlocksUI: evidence). `Message.tsx` draws the `run` part as a chip that reopens the window; `Composer.tsx` turns `/workflows` (or `/research`) into a `.cwork` chip so the next send is the run's input; `palette.tsx` lists definitions.
+6. The model's side: `workflow_list` + `workflow_start(workflow, question)` (`tools/index.ts`) and `system/skills/workflow/SKILL.md` — start a run, do not poll, the report posts itself. `plan` mode denies `workflow_start`. Docs: `docs/WORKFLOWS.md`; proof: `dev/workflows-e2e.mjs`.
+
 #### Canvas Editor & Sandbox Runner
 1. Canvas files (`text`/`md`/`html`/`ui`) read through `readFile` into `Viewer` state and render in `<Editor>` (highlight.js layer behind a textarea, gutter, Ln/Col, auto-pairs, Tab indent, comment toggle, Ctrl+S save, Ctrl+Enter run).
 2. Save PUTs `/api/workspace`; Run POSTs `/api/run` (`start|chunk|done` NDJSON) via `Runner.startRun`, drawn in the `RunDrawer`; `auto` re-runs on save for compiled languages.

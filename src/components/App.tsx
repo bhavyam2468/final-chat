@@ -520,6 +520,46 @@ export default function App() {
   const openTerm = useCallback((o?: { id?: string; host?: boolean; proc?: string; title?: string }) => {
     openCanvas({ kind: "term", title: o?.proc ? o.proc : o?.title || (o?.host ? "Host terminal" : "Terminal"), id: o?.id, host: o?.host, proc: o?.proc });
   }, [openCanvas]);
+  // ---- workflows: a run is a window, its report is the only thing that reaches the chat
+  /** the definitions the palette lists (id, name, hint, input) — small, fetched once */
+  const [wfDefs, setWfDefs] = useState<{ id: string; name: string; hint: string; input: { label: string; placeholder: string } }[]>([]);
+  const [wfActive, setWfActive] = useState<{ id: string; conversationId?: string; name: string; step: string; progress: string; note?: string }[]>([]);
+  const wfDone = useRef(new Set<string>());
+  const openWorkflow = useCallback((spec: { runId: string; title: string }) => {
+    openCanvas({ kind: "workflow", title: spec.title, runId: spec.runId }, { dock: true });
+  }, [openCanvas]);
+  const startWorkflow = useCallback(async (workflow: string, question: string) => {
+    const q = question.trim();
+    if (!q) return;
+    const r = await fetch("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflow, input: q, conversationId: convRef.current?.id }) });
+    const j = await r.json().catch(() => ({})) as { runId?: string; conversationId?: string; title?: string };
+    if (!j.runId) return;
+    if (j.conversationId && convRef.current?.id !== j.conversationId) { refreshConvs(); await loadConv(j.conversationId); }
+    openWorkflow({ runId: j.runId, title: j.title || "Workflow" });
+  }, [loadConv, refreshConvs, openWorkflow]);
+  // One cheap poll drives both the running dot and delivery: a run posts its report itself, so the page
+  // only has to notice and pull the chat in.
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      if (document.hidden) return;
+      const j = await fetch("/api/workflows").then((r) => r.json()).catch(() => null) as { workflows?: typeof wfDefs; active?: typeof wfActive; recent?: { id: string; conversationId?: string; messageId?: string }[] } | null;
+      if (stop || !j) return;
+      if (j.workflows?.length) setWfDefs((d) => (d.length === j.workflows!.length && d[0]?.id === j.workflows![0]?.id ? d : j.workflows!));
+      setWfActive(j.active || []);
+      for (const r of j.recent || []) {
+        if (wfDone.current.has(r.id)) continue;
+        wfDone.current.add(r.id);
+        if (!r.messageId) continue; // stopped or failed: nothing entered the chat
+        if (r.conversationId && r.conversationId === convRef.current?.id) loadConv(r.conversationId);
+        else refreshConvs();
+      }
+    };
+    void tick();
+    const t = setInterval(tick, 4000);
+    return () => { stop = true; clearInterval(t); };
+  }, [loadConv, refreshConvs]);
+
   // the input bar reviews the agent's background processes; poll cheaply, it is a local endpoint
   const [procs, setProcs] = useState<ProcInfo[]>([]);
   useEffect(() => {
@@ -559,7 +599,7 @@ export default function App() {
   }, []);
 
   const api: AppApi = useMemo(() => ({
-    openFile, openCanvas, openTerm, refreshTree, tree, context: conv?.context || [], toggleContext,
+    openFile, openCanvas, openTerm, openWorkflow, refreshTree, tree, context: conv?.context || [], toggleContext,
     sendUiEvent: (d: unknown, o?: { label?: string; prompt?: string }) => {
       const attr = o?.label ? ` label="${o.label.replace(/"/g, "&quot;")}"` : "";
       sendMain({ content: `<ui_event${attr}>\n${o?.prompt ? `<instruction>${o.prompt}</instruction>\n` : ""}${toXml(d)}\n</ui_event>`, attachments: [], quote: null });
@@ -579,7 +619,7 @@ export default function App() {
     convId: conv?.id || null,
     convTitles,
     openChat: (id: string) => { loadConv(id); },
-  }), [openFile, openCanvas, openTerm, refreshTree, tree, conv?.context, conv?.id, convTitles, loadConv, toggleContext, sendMain, setMsgs]);
+  }), [openFile, openCanvas, openTerm, openWorkflow, refreshTree, tree, conv?.context, conv?.id, convTitles, loadConv, toggleContext, sendMain, setMsgs]);
 
   // ---- quote on selection
   useEffect(() => {
@@ -702,6 +742,12 @@ export default function App() {
       if (isMode(id)) chooseMode(id);
       else mainRef.current?.modes(); // no argument: the input bar expands into the mode picker
     } },
+    { name: "research", hint: "Deep research: search, read, and deliver one cited report — /research <question>", run: (arg?: string) => {
+      const q = (arg || "").trim();
+      if (q) { void startWorkflow("deep-research", q); mainRef.current?.clear(); }
+      else mainRef.current?.insert("/workflows "); // no question yet: pick the workflow, then type it
+    } },
+    { name: "workflows", hint: "Workflows run in a window of their own and post only the result", panel: "workflows" },
     { name: "new", hint: "New chat", run: newChat },
     { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
@@ -722,7 +768,7 @@ export default function App() {
     { name: "settings", hint: "Model, tools, access, secrets, MCP, skills", panel: "settings" },
     { name: "model", hint: "Provider, model, API key, context budget", panel: "settings", seed: "model" },
     { name: "access", hint: "Files, host terminal, sudo, phone", panel: "settings", seed: "access" },
-  ], [newChat, linkProject, chipNew, chooseMode, mainPath, loadConv, setTheme, theme, openTerm]);
+  ], [newChat, linkProject, chipNew, chooseMode, mainPath, loadConv, setTheme, theme, openTerm, startWorkflow]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -771,12 +817,13 @@ export default function App() {
         <div className="dock">
           <div className="dock-stack">
           <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} onBrief={runBrief} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
-          <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
+          <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} onRunWorkflow={(id: string, q: string) => { void startWorkflow(id, q); }} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
             procs={procs} onOpenProc={(name) => openTerm({ proc: name })}
             mode={agentMode} onMode={chooseMode}
-            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat, modes: MODES, activeMode: agentMode, setMode: chooseMode }} />
+            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat, modes: MODES, activeMode: agentMode, setMode: chooseMode,
+              workflows: wfDefs, runWorkflow: (id: string, question: string) => { void startWorkflow(id, question); }, wfActive }} />
           </div>
         </div>
 

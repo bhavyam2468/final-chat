@@ -10,13 +10,13 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import {
   Hash, FileText, MessageSquare, Folder, FolderOpen, AppWindow, Link2, Settings2, SquareTerminal, BookOpen,
   Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug,
-  MessageSquareQuote, Globe, ListChecks, Bug, Hammer, GraduationCap, PenLine, } from "lucide-react";
+  MessageSquareQuote, Globe, ListChecks, Bug, Hammer, GraduationCap, PenLine, Workflow, } from "lucide-react";
 import { CanvasSpec, ProcInfo, TreeNode, flatFiles, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import type { ConvItem } from "./Panels";
 import { ModeDef, ModeId, DEFAULT_MODE, modeOf } from "@/lib/modes";
 
-export type PaletteMode = "commands" | "modes" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills";
+export type PaletteMode = "commands" | "modes" | "workflows" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills";
 export type PaletteTab = "model" | "tools" | "access" | "mcp" | "skills";
 /** one glyph per mode, so the picker reads at a glance */
 const MODE_ICON: Record<ModeId, typeof FileText> = {
@@ -42,6 +42,13 @@ export type PaletteApi = {
   modes: ModeDef[];
   activeMode: ModeId;
   setMode: (id: ModeId) => void;
+  /** workflows (/workflows): the definitions this install offers, and which runs are alive now */
+  workflows?: { id: string; name: string; hint: string; input: { label: string; placeholder: string } }[];
+  wfActive?: { id: string; name: string; progress: string; step: string }[];
+  /** put a workflow chip on the composer: the next message is that run's input */
+  setWorkflow?: (id: string, name: string) => void;
+  /** start a run with this text right away (the palette's ⏎ on a row with a question typed) */
+  runWorkflow?: (id: string, question: string) => void;
 };
 
 type Row = {
@@ -149,6 +156,21 @@ export const Palette = forwardRef<PaletteHandle, {
         out.push({
           key: m.id, icon: MODE_ICON[m.id] || Hash, label: m.label, hint: on ? "current mode" : m.hint, live: on,
           act: () => { api.setMode(m.id); collapse(true); },
+        });
+      }
+      return out;
+    }
+    if (mode === "workflows") {
+      for (const w of api.workflows || []) {
+        if (q && !w.name.toLowerCase().includes(q) && !w.hint.toLowerCase().includes(q)) continue;
+        const live = api.wfActive?.find((a) => a.name === w.name);
+        out.push({
+          key: w.id, icon: Workflow, label: w.name, live: !!live,
+          hint: live ? `${live.step} · ${live.progress}` : `${w.hint}${arg ? ` — ⏎ runs it on “${arg}”` : " — then type the question"}`,
+          act: () => {
+            if (arg?.trim() && api.runWorkflow) { api.runWorkflow(w.id, arg); collapse(true); return; }
+            api.setWorkflow?.(w.id, w.name); collapse(false);
+          },
         });
       }
       return out;
@@ -392,6 +414,7 @@ export const Palette = forwardRef<PaletteHandle, {
   const crumb = acts ? actsTitle
     : entry ? entry.label
     : mode === "modes" ? `mode · ${modeOf(api.activeMode).label === DEFAULT_MODE ? "chat" : modeOf(api.activeMode).label}`
+    : mode === "workflows" ? "workflows"
     : mode === "settings" ? (sec ? { model: "Model", tools: "Tools", access: "Access", secrets: "Secrets", mcp: "MCP" }[sec] || sec : "settings")
     : mode === "workspace" ? dir.split("/").pop() || "workspace"
     : mode;
@@ -424,7 +447,7 @@ export const Palette = forwardRef<PaletteHandle, {
             </button>,
           ];
         })}
-        {!shown.length && <div className="pal-empty">{mode === "modes" ? "No mode matches" : mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : "Nothing matches"}</div>}
+        {!shown.length && <div className="pal-empty">{mode === "modes" ? "No mode matches" : mode === "workflows" ? "No workflows installed" : mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : "Nothing matches"}</div>}
       </div>
       </div>
     </div>

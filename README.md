@@ -16,6 +16,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
 | **Canvas** | Floating windows or **docked** beside the chat (drag the left edge to resize). Anything chat can show can go in a canvas; native viewers for PDF, Word, Excel/CSV, PowerPoint, zip/tar (browse without extracting), images, audio/video, code |
+| **Workflows** | A workflow is a *window*, not a block: a pipeline of steps (plan → search → select → read → gap pass → write → check) that keeps everything it produces outside the conversation — the plan, every query, every candidate, what each page said. Only the deliverable is posted to the chat, which is why ten pages of research cost one message of context. Started from the composer chip, `/research`, the palette, or the AI itself (`workflow_start`). Spec: [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) |
 | **Context status** | Live token meter in the workspace panel, per-section breakdown, and scoped compaction: fold tool output, fold web results, summarise history, or compact selected turns. Everything is restorable |
 | **Streaming** | Rate-adaptive smoothing for text, markdown and every Blocks component: no jitter, no re-render flashes, stable skeletons while a component streams |
 | **MCP Servers** | Curated integrations plus any stdio/HTTP server; remote ones sign in with one click (OAuth, no API key to copy) |
@@ -105,6 +106,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | Module | Purpose |
 |---|---|
 | `modes.ts` | The mode registry (search, plan, debug, build, learn, write): label, hint, auto-injected skill, denied tools. See [`docs/MODES.md`](docs/MODES.md) |
+| `workflows/` | Workflow definitions (`deep-research.ts`), the registry with per-install overrides, and `runner.ts` — the isolated-step engine behind the workflow window. See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) |
 | `file-run.ts` / `run-langs.ts` | Sandbox runner behind the canvas Run button and the `file_run` / `file_runs` tools (15 languages, one command table, last 40 runs kept in memory) |
 | `agent.ts` | Agent loop: system prompt, history, tool packs per step, image hand-off, todo recitation, quality guard |
 | `tools/index.ts` | Tool schemas (core + dev pack) and the `execTool()` dispatcher |

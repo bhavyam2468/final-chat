@@ -1,7 +1,7 @@
 "use client";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { youtubeId } from "@/lib/shared";
-import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send, Bookmark } from "lucide-react";
+import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send, Bookmark, Workflow } from "lucide-react";
 import { StreamMarkdown, SMComponents } from "@/lib/streammark/StreamMarkdown";
 import { Block } from "./Block";
 import { useSmoothText } from "@/lib/streammark/useSmoothText";
@@ -360,6 +360,19 @@ function MemoryNote({ mem }: { mem: { id: string; text: string; scope: string } 
     <button type="button" onClick={async () => { const r = await fetch("/api/memory", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mem.id }) }); if (r.ok) setGone(true); }}>Undo</button></div>;
 }
 
+/** A workflow delivered this report: the chip reopens the run's window (searches, pages, checks). */
+function RunNote({ p }: { p: Extract<Part, { type: "run" }> }) {
+  const app = useApp();
+  return <div className="run-note">
+    <button className="run-note-chip" onClick={() => app.openWorkflow({ runId: p.id, title: p.title })} title="Open the run: every search, page and check behind this report">
+      <Workflow size={13} />
+      <span className="rn-t">{p.title}</span>
+      <span className="rn-q">{p.question}</span>
+      <span className="rn-o">Open run</span>
+    </button>
+  </div>;
+}
+
 function Changes({ parts }: { parts: Part[] }) {
   const files = parts.filter((p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && !!p.meta && typeof p.meta === "object" && "after" in (p.meta as object));
   if (!files.length) return null;
@@ -398,7 +411,8 @@ export const AssistantBody = memo(function AssistantBody({ parts, streaming, las
     ? animate ? <LiveText key={key} text={p.text} streaming={streaming && index === parts.length - 1} h={h} unverified={p.unverified} />
       : <StreamMarkdown key={key} text={p.text} streaming={false} unverified={p.unverified} {...h} />
     : p.type === "reasoning" ? <Reasoning key={key} text={p.text} ms={p.ms} startedAt={p.startedAt} live={streaming && p.ms === undefined && !parts.slice(index + 1).some((x) => x.type === "text")} />
-      : <ToolCall key={key} p={p} lastTodo={index === lastTodo} live={!!last && !streaming} mid={mid} />;
+      : p.type === "run" ? <RunNote key={key} p={p} />
+        : <ToolCall key={key} p={p} lastTodo={index === lastTodo} live={!!last && !streaming} mid={mid} />;
   const isActivity = (p: Part) => p.type === "tool" || p.type === "reasoning";
   const activePart = ({ p, index }: { p: Part; index: number }) => p.type === "tool" ? p.result === undefined : p.type === "reasoning" && streaming && p.ms === undefined && !parts.slice(index + 1).some((x) => x.type === "text");
   const out: React.ReactNode[] = [];

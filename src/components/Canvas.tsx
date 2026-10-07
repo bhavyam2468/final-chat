@@ -6,7 +6,7 @@
    actions to the bottom bar, which scrolls inline instead of overflowing. */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, FileText, Play } from "lucide-react";
+import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Workflow, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, FileText, Play } from "lucide-react";
 import { CanvasSpec, fileUrl, useApp } from "./ctx";
 import { Editor, langOf } from "./Editor";
 import { RunDrawer, startRun, type RunState } from "./Runner";
@@ -19,6 +19,7 @@ import { canvasPath } from "@/lib/shared";
 import { MAX_PARALLEL_PDF_RENDERS, PDF_PREFETCH_RADIUS, PDF_TEXT_RADIUS, pdfPageRange, pdfRasterScale } from "@/lib/pdf-rendering";
 import { createPdfRenderQueue, type PdfRenderJob } from "@/lib/pdf-render-queue";
 import { ChatView } from "./ChatView";
+import { WorkflowView } from "./Workflow";
 import { TermView } from "./Terminal";
 import { edgeAt, moveCanvasRect, peekCanvasRect, resizeCanvasRect, resizeEdgeAt, shouldDockCanvas, type CanvasRect, type PeekSide, type ResizeEdge } from "@/lib/canvas-layout";
 
@@ -50,6 +51,7 @@ export function contentRatio(spec: CanvasSpec): Promise<{ ratio: number; pw?: nu
     if (spec.kind === "youtube" || spec.kind === "web") return done({ ratio: 16 / 9 });
     if (spec.kind === "ui" || spec.kind === "md") return done({ ratio: 16 / 10 });
     if (spec.kind === "term") return done({ ratio: 1.72, pw: 780 });
+    if (spec.kind === "workflow") return done({ ratio: 1.62, pw: 1040 });
     if (spec.kind !== "file") return done(null);
     const k = kindOf(spec.path);
     if (k === "video") return done({ ratio: 16 / 9 });
@@ -495,6 +497,8 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock, onEdit 
   const auto = autoPref ?? (() => { if (!path) return false; try { const saved = localStorage.getItem("run:auto:" + path); return saved !== null ? saved === "1" : !!runLangOf(path)?.compile; } catch { return !!runLangOf(path)?.compile; } })();
   const lang = k === "ui" ? langOf("canvas.ui") : langOf(path);
   const editing = mode === "b" && ["ui", "html", "md", "text"].includes(k);
+  /** Chrome-like windows (workflows) keep their bars in the layout: the bar carries the run's controls. */
+  const chrome = k === "workflow";
   const annot = k === "pdf" || k === "image" || k === "html";
   const snippable = k === "pdf" || k === "image" || k === "video";
   const notable = !!path && ["pdf", "image", "html", "doc", "slides", "sheet", "video", "audio", "md", "text"].includes(k);
@@ -518,7 +522,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock, onEdit 
     setDirty(false); app.refreshTree();
   }, [loaded, path, src, app]);
   // an editing canvas keeps its bars in the layout: a floating header over a file being typed in is noise
-  useEffect(() => { onEdit(winId, editing); return () => onEdit(winId, false); }, [editing, onEdit, winId]);
+  useEffect(() => { onEdit(winId, editing || chrome); return () => onEdit(winId, false); }, [editing, chrome, onEdit, winId]);
   useEffect(() => () => { runStop.current?.(); }, []);
 
   const doRun = useCallback(() => {
@@ -569,6 +573,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock, onEdit 
   else if (spec.kind === "md") body = <div className="reader"><StreamMarkdown text={spec.body} {...md} /></div>;
   else if (spec.kind === "chat") body = <ChatView id={spec.id} setBar={setBar} />;
   else if (spec.kind === "term") body = <TermView spec={spec} setBar={setBar} />;
+  else if (spec.kind === "workflow") body = <WorkflowView runId={spec.runId} setBar={setBar} />;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
   else if (k === "image") body = <div className="imgview">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
   else if (k === "pdf") body = <PdfView key={path} path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} active={active} />;
@@ -798,6 +803,7 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
   // Keep each Viewer mounted while shelved so drafts, notes, annotations, and media state survive.
   const shelfIcon = (win: Win) => {
     if (win.spec.kind === "chat") return <MessageSquareQuote />;
+    if (win.spec.kind === "workflow") return <Workflow />;
     if (win.spec.kind === "web" || win.spec.kind === "youtube") return <Eye />;
     if (win.spec.kind === "ui") return <Code2 />;
     if (win.spec.kind === "file" && kindOf(win.spec.path) === "image") return <Scan />;

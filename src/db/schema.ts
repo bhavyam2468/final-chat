@@ -16,7 +16,10 @@ export const conversations = pgTable("conversations", {
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
   | { type: "reasoning"; id?: string; text: string; ms?: number; startedAt?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string }
+  /** A workflow delivered something into this conversation: the report is the text part,
+      this is the chip that reopens the run's window without any of it living in the chat. */
+  | { type: "run"; id: string; workflow: string; title: string; question: string };
 
 export type Attachment = { path: string; name: string; mime: string; size: number };
 

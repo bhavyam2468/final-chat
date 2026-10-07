@@ -272,10 +272,97 @@ function chunks(text) {
 }
 
 /** Non-streaming completion (compaction/summaries). */
+/** Pages the fetch mock serves: the URL slug becomes the text, so quotes are real substrings. */
+export function fetchPage(j) {
+  const url = String(j.url || "");
+  const slug = url.split("/").pop().replace(/^[a-z]+-/, "").replace(/-/g, " ") || "the topic";
+  const title = slug.replace(/\b\w/g, (c) => c.toUpperCase());
+  const body = [
+    `# ${title}`,
+    "",
+    `${title} is measured at 42 units in the 2024 reference dataset, against 31 units in 2019. The methodology is documented in the appendix and the sample covers 1,200 cases across three regions.`,
+    "",
+    `Independent replication found 39 units, so the figure should always be read as an estimate rather than a precise value. The authors note that their instrument drifted by about two percent between the two measurement campaigns.`,
+    "",
+    `Costs fell from 12 units per case to 7 over the same period, and the report attributes most of that to automation rather than to cheaper inputs.`,
+    "",
+    `A dissenting appendix argues that the 2019 baseline is not comparable, because the sampling frame changed that year.`,
+  ].join("\n");
+  return { success: true, data: { markdown: body, metadata: { title } } };
+}
+
+/** deep-research steps: the pipeline's own prompts are the scenario keys, so a run is hermetic offline. */
+function research(sys, last) {
+  const question = (last.match(/Question: ([^\n]+)/) || [])[1] || "the question";
+  const sysIds = [...last.matchAll(/^(\d)\. .*$/gm)].map((m) => m[1]);
+  if (/planner of a research pipeline/.test(sys)) {
+    const short = question.replace(/[?.]$/, "").slice(0, 60);
+    const sub = [
+      { q: `Current figures for ${short}`, queries: [`${short} cost 2026`, `${short} price benchmark`] },
+      { q: `How ${short} changed over five years`, queries: [`${short} trend 2021 2026`] },
+      { q: `Documented limits of ${short}`, queries: [`${short} limitations evidence`] },
+    ];
+    return JSON.stringify({ sub });
+  }
+  if (/choosing which search results/.test(sys)) {
+    // One page per sub-question except the last: the gap pass then has real work to do.
+    const rows = [...last.matchAll(/\[(\d+)\] [^\n]*\n(https?:\/\/\S+)\nsq (\d+)/g)];
+    const seen = new Set();
+    const reads = [];
+    for (const [, , url, sq] of rows) {
+      if (sq === "3" || seen.has(sq)) continue;
+      seen.add(sq);
+      reads.push({ url, sq, why: "figure with a date and a sample size" });
+    }
+    return JSON.stringify({ reads: reads.slice(0, 4) });
+  }
+  if (/reading one page for a research pipeline/.test(sys)) {
+    const body = (last.split("Page text:")[1] || "").trim();
+    const sq = (last.match(/Chosen for sub-question: (\d)/) || [])[1] || sysIds[0] || "1";
+    const quotes = body.split(/\n+/).filter((l) => l.length > 60 && !l.startsWith("#"));
+    return JSON.stringify({
+      claims: quotes.slice(0, 3).map((q, i) => ({ text: i === 0 ? `The 2024 reference figure is 42 units, up from 31 in 2019.` : `A supporting measurement from the same dataset, point ${i + 1}.`, quote: q })),
+      points: ["Sample: 1,200 cases across three regions.", "Costs fell from 12 to 7 units per case."],
+      answers: [sq],
+    });
+  }
+  if (/audit the evidence/.test(sys)) {
+    const missing = (last.match(/^(\d)\. .*\n\s+\(no evidence yet\)/m) || [])[1];
+    const short = question.replace(/[?.]$/, "").slice(0, 60);
+    return JSON.stringify(missing ? { followups: [{ q: `Documented limits of ${short}`, query: `${short} limits documented`, sq: missing }] } : { followups: [] });
+  }
+  if (/write the report of a research pipeline/.test(sys)) {
+    const nums = [...new Set([...last.matchAll(/^\[(\d+)\] /gm)].map((m) => m[1]))];
+    const cite = (i) => `[${nums[i % Math.max(1, nums.length)] || 1}]`;
+    const n0 = nums[0] || 1;
+    return [
+      `${question[0].toUpperCase() + question.slice(1)} is best answered from the 2024 reference dataset, which puts the figure at 42 units against 31 in 2019 ${cite(0)}. The number is always replicable across the three regions covered by the study.`,
+      "",
+      "## Cost",
+      `Costs fell from 12 units per case to 7 ${cite(1)}. The report attributes most of the change to automation rather than to cheaper inputs.`,
+      "",
+      "## Trend",
+      `Independent replication found 39 units, about seven percent below the published figure ${cite(2)}. The authors describe their instrument as drifting by roughly two percent between campaigns.`,
+      "",
+      "## Open questions",
+      "- Whether the 2019 baseline is comparable, given the sampling frame changed that year.",
+      "- How much of the cost decline survives stricter accounting.",
+    ].join("\n");
+  }
+  if (/verify a draft report against/.test(sys)) {
+    return JSON.stringify({ issues: [{ kind: "overreach", detail: "“always replicable” drops the hedge the source used." }] });
+  }
+  if (/Fix the problems listed/.test(sys)) {
+    return last.split("Draft report:").pop().replace(/always replicable/g, "replicable in most cases");
+  }
+  return "";
+}
+
 export function complete(j) {
   const msgs = j.messages || [];
   const sys = msgs.find((m) => m.role === "system")?.content || "";
   const last = JSON.stringify(msgs.slice(-1));
+  if (!j.stream) { const w = research(sys, JSON.parse(last).at(-1)?.content || ""); if (w) return { choices: [{ message: { role: "assistant", content: w } }], usage: { prompt_tokens: 40, completion_tokens: 120 } }; }
   if (/Fragments in another script/.test(last)) { const n = (last.match(/\\n\d+\. /g) || []).length || 1; return { choices: [{ message: { role: "assistant", content: JSON.stringify(Array(n).fill("returns")) } }] }; }
   const text = /summar|compact/i.test(sys + last) ? "Goal: practice JEE. Done: mock 1 built (6 q). Facts: +4/−1 marking. Open: analysis of attempt." : "Mock chat";
   return { choices: [{ message: { role: "assistant", content: text } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };

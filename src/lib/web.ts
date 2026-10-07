@@ -81,6 +81,11 @@ async function firecrawlScrapeFallback(st: Settings, url: string) {
 
 /** Fetch a URL with the lightweight path first; Firecrawl is a deliberate escalation. */
 export async function firecrawlScrape(st: Settings, url: string) {
+  if (st.dev && st.provider === "mock") {
+    // developer mode keeps a workflow runnable offline, like search already was
+    const r = await fetch(`http://127.0.0.1:${process.env.PORT || 3000}/api/dev/mock/v1/fetch`, { method: "POST", body: JSON.stringify({ url }) });
+    return { ...(await r.json()), _source: "mock" };
+  }
   const plain = await plainFetch(url).catch(() => null);
   if (plain && plain.markdown.trim().length > 80 && !isAntiBotProtected(plain.markdown)) {
     return { data: { markdown: plain.markdown, metadata: { title: plain.title } }, _source: "http-readability" };

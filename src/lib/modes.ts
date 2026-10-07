@@ -41,7 +41,7 @@ export const MODES: ModeDef[] = [
   {
     id: "plan", label: "plan", hint: "Read-only reconnaissance, then a plan", skill: "mode-plan",
     fallback: "Do not change anything. Read, measure and run evidence only, then present a plan and ask before building.",
-    deny: [...MUTATORS, ...SHELLS, ...INSTALLS, ...PROCS, "check", "browser"],
+    deny: [...MUTATORS, ...SHELLS, ...INSTALLS, ...PROCS, "check", "browser", "workflow_start"],
   },
   {
     id: "debug", label: "debug", hint: "Reproduce, read the real error, minimal fix", skill: "mode-debug",

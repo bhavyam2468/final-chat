@@ -1,13 +1,13 @@
 "use client";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Plus, ArrowUp, Square, X, FileText, Inbox, Zap, Navigation, ArrowDownToLine } from "lucide-react";
+import { Plus, ArrowUp, Square, X, FileText, Inbox, Zap, Navigation, ArrowDownToLine, Workflow } from "lucide-react";
 import { Attachment, ProcInfo, QueueItem, fileUrl, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import { Palette, PaletteHandle, PaletteMode, PaletteApi } from "./palette";
 import { DEFAULT_MODE, ModeId, modeOf } from "@/lib/modes";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
-export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void; modes: () => void };
+export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void; modes: () => void; workflows: () => void; clear: () => void };
 export type Command = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 type Chip = Attachment & { loading?: boolean; key: string; preview?: string };
@@ -32,6 +32,8 @@ type Props = {
   palette?: Omit<PaletteApi, "mention" | "attachPath">;
   /** the chat's mode: shown as a chip, switched from the /mode picker */
   mode?: ModeId; onMode?: (id: ModeId) => void;
+  /** a workflow chip turns the next message into that workflow's input instead of a chat message */
+  onRunWorkflow?: (id: string, question: string) => void;
 };
 type Draft = { text: string; chips: Attachment[] };
 const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
@@ -65,6 +67,8 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   // omnibox: null = plain input; "commands"/"files" open automatically, panel modes are explicit
   const [mode, setMode] = useState<PaletteMode | null>(null);
   const [editingQ, setEditingQ] = useState<string | null>(null);
+  /** workflow chip: the message being written is that workflow's input, not a chat message */
+  const [flow, setFlow] = useState<{ id: string; name: string } | null>(null);
   const [showProcs, setShowProcs] = useState(false);
 
   // drafts: save on every change (cheap), load when the chat changes
@@ -73,7 +77,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     if (!p.draftKey) return;
     keyRef.current = p.draftKey;
     const d = readDraft(p.draftKey);
-    setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path }))); setMode(null); setEditingQ(null);
+    setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path }))); setMode(null); setEditingQ(null); setFlow(null);
   }, [p.draftKey]);
   useEffect(() => {
     const k = keyRef.current; if (!k) return;
@@ -130,6 +134,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     focus: () => ta.current?.focus(),
     addFiles,
     modes: () => openPanelRef.current?.("modes"),
+    workflows: () => openPanelRef.current?.("workflows"),
+    // a command that consumed the text (a workflow question) takes it out of the box itself
+    clear: () => { setText(""); setChips([]); setCaret(0); },
   }), [addFiles]);
 
   // type-anywhere capture
@@ -207,6 +214,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
 
   const send = () => {
     const pay = payload(); if (!pay) return;
+    // A workflow chip changes what Enter means: the text becomes the run's input and the chat stays
+    // free, because the run lives in its own window and only posts its result.
+    if (flow && pay.content) { clearInput(); setFlow(null); p.onRunWorkflow?.(flow.id, pay.content); return; }
     clearInput(); p.onSend(pay);
   };
   const queueIt = () => {
@@ -251,6 +261,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
+      if (flow && text.trim() && ready) { send(); return; } // a run is independent of the chat's stream
       if ((e.metaKey || e.ctrlKey) && hasContent && (p.onSteer || !p.streaming)) { steerNow(); return; } // ⌘/Ctrl+⏎: steer now (sends if idle)
       if (p.streaming) {
         if (editingQ) { commitQueuedEdit(); return; }
@@ -290,6 +301,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
       setTimeout(() => { const c = start + path.length + 2; ta.current?.setSelectionRange(c, c); ta.current?.focus(); setCaret(c); }, 0);
     },
     attachPath: (path: string) => { addPathChip(path); collapsePalette(); },
+    setWorkflow: (id: string, name: string) => { setFlow({ id, name }); collapsePalette(); },
   } : null;
 
   return (
@@ -339,6 +351,10 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
         {p.mode && p.mode !== DEFAULT_MODE && (
           <button className="cmode" aria-label={`Mode: ${modeOf(p.mode).label}`} title={`${modeOf(p.mode).hint} — click to leave this mode`}
             onClick={() => p.onMode?.(DEFAULT_MODE)}><span>{modeOf(p.mode).label}</span><X size={11} /></button>
+        )}
+        {flow && (
+          <button className="cwork" aria-label={`Workflow: ${flow.name}`} title={`${flow.name}: this message is the run's input — click to send it as a normal message instead`}
+            onClick={() => setFlow(null)}><Workflow size={12} /><span>{flow.name}</span><X size={11} /></button>
         )}
         <button className="ib" aria-label="Attach" onClick={() => fileIn.current?.click()}><Plus /></button>
         <input ref={fileIn} type="file" multiple hidden onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />

@@ -5,7 +5,7 @@ import { getSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-type Mock = { search: (j: unknown) => unknown; complete: (j: unknown) => unknown; stream: (j: unknown) => AsyncGenerator<string>; models: () => unknown };
+type Mock = { search: (j: unknown) => unknown; fetchPage: (j: unknown) => unknown; complete: (j: unknown) => unknown; stream: (j: unknown) => AsyncGenerator<string>; models: () => unknown };
 /** The mock lives in dev/ (not bundled); loaded from disk only when developer mode is on. */
 async function mock(): Promise<Mock | null> {
   if (!(await getSettings()).dev) return null;
@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
   if (!m) return new Response("Not found", { status: 404 });
   const j = await req.json().catch(() => ({}));
   if (req.nextUrl.pathname.endsWith("/search")) return Response.json(m.search(j));
+  if (req.nextUrl.pathname.endsWith("/fetch")) return Response.json(m.fetchPage(j));
   if (!j.stream) return Response.json(m.complete(j));
   const it = m.stream(j), enc = new TextEncoder();
   return new Response(new ReadableStream({

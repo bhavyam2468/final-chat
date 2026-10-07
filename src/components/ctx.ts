@@ -4,7 +4,9 @@ import { createContext, useContext } from "react";
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
   | { type: "reasoning"; id?: string; text: string; ms?: number; startedAt?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string; live?: string };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string; live?: string }
+  /** A workflow delivered its report here: the text carries the report, this carries the window. */
+  | { type: "run"; id: string; workflow: string; title: string; question: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
 /** A message waiting in the input bar while the AI responds; it sends when the turn ends. */
 export type QueueItem = { id: string; content: string; attachments: Attachment[]; createdAt: number };
@@ -24,7 +26,9 @@ export type CanvasSpec =
   | { kind: "web"; title: string; url: string }
   | { kind: "chat"; title: string; id: string }
   /** live terminal in a window: a fresh session, an existing one, or an agent process's log */
-  | { kind: "term"; title: string; id?: string; host?: boolean; proc?: string };
+  | { kind: "term"; title: string; id?: string; host?: boolean; proc?: string }
+  /** a workflow run: the window shows the run, the chat only receives what it delivers */
+  | { kind: "workflow"; title: string; runId: string };
 export type OpenOpts = { dock?: boolean };
 
 export type AppApi = {
@@ -32,6 +36,8 @@ export type AppApi = {
   openCanvas: (c: CanvasSpec, o?: OpenOpts) => void;
   /** open a terminal window: a fresh sandbox/host session or the log of an agent-started process */
   openTerm: (o?: { id?: string; host?: boolean; proc?: string; title?: string }) => void;
+  /** open (or re-open) a workflow run's window */
+  openWorkflow: (spec: { runId: string; title: string }) => void;
   sendUiEvent: (data: unknown, opts?: { label?: string; prompt?: string }) => void;
   sendText: (text: string) => void;
   /** Approve / deny a command the harness held back (tool meta.approval). */

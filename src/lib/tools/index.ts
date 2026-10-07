@@ -6,6 +6,8 @@ import { WS, resolvePath, rel, tree, Node, mimeOf, isImage, readText } from "../
 import { modeOf } from "../modes";
 import type { Settings } from "../settings";
 import { searchCatalog } from "../blocks/catalog";
+import { listWorkflows, loadWorkflow } from "../workflows";
+import { startWorkflowRun } from "../workflows/runner";
 import { callMcp, readServers, writeServers, dropMcpPool, expandCfg, ServerCfg } from "../mcp";
 import { MCP_CATALOG, registrySearch } from "../market";
 import { startOAuth } from "../mcp-auth";
@@ -87,6 +89,8 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("diff_since", "Files changed in this chat's folder (and the linked project) in the last N hours", { hours: n("default 24") }),
     T("canvas_open", "Open a file, web page or YouTube URL in a canvas. It uses the free sidebar automatically and floats if occupied; set dock=false to force floating or dock=true to request the sidebar.", { target: s("path or URL"), title: s(), dock: b("request sidebar; defaults to automatic") }, ["target"]),
     T("ui_search", "Find BlocksUI components. Do not invent a tag; if it is not in the system prompt, search here", { query: s() }, ["query"]),
+    T("workflow_list", "List the workflows this install offers. A workflow runs a pipeline in its own window and posts only its result to this chat", {}, []),
+    T("workflow_start", "Run a workflow on a question. The run gets its own window (searches, pages, checks) and only the final report enters this chat when it finishes; keep talking with the user meanwhile instead of waiting", { workflow: s("workflow id from workflow_list"), question: s("what to run it on") }, ["workflow", "question"]),
   ];
   const phone: ToolDef[] = st.phone ? [
     T("adb_devices", "List Android devices. Phone testing must already be on", {}, []),
@@ -523,6 +527,17 @@ They can also press Connect in Settings → MCP.` : "";
         if (/\brm\s+-rf\b|\bpm\s+uninstall\b|\bsettings\s+put\b/i.test(shcmd)) return { ok: false, result: "Refusing that device command. Ask the user." };
         const r = await adb(st, ["shell", shcmd], { onData: ctx.output, signal: ctx.signal });
         return { ok: r.code === 0, result: cut(r.out || "(no output)") };
+      }
+      case "workflow_list": {
+        const list = await Promise.all(listWorkflows().map((w) => loadWorkflow(w.id).then((d) => d || w)));
+        if (!list.length) return { ok: true, result: "No workflows are installed." };
+        return { ok: true, result: list.map((w) => `${w.id} — ${w.name}: ${w.hint}\n  steps: ${w.steps.map((s) => s.title).join(" → ")}`).join("\n"), meta: { workflows: list.map((w) => w.id) } };
+      }
+      case "workflow_start": {
+        const r = await startWorkflowRun({ workflow: String(a.workflow || ""), question: String(a.question || ""), conversationId: ctx.conversationId });
+        if ("error" in r) return { ok: false, result: r.error };
+        ctx.emit({ t: "canvas", spec: { kind: "workflow", title: r.title, runId: r.runId }, dock: true });
+        return { ok: true, result: `${r.title} is running in its own window (run ${r.runId}). Its searches, pages and checks stay there; the report is posted to this chat when the run finishes, so keep answering the user instead of waiting for it.`, meta: { runId: r.runId, workflow: a.workflow } };
       }
       case "canvas_open": {
         const t = String(a.target || "").trim();
