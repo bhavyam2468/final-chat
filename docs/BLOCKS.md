@@ -70,8 +70,8 @@ Native `h1–h4 p small ul ol table details code a` are styled. Also:
 | `x-progress value max` · `x-ring value max label` · `x-gauge value min max label` | Progress and meters |
 | `x-chart type data labels series title x-label y-label center` | `line bar hbar stacked area pie donut scatter radar`. `data="1,2,3"`, multi-series `"1,2|3,4"` with `series="A|B"`, scatter `"x:y,x:y"`, or JSON. Draw-in animation; hover values |
 | `x-sparkline data` | Inline trend |
-| `x-table csv|data sortable` | CSV/markdown body, `csv=`, or `:data` (array of objects or arrays) |
-| `x-heatmap data x-labels y-labels` | Matrix |
+| `x-table csv|data sortable select total caption height dense cols` | A real data table. Body may be CSV, TSV, markdown pipes or pasted output (quoted fields keep commas); `csv=` or `:data` (array of objects or arrays) also work. Numeric columns are detected and right-aligned automatically (`cols="l,r,c"` forces a column), `**bold**` renders, signed values colour. `sortable` = click/focus+Enter a header, ascending → descending, with the caret showing where it is. `select` makes rows pickable: `.value` is the row as an object and a `select` event fires. `total="sum|avg|count"` (optionally `total="time,memory"`) pins a totals row that keeps the column's unit; a table over ~14 rows — or any `height=` — scrolls inside its own panel with the header and totals held. `caption` sits above |
+| `x-heatmap data x-labels y-labels caption tone min max values` | A matrix read for its pattern: `data` is rows separated by `|` (or a JSON array of arrays), intensity carries the value, each cell names its row and column, and the numbers are printed inside the cells when the matrix is small (or with `values`). `min`/`max` fix the scale so two heatmaps compare |
 | `x-timeline` | `date | title | detail` lines |
 
 ### Structure

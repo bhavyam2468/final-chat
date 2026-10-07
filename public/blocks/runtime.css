@@ -92,9 +92,11 @@ x-slide{min-height:40px}
 button:disabled{opacity:.4;cursor:default;transform:none!important}
 
 /* ---------- content ---------- */
-x-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:var(--r);font-size:.78em;font-weight:500;background:color-mix(in srgb,var(--tone) 14%,transparent);color:var(--tone);width:max-content;max-width:100%;white-space:nowrap}
+x-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:var(--r);font-size:.78em;font-weight:500;background:color-mix(in srgb,var(--tone) 14%,transparent);color:var(--tone);width:max-content;max-width:100%;text-align:left}
 x-kbd{font:12px ui-monospace,monospace;padding:1px 6px;border:1px solid var(--line);border-bottom-width:2px;border-radius:var(--rs)}
-x-icon{display:inline-flex;width:1.2em;height:1.2em;color:currentColor;vertical-align:-.2em}x-icon svg{width:100%;height:100%}
+x-icon{display:inline-flex;width:1.2em;height:1.2em;color:currentColor;vertical-align:-.2em}
+x-icon svg{width:100%;height:100%}
+x-icon:empty{display:none}
 x-callout:not([tone]){--tone:var(--accent)}
 x-callout{padding:12px 14px;border-radius:var(--r);background:color-mix(in srgb,var(--tone) 8%,transparent);border-left:3px solid var(--tone);gap:6px}
 .x-callout-t{font-weight:600;color:var(--tone)}
@@ -189,14 +191,54 @@ x-graph .gw:active{cursor:grabbing}
 x-graph svg{display:block;position:absolute;inset:0}
 x-graph .lbl.pt{fill:var(--fg)}
 .gtip{position:absolute;right:8px;top:6px;font:11px ui-monospace,monospace;color:var(--muted);opacity:0;transition:opacity .2s;pointer-events:none;background:color-mix(in srgb,var(--bg) 80%,transparent);padding:2px 6px;border-radius:var(--rs)}
-x-table{display:block;overflow:auto;border:1px solid var(--line);border-radius:var(--r)}
+x-table{display:block;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 table{border-collapse:collapse;width:100%;font-size:.9em;font-variant-numeric:tabular-nums}
-th{text-align:left;font-weight:500;color:var(--muted);border-bottom:1px solid var(--line);padding:8px 12px;white-space:nowrap;background:var(--surface)}
-td{padding:8px 12px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}
+th{text-align:left;font-weight:500;color:var(--muted);border-bottom:1px solid var(--line);padding:8px 12px;white-space:nowrap;background:var(--surface);vertical-align:bottom}
+td{padding:8px 12px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th.num,td.num{text-align:right}
+td.center{text-align:center}
+caption{caption-side:top;text-align:left;padding:9px 12px 7px;font-size:.86em;color:var(--muted);border-bottom:1px solid var(--line)}
+x-table.dense th,x-table.dense td{padding:4px 10px}
+/* a long table scrolls inside its own panel; the header stays put so the columns always have names */
+x-table.sticky .b-tws{overflow:auto;max-height:420px}
+x-table.sticky thead th{position:sticky;top:0;z-index:2;background:var(--surface-solid)}
+/* totals stay on screen while the body scrolls — they are the reason the table was made */
+x-table.sticky tfoot td{position:sticky;bottom:0;z-index:2;background:var(--surface-solid)}
+x-table .b-tws{max-width:100%}
 x-table[sortable] th{cursor:pointer;user-select:none}x-table[sortable] th:hover{color:var(--fg)}
+x-table th.on{color:var(--fg)}
+.b-car{fill:var(--faint);margin-left:5px;opacity:0;transform:rotate(180deg);transition:opacity .15s,transform .2s}
+x-table[sortable] th:hover .b-car{opacity:.5}
+x-table th.on .b-car{opacity:1;fill:var(--fg)}
+x-table th.on[aria-sort=ascending] .b-car{transform:rotate(0)}
 x-table tbody tr{animation:b-in .35s var(--ease) both;animation-delay:calc(var(--i)*22ms)}
-.hm{display:grid;gap:3px;font-size:.72em;color:var(--muted)}
-.hm i{aspect-ratio:1;border-radius:3px;background:color-mix(in srgb,var(--tone) calc(var(--k)*100%),var(--surface));animation:pop .4s var(--ease) both}
+x-table.pickable tbody tr{cursor:pointer}
+x-table tbody tr:hover{background:var(--surface)}
+x-table tbody tr.on{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+x-table tbody tr:focus-visible{outline:none;background:var(--surface);box-shadow:inset 2px 0 0 var(--accent)}
+tfoot td{border-top:1px solid var(--line);color:var(--fg);font-weight:550;border-bottom:0;background:var(--surface-solid)}
+tfoot td.b-tf:empty{border-top:0}
+.b-nil{color:var(--faint)}
+.b-up{color:var(--success)}.b-down{color:var(--danger)}
+.b-tmore{position:absolute;right:9px;bottom:7px;font-size:.76em;color:var(--muted);background:color-mix(in srgb,var(--bg) 85%,transparent);padding:1px 6px;border-radius:calc(var(--r)*.6);pointer-events:none}
+x-table{position:relative}
+.b-empty{color:var(--muted);font-size:.9em;padding:12px}
+/* heatmap: intensity carries the value, the number is there when the cells can hold it */
+x-heatmap{display:block;min-width:0}
+.hm{display:flex;flex-direction:column;gap:3px;font-size:.74em;color:var(--muted);--tone:var(--accent);overflow:auto;max-width:100%}
+.hm[tone=success]{--tone:var(--success)}.hm[tone=danger]{--tone:var(--danger)}.hm[tone=info]{--tone:var(--info)}.hm[tone=warning]{--tone:var(--warning)}
+.hm-row{display:grid;gap:3px;align-items:stretch}
+.hm-head .hm-lb{color:var(--faint)}
+.hm-lb{display:flex;align-items:center;font-size:.92em;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+.hm-y{justify-content:flex-end;padding-right:6px;min-width:8px}
+.hm-c{position:relative;display:flex;align-items:center;justify-content:center;min-height:26px;border-radius:3px;
+  background:color-mix(in srgb,var(--tone) calc(var(--k,0)*88%),var(--surface));animation:pop .4s var(--ease) both;animation-delay:calc(var(--i,0)*10ms)}
+.hm-c{font-weight:500;font-variant-numeric:tabular-nums;font-size:.98em;color:var(--fg)}
+.hm-c.deep{color:var(--bg)}
+.hm-c.b-nil{background:repeating-linear-gradient(45deg,transparent 0 3px,var(--line) 3px 4px)}
+.hm-key{display:flex;align-items:center;gap:7px;font-size:.72em;color:var(--muted);font-variant-numeric:tabular-nums}
+.hm-scale{display:block;width:74px;height:7px;border-radius:4px;background:linear-gradient(90deg,color-mix(in srgb,var(--tone) 6%,var(--surface)),color-mix(in srgb,var(--tone) 88%,var(--surface)))}
 .hl{display:flex;align-items:center;justify-content:center;white-space:nowrap}.hl.y{justify-content:flex-end;padding-right:4px}
 x-timeline{display:flex;flex-direction:column}
 .tl{display:grid;grid-template-columns:minmax(64px,max-content) 1fr;gap:16px;padding:0 0 16px;position:relative;animation:b-in .4s var(--ease) both;animation-delay:calc(var(--i)*50ms)}
@@ -337,3 +379,41 @@ x-list.selectable .xl-row{cursor:pointer}
 .xl-chev.closed{transform:rotate(-90deg)}
 x-list.dense .xl-row{padding:3px 8px;gap:8px}
 x-list.dense .xl-tx{font-size:.9em}
+
+/* ---------- polish: press feedback, targets, focus, and text that cannot break the layout ---------- */
+#root{overflow-wrap:break-word}
+#root img,#root video,#root canvas,#root svg{max-width:100%}
+#root pre,#root code,#root .b-log{overflow-wrap:normal}
+button{transition:transform .12s var(--ease),background .15s,border-color .15s,color .15s}
+button:not(:disabled):active{transform:scale(.97)}
+button:focus-visible,th:focus-visible,tr:focus-visible,.xl-row:focus-visible,.it:focus-visible,.opt:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px;border-radius:var(--rs)}
+/* one row height for everything the user can press (M3's 40dp / HIG's 44pt), unless the block asks for dense */
+.opt,.td,.it,.xl-row,.x-dn{min-height:40px}
+x-table.dense .xl-row,x-list.dense .xl-row,x-table.dense td,x-table.dense th,.b-dense .opt{min-height:0}
+/* a press state on rows, not just buttons */
+.td:active,.it:active,.opt:active,.xl-row:active{background:color-mix(in srgb,var(--fg) 7%,transparent)}
+.it{cursor:grab}.it:active{cursor:grabbing}
+x-sortable .it .grip{fill:var(--faint);flex:none;opacity:.8}
+x-sortable .it:hover{border-color:color-mix(in srgb,var(--fg) 16%,var(--line));background:color-mix(in srgb,var(--fg) 4%,var(--surface))}
+x-sortable .it .it-tx{flex:1;min-width:0}
+/* progress reads as a measure, not a hairline */
+x-progress{height:8px;background:color-mix(in srgb,var(--fg) 8%,transparent);border-radius:8px}
+x-progress i{border-radius:8px;min-width:3px;background:linear-gradient(180deg,color-mix(in srgb,var(--tone) 88%,#fff),var(--tone))}
+/* the add row of a checklist is one line: type, then Add */
+x-todo .td-add{flex-direction:row;align-items:center;gap:8px}
+x-todo .td-add input{flex:1}
+x-todo .td-add button{flex:none}
+x-todo .td-x{opacity:0}
+x-todo .td:hover .td-x,x-todo .td:focus-within .td-x{opacity:1}
+/* empty states say what is missing instead of showing a void */
+.b-empty{color:var(--muted);font-size:.9em;padding:14px;text-align:center;border:1px dashed var(--line);border-radius:var(--r)}
+.b-skel{overflow:hidden}
+/* long content inside a scroll panel never scrolls the page sideways */
+x-code,.b-log,x-table .b-tws,.x-tabs-bar{overscroll-behavior:contain}
+/* numbers line up everywhere a value is compared */
+x-stat .v,x-kv .v,.b-tf,x-table td.num,.xl-meta,.xgz{font-variant-numeric:tabular-nums}
+/* a reduced-motion reader gets the same information without movement */
+@media (prefers-reduced-motion:reduce){
+  button:active,.td:active,.it:active,.opt:active,.xl-row:active{transform:none}
+  x-progress i{transition:none}
+}

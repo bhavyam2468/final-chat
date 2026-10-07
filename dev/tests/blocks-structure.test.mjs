@@ -172,6 +172,35 @@ Week 2 | dynamics
   });
 }
 
+{
+  const { root, w } = await mount(`<ui><x-table sortable select total="time,memory" caption="Benchmark">run,size,time,memory,change,notes
+1,"Sorted, ascending",12.4,18 MB,+3%,warm
+2,Sorted descending,12.9,18 MB,-1%,
+3,**Shuffled**,15.6,19 MB,+12%,"cache, miss path"
+</x-table></ui>`);
+  t("x-table reads quoted fields, aligns numbers and totals by column", () => {
+    const tb = root.querySelector("x-table");
+    assert(tb.querySelectorAll("tbody tr").length === 3, "rows: " + tb.querySelectorAll("tbody tr").length);
+    const cells = [...tb.querySelectorAll("tbody tr")[0].querySelectorAll("td")].map((c) => c.textContent);
+    assert(cells[1] === "Sorted, ascending", "a quoted field keeps its comma: " + cells[1]);
+    assert([...tb.querySelectorAll("th")].map((h) => h.className).join(",") === "num,,num,num,num,", "numbers align right: " + [...tb.querySelectorAll("th")].map((h) => h.className).join(","));
+    assert(tb.querySelector("tfoot").textContent.replace(/\s+/g, " ").trim() === "Total40.955 MB", "totals: " + tb.querySelector("tfoot").textContent);
+    assert(tb.querySelector("tbody .b-up") && tb.querySelector("tbody .b-down"), "a signed column is coloured");
+    assert(tb.querySelector("td b"), "**bold** inside a cell renders");
+  });
+  t("x-table sorts on click and reports the selected row", () => {
+    const tb = root.querySelector("x-table");
+    tb.querySelectorAll("th")[2].click();
+    const first = tb.querySelector("tbody tr td").textContent;
+    assert(first === "1", "ascending sort put run 1 first, got " + first);
+    tb.querySelectorAll("th")[2].click();
+    assert(tb.querySelector("tbody tr td").textContent === "3", "second click reverses");
+    tb.querySelectorAll("tbody tr")[1].click();
+    assert(JSON.stringify(tb.value) === '{"run":"2","size":"Sorted descending","time":"12.9","memory":"18 MB","change":"-1%","notes":""}', "value is the row as an object: " + JSON.stringify(tb.value));
+    assert(JSON.stringify(w.form()) === "{}", "an unnamed table stays out of form(): " + JSON.stringify(w.form()));
+  });
+}
+
 // Every flowchart/tree/outline example the model is taught must parse and draw: the docs are the prompt,
 // and a broken example is exactly how the model gets it wrong.
 for (const doc of ["workspace-template/system/SYSTEM.md", "workspace-template/system/skills/blocks/SKILL.md"]) {
@@ -204,6 +233,19 @@ for (const doc of ["workspace-template/system/SYSTEM.md", "workspace-template/sy
       assert(errors.length === 0, "errors: " + errors.join(" | "));
       n++; console.log("ok  ", `SYSTEM.md flowchart example ${i + 1} draws`);
     } catch (e) { bad++; console.log("FAIL", `SYSTEM.md flowchart example ${i + 1} draws ->`, e.message); }
+  }
+}
+
+// The model writes what the docs and catalog teach. A component named there but missing from the library is a
+// blank box for the user and an unfixable-looking bug for the model, so the two lists are checked against each other.
+{
+  const { w } = await mount("<ui><p>warm up</p></ui>");
+  const defined = new Set([...BUNDLE.matchAll(/define\("([a-z0-9-]+)"/g)].map((m) => m[1]));
+  for (const [file, pat] of [["src/lib/blocks/catalog.ts", /tag: "([^"]+)"/g], ["docs/BLOCKS.md", /`(x-[a-z][a-z0-9-]*)`/g], ["workspace-template/system/skills/blocks/SKILL.md", /\b(x-[a-z][a-z0-9-]*)\b/g], ["workspace-template/system/SYSTEM.md", /\b(x-[a-z][a-z0-9-]*)\b/g]]) {
+    const text = fs.readFileSync(path.join(ROOT, file), "utf8");
+    const names = new Set([...text.matchAll(pat)].flatMap((m) => m[1].split("/").filter((x) => x.startsWith("x-"))));
+    const missing = [...names].filter((t) => !defined.has(t) && t !== "x-labels" && t !== "x-label" && t !== "x-icon-name");
+    t(`${path.basename(file)} names only components that exist`, () => assert(missing.length === 0, "missing: " + missing.join(", ")));
   }
 }
 

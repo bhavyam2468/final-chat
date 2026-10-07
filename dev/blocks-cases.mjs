@@ -174,6 +174,22 @@ C --> E((Done))</x-flow>`,
     expect: () => { const t = document.querySelectorAll("x-tree .xgn").length, r = document.querySelectorAll("x-list .xl-i").length, on = document.querySelectorAll("x-list .xl-i.on").length; return (t === 4 && r === 2 && on === 1) || [t, r, on].join("/"); },
   },
   {
+    name: "table: numbers, sorting, totals and row picking",
+    src: `<x-table sortable select total="time,memory" caption="Benchmark">run,size,time,memory
+1,"Sorted, ascending",12.4,18 MB
+2,Sorted descending,12.9,18 MB
+3,Shuffled,15.6,19 MB</x-table>`,
+    steps: [{ eval: "document.querySelectorAll('#root x-table th')[2].click()" }, { wait: 120 }],
+    wait: 500,
+    expect: () => { const t = document.querySelector("x-table"); const cells = [...t.querySelectorAll("tbody tr")[0].querySelectorAll("td")].map((c) => c.textContent); const foot = t.querySelector("tfoot").textContent.replace(/\\s+/g, " ").trim(); return (cells[1] === "Sorted, ascending" && foot === "Total40.955 MB") || [cells.join("|"), foot, t.innerHTML.slice(0, 120)]; },
+  },
+  {
+    name: "heatmap: grid, labels and in-cell values",
+    src: `<x-heatmap data="1,2,3|4,5,6|2,1,4" x-labels="a,b,c" y-labels="r1,r2,r3" caption="Small matrix"></x-heatmap>`,
+    wait: 500,
+    expect: () => { const c = document.querySelectorAll("x-heatmap .hm-c").length, lb = [...document.querySelectorAll("x-heatmap .hm-lb")].map((e) => e.textContent).filter(Boolean).join(","), n = document.querySelector("x-heatmap .hm-c").textContent; return (c === 9 && lb === "a,b,c,r1,r2,r3" && n === "1") || [c, lb, n].join(" | "); },
+  },
+  {
     name: "self-check reports unbound names", wait: 1400,
     src: `<p>Score: {{ scroe }}</p><x-state score="1"></x-state>`,
     expect: () => (window.__issues || []).some((i) => /scroe/.test(i)) || JSON.stringify(window.__issues || null),

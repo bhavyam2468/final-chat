@@ -71,7 +71,7 @@
   // tabs: <x-tabs><x-tab label="A">…</x-tab>…</x-tabs>
   define("x-tabs", class extends Base {
     init() {
-      this._bar = document.createElement("div"); this._bar.className = "x-tabs-bar"; this.prepend(this._bar);
+      this._bar = document.createElement("div"); this._bar.className = "x-tabs-bar"; this._bar.setAttribute("role", "tablist"); this.prepend(this._bar);
       this.index = this.n("index", 0);
       new MutationObserver(() => this.build()).observe(this, { childList: true });
     }
@@ -79,7 +79,23 @@
     build() {
       const tabs = this.tabs();
       if (this._bar.childElementCount !== tabs.length) this._bar.innerHTML = tabs.map((t, i) => `<button type="button" data-i="${i}">${esc(t.getAttribute("label") || "Tab " + (i + 1))}</button>`).join("");
-      [...this._bar.children].forEach((b, i) => { b.classList.toggle("on", i === this.index); b.onclick = () => this.go(i); });
+      [...this._bar.children].forEach((b, i) => {
+        b.classList.toggle("on", i === this.index);
+        b.onclick = () => this.go(i);
+        b.tabIndex = i === this.index ? 0 : -1;
+        b.setAttribute("role", "tab");
+        b.setAttribute("aria-selected", String(i === this.index));
+        b.onkeydown = (e) => {
+          const n = this.tabs().length;
+          let j = null;
+          if (e.key === "ArrowRight") j = (i + 1) % n;
+          else if (e.key === "ArrowLeft") j = (i - 1 + n) % n;
+          else if (e.key === "Home") j = 0;
+          else if (e.key === "End") j = n - 1;
+          if (j === null) return;
+          e.preventDefault(); this.go(j); this._bar.children[j].focus();
+        };
+      });
       tabs.forEach((t, i) => { const on = i === this.index; if (t.hidden === on) { t.hidden = !on; if (on) { t.classList.remove("x-tab-in"); void t.offsetWidth; t.classList.add("x-tab-in"); } } });
     }
     go(i) { this.index = Math.max(0, Math.min(this.tabs().length - 1, i)); this.build(); change(this); }
@@ -336,32 +352,200 @@
   define("x-sparkline", class extends Base {
     render() { this.innerHTML = ""; const v = list(this.getAttribute("data")).map(Number); const mx = Math.max(...v), mn = Math.min(...v), r = mx - mn || 1; const s = svg("svg", { viewBox: "0 0 100 30", preserveAspectRatio: "none" }, this); drawIn(svg("path", { d: v.map((x, i) => `${i ? "L" : "M"}${(i / (v.length - 1 || 1)) * 100},${28 - ((x - mn) / r) * 26}`).join(" "), fill: "none", stroke: "var(--tone)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }, s)); }
   }, { void: true });
+  // ---------------------------------------------------------------- x-table
+  // The most-used block, so it carries the whole job: CSV, markdown rows, JSON, tab-separated or pasted
+  // output; numbers found and aligned by itself; sorting that shows where it is; totals; a row the user can
+  // pick; and an internal scroll so a 60-row table is one quiet panel instead of a page.
+  const NUMISH = /^[+-]?[$€£₹]?\s?-?\d[\d,\s]*(?:\.\d+)?\s?(?:%|[a-zA-Z]{1,3})?$/;
+  /** CSV/TSV/pipe rows: quoted cells keep their separator ("cache, miss path") and may span lines. */
+  const csvRows = (text, sep) => {
+    const rows = []; let row = [], cur = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === sep) { row.push(cur); cur = ""; }
+      else if (ch === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+      else if (ch !== "\r") cur += ch;
+    }
+    if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+    return rows.map((r) => r.map((c) => c.trim())).filter((r) => r.some((c) => c !== ""));
+  };
+  const numOf = (v) => { const m = String(v).replace(/[,%\s]/g, "").match(/^[+-]?[$€£₹]?(-?\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : NaN; };
+  const MARK = /^(—|–|-|n\/a|N\/A|null|)$/;
+
   define("x-table", class extends Base {
     static owns = true;
-    render() {
-      let rows;
+    rows() {
       const d = this.getAttribute("data");
-      if (d) { try { const j = JSON.parse(d); rows = Array.isArray(j[0]) ? j : [Object.keys(j[0] || {}), ...j.map((o) => Object.values(o))]; } catch { rows = []; } }
-      else { const src = (this.getAttribute("csv") || this._src || "").replace(/\\n/g, "\n").trim(); const sep = src.includes("\t") ? "\t" : src.split("\n")[0].includes("|") ? "|" : ","; rows = src.split("\n").map((r) => r.replace(/^\||\|$/g, "").split(sep).map((c) => c.trim())).filter((r) => !r.every((c) => /^:?-+:?$/.test(c))); }
-      if (!rows.length) return;
-      this._rows = rows; this._sort = this._sort || null; this.paint();
+      if (d) {
+        let j; try { j = JSON.parse(d); } catch { return []; }
+        if (!Array.isArray(j) || !j.length) return [];
+        if (Array.isArray(j[0])) return j.map((r) => r.map((c) => String(c)));
+        const head = Object.keys(j[0]);
+        return [head, ...j.map((o) => head.map((h) => (o[h] === null || o[h] === undefined ? "" : typeof o[h] === "object" ? JSON.stringify(o[h]) : String(o[h]))))];
+      }
+      const src = (this.getAttribute("csv") || this._src || "").replace(/\\n/g, "\n").trim();
+      if (!src) return [];
+      const first = src.split("\n")[0];
+      const sep = src.includes("\t") ? "\t" : first.includes("|") ? "|" : ",";
+      const trimmed = sep === "|" ? src.replace(/^\s*\||\|\s*$/gm, "") : src;
+      return csvRows(trimmed, sep).filter((r) => !r.every((c) => /^:?-{2,}:?$/.test(c)));
+    }
+    init() { this.addEventListener("click", (e) => this.onClick(e)); }   // Base calls init(), not connect()
+    onClick(e) {
+      const th = e.target.closest("th");
+      if (th && this.hasAttribute("sortable")) return this.sort(+th.dataset.c);
+      const tr = e.target.closest("tbody tr");
+      if (tr && tr.dataset.i) this.pick(+tr.dataset.i);
+    }
+    sort(c) {
+      this._sort = this._sort && this._sort[0] === c ? [c, -this._sort[1]] : [c, 1];
+      this.paint();
+    }
+    pick(i) {
+      if (!this.hasAttribute("select")) return;
+      const row = this._body[i]; if (!row) return;
+      const o = {}; this._head.forEach((h, ci) => (o[h] = row[ci]));
+      const same = this._picked === i;
+      this._picked = same ? -1 : i;
+      this.dispatchEvent(new CustomEvent("select", { bubbles: true, detail: { value: same ? null : o, index: this._picked } }));
+      this.paint();
+      change(this);
+    }
+    get value() {
+      if (this._picked === undefined || this._picked < 0 || !this._body) return null;
+      const o = {}; this._head.forEach((h, ci) => (o[h] = this._body[this._picked][ci]));
+      return o;
+    }
+    render() {
+      const rows = this.rows();
+      const head = rows[0], body = rows.slice(1);
+      if (!head) { this.innerHTML = ""; return; }
+      this._head = head; this._body = body;
+      if (!body.length) { this.innerHTML = `<div class="b-empty">No rows</div>`; return; }
+      this.paint();
     }
     paint() {
-      const [head, ...body] = this._rows; let b = body;
-      if (this._sort) { const [c, dir] = this._sort; b = [...body].sort((x, y) => { const p = parseFloat(x[c]), q = parseFloat(y[c]); const r = !isNaN(p) && !isNaN(q) ? p - q : String(x[c]).localeCompare(String(y[c])); return dir * r; }); }
-      this.innerHTML = `<table><thead><tr>${head.map((h, i) => `<th data-c="${i}">${esc(h)}${this._sort && this._sort[0] === i ? (this._sort[1] > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead><tbody>${b.map((r, ri) => `<tr style="--i:${Math.min(ri, 20)}">${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
-      if (this.hasAttribute("sortable")) this.querySelectorAll("th").forEach((th) => (th.onclick = () => { const c = +th.dataset.c; this._sort = this._sort && this._sort[0] === c ? [c, -this._sort[1]] : [c, 1]; this.paint(); }));
+      const head = this._head, body = this._body;
+      // what kind of column is this? decided from the data, so a model cannot get the alignment wrong
+      const kind = head.map((_, c) => {
+        const vals = body.slice(0, 40).map((r) => (r[c] || "").trim()).filter((v) => v !== "");
+        if (!vals.length) return "text";
+        const nums = vals.filter((v) => NUMISH.test(v)).length;
+        if (nums >= vals.length * 0.7) return vals.some((v) => /^\s*[+-]/.test(v)) && !vals.some((v) => /^\s*[$€£₹]/.test(v)) ? "delta" : "num";
+        return "text";
+      });
+      const forced = (this.getAttribute("cols") || "").split(",").map((x) => x.trim().toLowerCase());
+      forced.forEach((f, i) => { if (i < kind.length && /^(l|left)$/.test(f)) kind[i] = "text"; else if (i < kind.length && /^(r|right|num)$/.test(f)) kind[i] = "num"; else if (i < kind.length && /^(c|center)$/.test(f)) kind[i] = "center"; });
+      const dir = this._sort ? this._sort[1] : 0;
+      const order = body.map((r, i) => i);
+      if (this._sort) {
+        const c = this._sort[0];
+        order.sort((x, y) => {
+          const a = body[x][c] || "", b = body[y][c] || "";
+          const p = numOf(a), q = numOf(b);
+          const r = !isNaN(p) && !isNaN(q) ? p - q : String(a).localeCompare(String(b), undefined, { numeric: true });
+          return dir * r || x - y;
+        });
+      }
+      const cell = (v, c) => {
+        const t = (v || "").trim();
+        if (MARK.test(t)) return `<span class="b-nil">${t ? esc(t) : "—"}</span>`;
+        let h = esc(t).replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+        if (kind[c] === "delta" && /^[+-]/.test(t)) h = `<span class="${t[0] === "+" ? "b-up" : "b-down"}">${h}</span>`;
+        return h;
+      };
+      const raw = this.hasAttribute("total") ? (this.getAttribute("total") || "sum").trim() : "";
+      const how = raw.split(/\s+/)[0].toLowerCase();
+      const names = raw.includes(",") ? raw.split(",").map((x) => x.trim().toLowerCase()) : null;
+      const totals = !raw ? "" : (how === "avg" || how === "count" ? how : "sum");
+      const wants = (c) => totals && (names ? names.includes(String(head[c]).trim().toLowerCase()) : c > 0);
+      const foot = totals ? `<tfoot><tr>${head.map((h, c) => {
+        const label = c === 0 ? esc(totals === "avg" ? "Average" : totals === "count" ? "Count" : "Total") : "";
+        if (!wants(c) || kind[c] === "delta") return `<td class="b-tf">${label}</td>`;
+        if (kind[c] !== "num") return `<td class="b-tf">${label}</td>`;
+        const ns = body.map((r) => numOf(r[c])).filter((x) => !isNaN(x));
+        if (totals === "count") return `<td class="num b-tf">${label || esc(String(body.length))}</td>`;
+        if (!ns.length) return `<td class="b-tf">${label}</td>`;
+        // the column's unit travels with its total (18 MB × 5 is 90 MB, not 90)
+        const unit = (String(body.find((r) => (r[c] || "").trim())[c]).match(/[a-zA-Z%]{1,3}\s*$/) || [""])[0].trim();
+        const v = totals === "avg" ? ns.reduce((a, b) => a + b, 0) / ns.length : ns.reduce((a, b) => a + b, 0);
+        const dec = Math.min(2, Math.max(...ns.map((x) => (String(x).split(".")[1] || "").length)));
+        return `<td class="num b-tf">${esc(v.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }))}${unit ? " " + esc(unit) : ""}</td>`;
+      }).join("")}</tr></tfoot>` : "";
+      const cap = this.getAttribute("caption");
+      const fixed = parseFloat(this.getAttribute("height") || "");
+      const scroll = fixed > 40 || body.length > 14;
+      const h = fixed > 40 ? fixed : 420;
+      this.classList.toggle("sticky", scroll);
+      this.classList.toggle("pickable", this.hasAttribute("select"));
+      this.classList.toggle("dense", this.hasAttribute("dense"));
+      this.innerHTML =
+        (cap ? `<caption>${esc(cap)}</caption>` : "") +
+        `<div class="b-tws"${scroll ? ` style="max-height:${h}px"` : ""}><table>` +
+        `<thead><tr>${head.map((hh, c) => {
+          const on = this._sort && this._sort[0] === c;
+          return `<th class="${kind[c] === "num" || kind[c] === "delta" ? "num" : ""}${on ? " on" : ""}" data-c="${c}"${this.hasAttribute("sortable") ? ' tabindex="0" role="button" aria-sort="' + (on ? (dir > 0 ? "ascending" : "descending") : "none") + '"' : ""}>${esc(hh)}` +
+            (this.hasAttribute("sortable") ? `<svg class="b-car" viewBox="0 0 8 4" width="8" height="4" aria-hidden="true"><path d="M4,0 L8,4 L0,4 z"/></svg>` : "") + `</th>`;
+        }).join("")}</tr></thead>` +
+        `<tbody>${order.map((ri, pos) => `<tr${this.hasAttribute("select") ? ' tabindex="0"' : ""} data-i="${ri}" class="${this._picked === ri ? "on" : ""}" style="--i:${Math.min(pos, 20)}">${body[ri].map((v, c) => `<td class="${kind[c] === "num" || kind[c] === "delta" ? "num" : kind[c] === "center" ? "center" : ""}">${cell(v, c)}</td>`).join("")}</tr>`).join("")}</tbody>` +
+        foot + `</table></div>` +
+        (scroll && body.length > 14 ? `<div class="b-tmore">${body.length} rows</div>` : "");
+      if (this.hasAttribute("sortable")) this.querySelectorAll("th").forEach((th) => (th.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); this.sort(+th.dataset.c); } }));
+      if (this.hasAttribute("select")) this.querySelectorAll("tbody tr").forEach((tr) => (tr.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); this.pick(+tr.dataset.i); } }));
       B.typeset(this);
     }
   });
+
+  // ---------------------------------------------------------------- x-heatmap
+  // A matrix read for its pattern: intensity carries the value, the number is shown when the cells are big
+  // enough to hold it, and every cell names its row and column on hover. Documented since the start without
+  // an implementation — the model wrote <x-heatmap> and the user saw nothing.
   define("x-heatmap", class extends Base {
-    render() {
-      const rows = String(this.getAttribute("data") || "").split("|").map((r) => r.split(",").map(Number));
-      const xl = list(this.getAttribute("x-labels") || ""), yl = list(this.getAttribute("y-labels") || "");
-      const all = rows.flat().filter((x) => !isNaN(x)), mn = Math.min(...all), mx = Math.max(...all);
-      this.innerHTML = `<div class="hm" style="grid-template-columns:${yl.length ? "auto " : ""}repeat(${Math.max(...rows.map((r) => r.length))},1fr)">${xl.length ? (yl.length ? "<span></span>" : "") + xl.map((l) => `<span class="hl">${esc(l)}</span>`).join("") : ""}${rows.map((r, i) => (yl.length ? `<span class="hl y">${esc(yl[i] || "")}</span>` : "") + r.map((v, j) => `<i title="${v}" style="--k:${((v - mn) / (mx - mn || 1)).toFixed(3)};animation-delay:${(i + j) * 12}ms"></i>`).join("")).join("")}</div>`;
+    static owns = true;
+    parse() {
+      const d = this.getAttribute("data");
+      const src = d !== null ? d : this._src || "";
+      if (/^\s*\[/.test(src)) {
+        try { const j = JSON.parse(src); return j.map((r) => (Array.isArray(r) ? r : Object.values(r)).map((v) => (v === null || v === "" ? null : +v))); } catch { return []; }
+      }
+      return src.replace(/\\n/g, "\n").split(/[\n|;]+/).map((row) => row.split(/[,\t]|\s{2,}/).map((c) => { const t = c.trim(); return t === "" ? null : (isNaN(+t) ? null : +t); })).filter((r) => r.length);
     }
-  }, { void: true });
+    render() {
+      const rows = this.parse();
+      if (!rows.length) { this.innerHTML = `<div class="b-empty">No values</div>`; return; }
+      const flat = rows.flat().filter((v) => v !== null);
+      if (!flat.length) { this.innerHTML = `<div class="b-empty">No values</div>`; return; }
+      const lo = this.hasAttribute("min") ? this.n("min", 0) : Math.min(...flat);
+      const hi = this.hasAttribute("max") ? this.n("max", 1) : Math.max(...flat);
+      const span = hi - lo || 1;
+      const xs = list(this.getAttribute("x-labels") || "").length ? list(this.getAttribute("x-labels")) : null;
+      const ys = list(this.getAttribute("y-labels") || "").length ? list(this.getAttribute("y-labels")) : null;
+      const cols = Math.max(...rows.map((r) => r.length));
+      const showVals = this.hasAttribute("values") || (cols <= 8 && rows.length <= 8);
+      const dec = Math.max(...flat.map((v) => (String(v).split(".")[1] || "").length));
+      const num = (v) => v.toLocaleString(undefined, { minimumFractionDigits: Math.min(dec, 2), maximumFractionDigits: Math.min(dec, 2) });
+      const tone = this.getAttribute("tone") || "";
+      const cap = this.getAttribute("caption");
+      // columns are pinned by an explicit template so the header always sits over its own column
+      const lead = ys ? "max-content " : "";
+      const g = `${lead}repeat(${cols}, minmax(26px, 1fr))`;
+      const head = xs ? `<div class="hm-row hm-head" style="grid-template-columns:${g}">${ys ? `<span class="hm-lb"></span>` : ""}` +
+        Array.from({ length: cols }, (_, c) => `<span class="hm-lb" title="${esc(xs[c] || "")}">${esc(xs[c] || "")}</span>`).join("") + `</div>` : "";
+      const body = rows.map((r, ri) => `<div class="hm-row" style="grid-template-columns:${g}">` +
+        (ys ? `<span class="hm-lb hm-y" title="${esc(ys[ri] || "")}">${esc(ys[ri] || "")}</span>` : "") +
+        Array.from({ length: cols }, (_, c) => {
+          const v = r[c];
+          if (v === null || v === undefined) return `<span class="hm-c b-nil"></span>`;
+          const k = Math.max(0, Math.min(1, (v - lo) / span));
+          return `<span class="hm-c${k > 0.55 ? " deep" : ""}" style="--k:${k.toFixed(3)};--i:${Math.min(ri * cols + c, 24)}" title="${esc((ys ? ys[ri] + " · " : "") + (xs ? xs[c] + ": " : "") + num(v))}">${showVals ? num(v) : ""}</span>`;
+        }).join("") + `</div>`).join("");
+      const legend = flat.length > 1 && lo !== hi ? `<div class="hm-key"><span>${num(lo)}</span><i class="hm-scale"${tone ? ` tone="${esc(tone)}"` : ""}></i><span>${num(hi)}</span></div>` : "";
+      this.innerHTML = `<div class="hm" role="img" aria-label="${esc(cap || `Heatmap, ${rows.length} by ${cols}, ${num(lo)} to ${num(hi)}`)}"${tone ? ` tone="${esc(tone)}"` : ""}>` + head + body + `</div>` + legend;
+    }
+  });
+
   define("x-timeline", class extends Base {
     static owns = true;
     render() { this.innerHTML = lines(this._src).map((l, i) => { const [d, t, x] = l.split("|").map((s) => s.trim()); return `<div class="tl" style="--i:${i}"><span class="tl-d">${esc(d || "")}</span><div><b>${esc(t || "")}</b>${x ? `<p>${esc(x)}</p>` : ""}</div></div>`; }).join(""); B.typeset(this); }
@@ -1100,7 +1284,11 @@
               counters[item.depth] = (counters[item.depth] || 0) + 1;
               counters.length = item.depth + 1;
               mk.textContent = counters.join(".") + (item.depth === 0 ? "." : "");
-            } else mk.textContent = item.children.length && !this._collapsed.has(i) ? "▾" : markers === "dash" ? "–" : "•";
+            } else if (item.children.length && !this._collapsed.has(i)) {
+              const ic = svg("svg", { viewBox: "0 0 12 12", width: "9", height: "9", class: "xl-fold" });
+              svg("path", { d: "M2.5,4 L6,8 L9.5,4", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" }, ic);
+              mk.appendChild(ic);
+            } else mk.textContent = markers === "dash" ? "–" : "•";
             row.appendChild(mk);
           }
           const tx = document.createElement("span");
@@ -1278,7 +1466,9 @@
     static owns = true;
     init() { this._items = lines(this._src).map((l) => l.replace(/^[-*\d.)]+\s*/, "")); }
     render() {
-      this.innerHTML = this._items.map((t, i) => `<div class="it" data-i="${i}" style="--i:${i}"><span class="grip">⋮⋮</span><span>${esc(t)}</span></div>`).join("");
+      this.innerHTML = this._items.map((t, i) => `<div class="it" data-i="${i}" style="--i:${i}">` +
+        `<svg class="grip" viewBox="0 0 8 14" width="8" height="14" aria-hidden="true">${[2, 7, 12].map((y) => [1.6, 6.4].map((x) => `<circle cx="${x}" cy="${y}" r="1.3"/>`).join("")).join("")}</svg>` +
+        `<span class="it-tx">${esc(t)}</span></div>`).join("");
       this.querySelectorAll(".it").forEach((it) => {
         it.onpointerdown = (e) => {
           e.preventDefault(); const r0 = it.getBoundingClientRect(), y0 = e.clientY; it.classList.add("drag"); it.setPointerCapture(e.pointerId);

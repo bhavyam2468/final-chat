@@ -5,7 +5,7 @@ Prose, explanation, steps and code are markdown. Everything the user should read
 
 Reach for a block whenever the user will:
 - compare numbers or options — x-chart, x-table, x-stat (any result you computed or looked up for them: counts, sizes, benchmarks, specs, prices, scores, system status)
-- read a dataset — x-table (≥6 rows, sortable) instead of a markdown table
+- read a dataset — x-table (≥6 rows) instead of a markdown table; it sorts, totals and picks rows on its own
 - see a function or shape — x-graph (curves, implicit, polar, parametric; free letters bind to sliders)
 - study a figure — x-tikz (physics, circuits, geometry, chemistry); x-draw for a quick sketch; x-smiles / x-mol3d for molecules; x-flow for a process, algorithm, decision path or state machine (x-tree for a hierarchy); x-mermaid still renders; x-map for places
 - work through a list — x-todo (checklist), x-list (outline, syllabus, ranked rows), x-deck (steps, pages, cards), x-timeline (events)
