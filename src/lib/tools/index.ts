@@ -10,6 +10,7 @@ import { MCP_CATALOG, registrySearch } from "../market";
 import { startOAuth } from "../mcp-auth";
 import { varsFor, varsIn, credStatus } from "../credentials";
 import { runShell, runPython as execPython, pipInstall, hostDenied, usesSudo, sudoReady } from "../exec";
+import { recentRuns, runFile, runText, runnablePath } from "../file-run";
 import { youtubeId, chatDir } from "../shared";
 import { firecrawlScrape, firecrawlSearch, firecrawlExtract } from "../web";
 import { applyEdits, insertLines, snippet, hasPlaceholder, Edit } from "./edit";
@@ -70,6 +71,8 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("pip_install", "Install packages into the same venv run_python uses. Not system pip", { packages: arr({ type: "string" }) }, ["packages"]),
     T("shell", "Run bash in YOUR sandbox. Not for reading or searching files (fs_read, fs_search, fs_list). Quote paths that contain spaces. A missing binary is not retried", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
     ...(host ? [T("host_shell", "Run bash on the USER'S machine. Quote paths with spaces. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password. Not for adb (use the phone tools)", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
+    T("file_run", "Run a workspace source file the way the canvas Run button does (python, js/ts, bash, c/c++, rust, go, java, ruby, php, lua, perl, swift, kotlin). Same sandbox, same command as the user sees. Read the output before theorising about a bug", { path: s("file to run"), args: s("extra arguments"), timeout: n("seconds, default 60") }, ["path"]),
+    T("file_runs", "Recent runs of a file (the user's canvas Run button and your own file_run): command, exit code, output tail. Use it when they say it failed instead of asking them to paste the error", { path: s("one file, or omit for all recent runs"), limit: n("default 8") }, []),
     T("web_search", "Use for current, niche, source-backed, or explicitly requested web research. In General mode do not call automatically for stable questions. SearXNG is tried first; open the useful pages with web_fetch before citing them", { query: s(), limit: n() }, ["query"]),
     T("web_fetch", "Fetch a URL with lightweight HTTP and established readability extraction; use for a page the user provided or a useful search result. Browser/Firecrawl escalation is optional and off by default", { url: s() }, ["url"]),
     ...(st.firecrawlEnabled && st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (explicit Firecrawl AI fallback)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
@@ -519,6 +522,21 @@ They can also press Connect in Settings → MCP.` : "";
         else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
         ctx.emit({ t: "canvas", spec, ...(typeof a.dock === "boolean" ? { dock: a.dock } : {}) });
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
+      }
+      case "file_run": {
+        const target = String(a.path || "").trim();
+        if (!target) return { ok: false, result: "path required" };
+        if (!runnablePath(target)) return { ok: false, result: `no runner for that file type. Runnable: python, js/ts, bash, c/c++, rust, go, java, ruby, php, lua, perl, swift, kotlin. For .html/.md/.ui open a canvas preview instead, and use shell for anything else.` };
+        const abs = P(target);
+        try { await fs.access(abs); } catch { return { ok: false, result: `${target} not found` }; }
+        const r = await runFile(st, rel(abs), { args: a.args ? String(a.args) : undefined, timeout: Number(a.timeout) || 60, onData: (c) => ctx.output?.(c), signal: ctx.signal });
+        if (!r.cmd) return { ok: false, result: r.out };
+        return { ok: r.code === 0, result: runText(r) };
+      }
+      case "file_runs": {
+        const runs = recentRuns(a.path ? String(a.path) : undefined, Number(a.limit) || 8);
+        if (!runs.length) return { ok: true, result: a.path ? `${a.path} has not been run in this session.` : "nothing has been run from a canvas in this session." };
+        return { ok: true, result: runs.map((r, i) => `${i ? "\n" : ""}${new Date(r.at).toISOString().slice(11, 19)} · ${runText(r)}`).join("\n").slice(0, 24_000) };
       }
       case "web_search": {
         ctx.progress?.("Waiting for web results");

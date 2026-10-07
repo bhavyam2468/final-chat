@@ -931,3 +931,51 @@ button.busy:not(.solid)::after { border-color: var(--fg) var(--fg) transparent t
 .crumb.on { color: var(--fg); background: var(--surface); }
 .crumb svg { width: 12px; height: 12px; }
 .panel-sub { font-size: 10.5px; letter-spacing: .06em; color: var(--faint); padding: 10px 10px 2px; text-transform: uppercase; }
+
+/* ── editor (canvas: markdown, code, html, blocks) ────────────────────────────────
+   The textarea is the editor; every colour comes from a highlight layer painted behind it.
+   Both layers share one metric block (font, padding, tab size, wrap mode), the layers are moved
+   together on scroll, and the gutter keeps its own column so numbers never scroll sideways. */
+.ed { position: relative; width: 100%; height: 100%; min-height: 100%; display: flex; flex-direction: column; --ed-gut: 46px; --ed-pad: 14px; }
+.ed-main { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.ed-gut { position: absolute; top: 0; bottom: 0; left: 0; width: var(--ed-gut); overflow: hidden; padding-top: var(--ed-pad);
+  border-right: 1px solid color-mix(in srgb, var(--line) 65%, transparent); background: color-mix(in srgb, var(--bg) 94%, var(--fg)); }
+.ed-nums { will-change: transform; }
+.ed-n { padding-right: 10px; text-align: right; font: 13px/1.65 var(--font-mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.ed-n.ed-on { color: var(--fg); }
+.ed-hl { position: absolute; inset: 0; margin: 0; overflow: hidden; pointer-events: none; background: none; }
+.ed-hl code, .ed-in { font: 13px/1.65 var(--font-mono); white-space: pre; overflow-wrap: normal; }
+.ed-hl code { display: block; will-change: transform; padding: var(--ed-pad) 18px var(--ed-pad) calc(var(--ed-gut) + 12px); color: var(--fg); }
+.ed-in { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; background: transparent; color: transparent;
+  caret-color: var(--accent); border: 0; outline: none; padding: var(--ed-pad) 18px var(--ed-pad) calc(var(--ed-gut) + 12px); }
+.ed-in::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.ed-in::-moz-selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.ed[data-lang=markdown] .ed-hl code, .ed[data-lang=markdown] .ed-in, .ed[data-lang=plaintext] .ed-hl code, .ed[data-lang=plaintext] .ed-in { white-space: pre-wrap; overflow-wrap: break-word; }
+.ed-status { display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--muted); background: color-mix(in srgb, var(--float) 55%, transparent); }
+.ed-at { white-space: nowrap; }
+.ed-sp { flex: 1; }
+.ed-t { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0; padding: 2px 5px; border-radius: 6px;
+  color: var(--muted); font: inherit; cursor: pointer; }
+.ed-t:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.ed-t.on { color: var(--accent); }
+.ed-t svg { width: 12px; height: 12px; }
+.win-body.editing { display: flex; flex-direction: column; overflow: hidden; }
+.ed-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ed-wrap > :first-child { flex: 1; min-height: 0; }
+
+/* ── run drawer (canvas footer output) ──────────────────────────────────────────── */
+.run { border-top: 1px solid var(--line); display: flex; flex-direction: column; max-height: 46%; background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
+.run-head { display: flex; align-items: center; gap: 8px; padding: 3px 8px 3px 10px; font-size: 11.5px; color: var(--muted); }
+.run-name { color: var(--fg); font-weight: 500; }
+.run-meta { font-variant-numeric: tabular-nums; }
+.run-head .sp { flex: 1; }
+.run-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.run-ok { background: var(--success); }
+.run-bad { background: var(--danger); }
+.run-busy { background: var(--accent); animation: run-pulse 1.1s ease-in-out infinite; }
+@keyframes run-pulse { 50% { opacity: .35 } }
+.run-out { margin: 0; padding: 8px 12px 12px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font: 12px/1.55 var(--font-mono); color: var(--fg); max-height: 34vh; }
+.run-out.failed { color: color-mix(in srgb, var(--danger) 55%, var(--fg)); }
+@media (prefers-reduced-motion: reduce) { .run-busy { animation: none } }

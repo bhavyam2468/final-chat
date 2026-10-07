@@ -6,8 +6,11 @@
    actions to the bottom bar, which scrolls inline instead of overflowing. */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, FileText } from "lucide-react";
+import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, FileText, Play } from "lucide-react";
 import { CanvasSpec, fileUrl, useApp } from "./ctx";
+import { Editor, langOf } from "./Editor";
+import { RunDrawer, startRun, type RunState } from "./Runner";
+import { runLangOf, runnablePath } from "@/lib/run-langs";
 import { Block } from "./Block";
 import { StreamMarkdown, CodeBlock } from "@/lib/streammark/StreamMarkdown";
 import { useMdHandlers } from "./Message";
@@ -23,6 +26,8 @@ export type Rect = CanvasRect;
 export type Win = {
   id: string; spec: CanvasSpec; x: number; y: number; w: number; h: number; z: number;
   min: boolean; pinned: boolean; dock: boolean; peek?: Rect | null; peekSide?: PeekSide | null;
+  /** the user moved the pin themselves: stop pinning the bars for them when they start editing */
+  pinTouched?: boolean; autoPin?: boolean;
   peekFromDock?: boolean; dockPeek?: boolean; prevDockW?: number;
 };
 
@@ -467,7 +472,7 @@ function SnipLayer({ winId, onDone }: { winId: string; onDone: (b: Blob) => void
   </>;
 }
 
-const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spec: CanvasSpec; winId: string; dock: boolean; active: boolean; onDock: (id: string, dock: boolean) => void }) {
+const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock, onEdit }: { spec: CanvasSpec; winId: string; dock: boolean; active: boolean; onDock: (id: string, dock: boolean) => void; onEdit: (id: string, editing: boolean) => void }) {
   const app = useApp();
   const md = useMdHandlers();
   const path = spec.kind === "file" ? spec.path : spec.kind === "ui" ? spec.path : undefined;
@@ -481,27 +486,61 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spe
   const [ink, setInkAll] = useState<Record<string, Stroke[]>>({});
   const [rev, setRev] = useState(0);
   const [bar, setBar] = useState<React.ReactNode>(null);
+  const [run, setRun] = useState<RunState | null>(null);
+  // auto = re-run on save (the "compile while I edit" loop); compiled languages default to it, and the
+  // user's toggle sticks per file. Read during render: it is a synchronous preference, not state to sync.
+  const [autoPref, setAutoPref] = useState<boolean | null>(null);
+  const runStop = useRef<(() => void) | null>(null);
+  const runnable = spec.kind === "file" && k === "text" && runnablePath(spec.path);
+  const auto = autoPref ?? (() => { if (!path) return false; try { const saved = localStorage.getItem("run:auto:" + path); return saved !== null ? saved === "1" : !!runLangOf(path)?.compile; } catch { return !!runLangOf(path)?.compile; } })();
+  const lang = k === "ui" ? langOf("canvas.ui") : langOf(path);
+  const editing = mode === "b" && ["ui", "html", "md", "text"].includes(k);
   const annot = k === "pdf" || k === "image" || k === "html";
   const snippable = k === "pdf" || k === "image" || k === "video";
   const notable = !!path && ["pdf", "image", "html", "doc", "slides", "sheet", "video", "audio", "md", "text"].includes(k);
 
+  // `loaded` gates Run/Save: before the file body arrives the buffer is empty, and saving it then would
+  // wipe the file on disk (a slow fetch plus a fast Ctrl+S used to do exactly that).
+  const [loaded, setLoaded] = useState(spec.kind === "ui" && !!spec.source);
   useEffect(() => {
     if (!path || !["text", "md", "html", "ui"].includes(k) || (spec.kind === "ui" && spec.source)) return;
-    fetch(fileUrl(path), { cache: "no-store" }).then((r) => r.text()).then(setSrc);
+    let dead = false;
+    fetch(fileUrl(path), { cache: "no-store" }).then((r) => r.text()).then((text) => { if (!dead) { setSrc(text); setLoaded(true); } });
+    return () => { dead = true; };
   }, [path, k, spec, rev]);
   useEffect(() => {
     if (!path || !annot) return;
     fetch(fileUrl(notesPath(path) + ".ink.json"), { cache: "no-store" }).then((r) => (r.ok ? r.json() : {})).then((j: { pages?: Record<string, Stroke[]> }) => setInkAll(j.pages || {})).catch(() => {});
   }, [path, annot]);
   const save = useCallback(async () => {
-    if (!path) return;
+    if (!path || !loaded) return;
     await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path, content: src }) });
     setDirty(false); app.refreshTree();
-  }, [path, src, app]);
+  }, [loaded, path, src, app]);
+  // an editing canvas keeps its bars in the layout: a floating header over a file being typed in is noise
+  useEffect(() => { onEdit(winId, editing); return () => onEdit(winId, false); }, [editing, onEdit, winId]);
+  useEffect(() => () => { runStop.current?.(); }, []);
+
+  const doRun = useCallback(() => {
+    if (!path || !runnable || !loaded) return;
+    runStop.current?.();
+    setRun({ phase: "running", out: "", lang: lang.label });
+    runStop.current = startRun(path, src, {
+      start: (i) => setRun((r) => (r ? { ...r, compile: i.compile, lang: i.lang || r.lang } : r)),
+      chunk: (chunk) => setRun((r) => (r ? { ...r, out: (r.out + chunk).slice(-200_000) } : r)),
+      done: (res) => setRun((r) => (r ? { ...r, phase: "done", code: res.code, ms: res.ms, out: (res.out || r.out).slice(-200_000), cmd: res.cmd || r.cmd } : r)),
+    });
+  }, [lang.label, loaded, path, runnable, src]);
+  const askAboutRun = useCallback(() => {
+    if (!path) return;
+    app.sendText(`My run of \`${path}\` failed (exit ${run?.code ?? "?"}). Read the last run output and fix the code.`);
+  }, [app, path, run?.code]);
+  const saveAndRun = useCallback(async () => { await save(); if (auto && runnable) doRun(); }, [auto, doRun, runnable, save]);
+  const setAuto = useCallback((v: boolean) => { setAutoPref(v); try { if (path) localStorage.setItem("run:auto:" + path, v ? "1" : "0"); } catch { /* private mode */ } }, [path]);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSnip(false); if ((e.metaKey || e.ctrlKey) && e.key === "s" && dirty && document.activeElement?.closest(`[data-win="${winId}"]`)) { e.preventDefault(); save(); } };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSnip(false); if ((e.metaKey || e.ctrlKey) && e.key === "s" && dirty && document.activeElement?.closest(`[data-win="${winId}"]`)) { e.preventDefault(); saveAndRun(); } };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
-  }, [dirty, save, winId]);
+  }, [dirty, saveAndRun, winId]);
   const saveNotes = useCallback(async (nextInk = ink, text = notes) => {
     if (!path) return;
     const counts = Object.entries(nextInk).filter(([, s]) => s.length).map(([pg, s]) => `- ${k === "pdf" ? "page " + pg : "view"}: ${s.length} mark${s.length > 1 ? "s" : ""}`).join("\n");
@@ -522,7 +561,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spe
     app.addFiles([f]); // lands in the input bar as an attachment, ready to send
   };
 
-  const editor = <textarea className="editor" value={src} spellCheck={false} onChange={(e) => { setSrc(e.target.value); setDirty(true); }} aria-label="Source" />;
+  const editor = <Editor value={src} path={path} lang={lang} onChange={(next) => { setSrc(next); setDirty(true); }} onSave={saveAndRun} onRun={runnable ? doRun : undefined} />;
   const Pdf = useCallback((p: { path: string }) => <PdfView key={p.path} path={p.path} active={active} />, [active]);
   let body: React.ReactNode = null;
   if (spec.kind === "youtube") body = <iframe className="full black" src={`https://www.youtube-nocookie.com/embed/${spec.id}?autoplay=1`} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen title="YouTube" />;
@@ -543,15 +582,19 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spe
   else if (k === "video" || k === "audio") body = <MediaView src={fileUrl(path!)} video={k === "video"} setBar={setBar} />;
   else body = <div className="v-msg"><a className="txt-btn solid" href={fileUrl(path!)} download>Download {baseName(path!)}</a></div>;
 
-  const toggle: Record<string, [string, string]> = { ui: ["Preview", "Code"], html: ["Preview", "Code"], md: ["Read", "Write"], text: ["Read", "Write"] };
+  const toggle: Record<string, [string, string]> = { ui: ["Preview", "Code"], html: ["Preview", "Code"], md: ["Read", "Edit"], text: ["Read", "Edit"] };
+  const drawer = run ? <RunDrawer run={run} path={path || spec.title} auto={auto} setAuto={setAuto} onRun={doRun}
+    onStop={() => { runStop.current?.(); setRun((r) => (r ? { ...r, phase: "done", code: 130 } : r)); }}
+    onClose={() => { runStop.current?.(); setRun(null); }} onAsk={askAboutRun} /> : null;
   const external = spec.kind === "web" ? spec.url : spec.kind === "youtube" ? `https://youtu.be/${spec.id}` : null;
   return <>
-    <div className={"win-body k-" + k}>{body}</div>
+    <div className={"win-body k-" + k + (editing ? " editing" : "")}>{drawer ? <div className="ed-wrap">{body}{drawer}</div> : body}</div>
     {snip && <SnipLayer winId={winId} onDone={onSnip} />}
     {notes !== null && <div className="notes"><textarea autoFocus value={notes} onChange={(e) => setNotes(e.target.value)} onBlur={() => saveNotes()} aria-label="Notes" /></div>}
     <div className="win-bar bot">
       {toggle[k] && <div className="seg"><button className={mode === "a" ? "on" : ""} onClick={() => setMode("a")} aria-label={toggle[k][0]}>{mode === "a" ? <Eye /> : null}{toggle[k][0]}</button><button className={mode === "b" ? "on" : ""} onClick={() => setMode("b")} aria-label={toggle[k][1]}>{mode === "b" ? <Code2 /> : null}{toggle[k][1]}</button></div>}
-      {dirty && path && <button className="ib sm" aria-label="Save" title="Save (Ctrl+S)" onClick={save}><Save /></button>}
+      {dirty && path && <button className="ib sm" aria-label="Save" title="Save (Ctrl+S)" onClick={saveAndRun}><Save /></button>}
+      {runnable && <button className={"ib sm" + (run?.phase === "running" ? " on" : "")} aria-label="Run" title="Run this file in the sandbox (Ctrl+Enter)" onClick={doRun}><Play /></button>}
       {spec.kind === "ui" && !spec.path && <button className="ib sm" aria-label="Save to artifacts" title="Save to artifacts" onClick={async () => { const p = canvasPath(spec.title, "<ui>", app.convId || undefined); await fetch("/api/workspace", { method: "PUT", body: JSON.stringify({ path: p, content: src }) }); app.refreshTree(); }}><Save /></button>}
       {bar}
       {!bar && <span className="sp" />}
@@ -613,6 +656,13 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
       peek: null, peekSide: null, peekFromDock: false, dockPeek: false,
     });
   };
+
+  /** An editing canvas pins its bars (header/footer in the layout) unless the user unpinned them by hand. */
+  const setEdit = useCallback((id: string, editing: boolean) => setWins((state) => state.map((win) => {
+    if (win.id !== id || win.pinTouched) return win;
+    if (editing) return win.pinned ? { ...win, autoPin: true } : { ...win, pinned: true, autoPin: true };
+    return win.autoPin && win.pinned ? { ...win, pinned: false, autoPin: false } : win;
+  })), [setWins]);
 
   const setDock = useCallback((id: string, dock: boolean) => {
     const occupied = winsRef.current.some((win) => win.id !== id && win.dock && !win.min && !win.peek && !win.dockPeek);
@@ -812,13 +862,13 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
           <span className="title">{win.spec.title}</span>
           <button className="ib sm" aria-label={win.pinned ? "Unpin bars" : "Pin bars"}
             title={win.pinned ? "Unpin bars (bars float over content)" : "Pin bars (part of the layout)"}
-            onClick={(pointer) => { pointer.stopPropagation(); upd(win.id, { pinned: !win.pinned }); }}>{win.pinned ? <PinOff /> : <Pin />}</button>
+            onClick={(pointer) => { pointer.stopPropagation(); upd(win.id, { pinned: !win.pinned, pinTouched: true, autoPin: false }); }}>{win.pinned ? <PinOff /> : <Pin />}</button>
           <button className="ib sm" aria-label="Minimize" title="Minimize to shelf"
             onClick={(pointer) => { pointer.stopPropagation(); pointer.currentTarget.blur(); upd(win.id, { min: true, z: Math.max(0, ...wins.map((item) => item.z)) + 1 }); }}><Minus /></button>
           <button className="ib sm" aria-label="Close" title="Close canvas"
             onClick={(pointer) => { pointer.stopPropagation(); setWins((state) => state.filter((item) => item.id !== win.id)); }}><X /></button>
         </div>
-        <Viewer spec={win.spec} winId={win.id} dock={win.dock} active={!win.min && !parked} onDock={setDock} />
+        <Viewer spec={win.spec} winId={win.id} dock={win.dock} active={!win.min && !parked} onDock={setDock} onEdit={setEdit} />
         {docked
           ? <div className="win-dockresize" onPointerDown={(pointer) => drag(pointer, win, "dock")}
               aria-label="Resize sidebar" role="separator" aria-orientation="vertical" />

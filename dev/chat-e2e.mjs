@@ -6,7 +6,14 @@ async function launch() {
   const req = (await import("node:module")).createRequire(import.meta.url);
   let puppeteer; try { puppeteer = req("puppeteer-core"); } catch { puppeteer = req("/tmp/shot/node_modules/puppeteer-core"); }
   let exe = process.env.CHROME, args = [];
-  if (!exe) { process.env.AWS_EXECUTION_ENV ||= "AWS_Lambda_nodejs22.x"; const c = (await import("/tmp/shot/node_modules/@sparticuz/chromium/build/esm/index.js")).default; exe = await c.executablePath(); args = c.args; }
+  if (!exe) {
+    process.env.AWS_EXECUTION_ENV ||= "AWS_Lambda_nodejs22.x";
+    let c = null;
+    for (const p of ["/tmp/shot/node_modules/@sparticuz/chromium/build/esm/index.js", "/tmp/shot/node_modules/@sparticuz/chromium/build/index.js", "node_modules/@sparticuz/chromium/build/index.js"]) { try { c = (await import(p)).default; break; } catch {} }
+    if (!c) throw new Error("no Chromium: set CHROME=/path/to/chrome");
+    exe = await c.executablePath(); args = c.args;
+    if ((await import("node:fs")).existsSync("/tmp/al2023/lib")) process.env.LD_LIBRARY_PATH = `/tmp/al2023/lib:/tmp/al2023/lib64:${process.env.LD_LIBRARY_PATH || ""}`;
+  }
   return puppeteer.launch({ executablePath: exe, args, headless: true, defaultViewport: { width: 900, height: 700 } });
 }
 const B = process.argv[2] || 'http://127.0.0.1:3000';
@@ -32,8 +39,13 @@ check('new chat: composer not stuck on Stop', !(await stopBtn()));
 check('new chat: empty column', (await colText()).trim() === '', (await colText()).slice(0, 80));
 // draft in the new chat, then send B
 await type('draft for new chat'); await sleep(200);
-// switch back to A via Chats panel
-await pg.click('button[aria-label="Chats"]'); await sleep(600);
+// switch back to A via the Chats panel (main-composer chats live on the "General" tab)
+const openChats = async () => {
+  if (!(await pg.$('.lstack'))) { await pg.click('button[aria-label="Chats"]'); await sleep(500); }
+  await pg.evaluate(() => [...document.querySelectorAll('.lstack .seg button')].find((b) => b.textContent.trim() === 'General')?.click());
+  await sleep(500);
+};
+await openChats();
 const items = await pg.$$eval('.lstack .li', (els) => els.map((e) => e.innerText));
 check('chats list has A with live dot', (await pg.$('.lstack .live-dot')) !== null, items.join('|'));
 await pg.evaluate(() => [...document.querySelectorAll('.lstack .li')].find((e) => e.innerText.includes('longtext'))?.click());
@@ -46,8 +58,7 @@ let t2 = t1; for (let i = 0; i < 20 && t2.length <= t1.length; i++) { await slee
 check('A keeps growing live', t2.length > t1.length, `${t1.length} -> ${t2.length}`);
 // reload mid-stream and re-open A
 await pg.reload({ waitUntil: 'networkidle2' });
-await pg.click('button[aria-label="Chats"]').catch(() => {}); await sleep(600);
-if (!(await pg.$('.lstack .li'))) { await pg.click('button[aria-label="Chats"]'); await sleep(500); }
+await openChats();
 await pg.evaluate(() => [...document.querySelectorAll('.lstack .li')].find((e) => e.innerText.includes('longtext'))?.click());
 await sleep(1000);
 const t3 = await colText();
@@ -68,7 +79,7 @@ await pg.evaluate(() => [...document.querySelectorAll('.lstack .li')].find((e) =
 await sleep(700);
 check('draft restored after switch', (await pg.$eval(ta, (e) => e.value)) === 'draft A', await pg.$eval(ta, (e) => e.value));
 await pg.reload({ waitUntil: 'networkidle2' });
-if (!(await pg.$('.lstack .li'))) { await pg.click('button[aria-label="Chats"]'); await sleep(500); }
+await openChats();
 await pg.evaluate(() => [...document.querySelectorAll('.lstack .li')].find((e) => e.innerText.includes('longtext'))?.click());
 await sleep(700);
 check('draft restored after reload', (await pg.$eval(ta, (e) => e.value)) === 'draft A', await pg.$eval(ta, (e) => e.value));

@@ -257,7 +257,12 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
       return;
     }
     if (e.key === "ArrowUp" && !text && !chips.length && p.streaming && p.queue?.length && p.onDequeue) { e.preventDefault(); editQueued(p.queue[p.queue.length - 1]); return; }
-    if (e.key === "Escape") { if (editingQ) { setEditingQ(null); setText(""); return; } if (p.onCancel) p.onCancel(); else ta.current?.blur(); return; }
+    if (e.key === "Escape") {
+      if (editingQ) { setEditingQ(null); setText(""); return; }
+      // Esc stops a running answer (the partial stays); an empty composer is the safe place for it
+      if (p.streaming && !text && !chips.length && p.onStop) { e.preventDefault(); p.onStop(); return; }
+      if (p.onCancel) p.onCancel(); else ta.current?.blur(); return;
+    }
     if (e.key === "Backspace" && !text && !chips.length) {
       if (p.quote) { p.onClearQuote?.(); return; }
       e.preventDefault(); if (p.onCancel) p.onCancel(); else ta.current?.blur();
@@ -338,6 +343,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
               {canQueue && <button className="send ghost" aria-label="Steer now" onClick={steerNow}><Navigation /></button>}
               {canQueue ? <button className="send" aria-label="Queue message" onClick={queueIt}><ArrowDownToLine /></button>
                 : p.queue?.length ? <button className="send" aria-label="Steer queued message" onClick={() => p.onSteerQueued?.(p.queue![p.queue!.length - 1].id)}><Zap /></button>
+                : p.onStop ? <button className="send" aria-label="Stop" title="Stop generating (Esc)" onClick={p.onStop}><Square /></button>
                 : <span className="send-placeholder" aria-hidden="true" />}
             </>
           ) : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button>
