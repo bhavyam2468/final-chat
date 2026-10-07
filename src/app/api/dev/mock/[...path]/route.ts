@@ -5,7 +5,7 @@ import { getSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-type Mock = { search: (j: unknown) => unknown; complete: (j: unknown) => unknown; stream: (j: unknown) => AsyncGenerator<string>; models: () => unknown };
+type Mock = { search: (j: unknown) => unknown; complete: (j: unknown) => unknown; stream: (j: unknown) => AsyncGenerator<string>; models: () => object; last: () => unknown };
 /** The mock lives in dev/ (not bundled); loaded from disk only when developer mode is on. */
 async function mock(): Promise<Mock | null> {
   if (!(await getSettings()).dev) return null;
@@ -15,7 +15,9 @@ async function mock(): Promise<Mock | null> {
 
 export async function GET() {
   const m = await mock();
-  return m ? Response.json(m.models()) : new Response("Not found", { status: 404 });
+  if (!m) return new Response("Not found", { status: 404 });
+  // /api/dev/mock/last gives back exactly what the app sent on the previous turn (prompt + tool names)
+  return Response.json({ ...m.models(), last: m.last() });
 }
 
 export async function POST(req: NextRequest) {

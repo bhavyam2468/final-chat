@@ -4,6 +4,7 @@ import { PanelLeft, SquarePen, MessageSquareShare, Folder, AppWindow, Link2, Set
 import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, ProcInfo, QueueItem, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
+import { MODES, isModeId } from "@/lib/modes";
 import { chatDir } from "@/lib/shared";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win, contentRatio } from "./Canvas";
@@ -228,7 +229,7 @@ export default function App() {
   }, [setView, setMsgsFor]);
 
   const setMode = useCallback((m: "general" | "chat") => { modeRef.current = m; setSurface(m); }, []);
-  const newChat = useCallback(() => { setMode("general"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
+  const newChat = useCallback(() => { pendingRef.current = null; setPending(null); setMode("general"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
   const promote = useCallback(async () => {
     const c = convRef.current;
     // Before the first message there is no database row to patch; switching
@@ -283,7 +284,9 @@ export default function App() {
                 const project = pendingProject.current || undefined;
                 pendingProject.current = null;
                 if (project) fetch(`/api/conversations/${cid}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project }) });
-                setConv({ id: cid, title: e.title, context: [], summary: null, summaryUpTo: null, mode: modeRef.current, state: project ? { project } : undefined });
+                const born = pendingRef.current;
+                setConv({ id: cid, title: e.title, context: [], summary: null, summaryUpTo: null, mode: modeRef.current, state: { ...(project ? { project } : {}), ...(born ? { mode: born } : {}) } });
+                pendingRef.current = null; setPending(null);
               }
               refreshConvs();
             }
@@ -397,7 +400,7 @@ export default function App() {
     setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
     setRunning((r) => ({ ...r, [key]: ta }));
     requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
-    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: modeRef.current }) }).catch(() => null);
+    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: pendingRef.current || modeRef.current }) }).catch(() => null);
     if (!res || !res.ok) {
       const err = res ? ((await res.json().catch(() => ({}))) as { error?: string }).error : "Network error";
       setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, pending: false, parts: [{ type: "text", text: `> ${err || "Request failed"}` }] } : m)));
@@ -656,7 +659,7 @@ export default function App() {
   const chipNew = useCallback((mode: "chat" | "general", text: string) => {
     const id = "new:" + rid();
     try { localStorage.setItem("draft:" + id, JSON.stringify({ text, chips: [] })); } catch { /* ignore quota */ }
-    setMode(mode); setView(id); setConv(null); setThread(null); setEditing(null);
+    pendingRef.current = null; setPending(null); setMode(mode); setView(id); setConv(null); setThread(null); setEditing(null);
     setTimeout(() => mainRef.current?.focus(), 0);
   }, [setMode, setView]);
   const linkProject = useCallback(async (name?: string) => {
@@ -675,8 +678,30 @@ export default function App() {
     setOfferBrief(false);
     chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
   }, [chipNew]);
+  /**
+   * The mode lens of this chat. Persisted on the conversation, so the server applies it to every turn.
+   * A chat that does not exist yet (you typed /mode before saying anything) keeps it in `pending`, and the
+   * first message creates the conversation already inside the mode — the server takes `mode` at birth.
+   */
+  const [pending, setPending] = useState<string | null>(null);
+  const pendingRef = useRef<string | null>(null);
+  const setChatMode = useCallback(async (id: string | null) => {
+    const next = id && isModeId(id) ? id : null;
+    const c = convRef.current;
+    if (!c) { pendingRef.current = next; setPending(next); return; }
+    pendingRef.current = null; setPending(null);
+    setConv({ ...c, state: { ...(c.state || {}), mode: next || "chat" } });
+    if (next) setMode("chat"); // a lens only makes sense on the chat surface, never in the quiet history
+    await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: next || "chat" }) });
+    refreshConvs();
+  }, [refreshConvs, setMode]);
+  const modeList = useMemo(() => MODES.map((m) => ({ id: m.id as string, label: m.label, hint: m.hint, active: (conv?.state?.mode ?? pending) === m.id })), [conv?.state?.mode, pending]);
+  const activeMode = isModeId(conv?.state?.mode) ? conv!.state!.mode! : pending;
+
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
+    { name: "mode", hint: activeMode ? `Mode: ${MODES.find((m) => m.id === activeMode)?.label} — change or leave it` : "Focus this chat on one job", panel: "modes" },
+    ...MODES.map((m) => ({ name: "mode " + m.id, hint: m.hint, run: () => { void setChatMode(activeMode === m.id ? null : m.id); } })),
     { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
     { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
     { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
@@ -698,7 +723,7 @@ export default function App() {
     { name: "settings", hint: "Model, tools, access, secrets, MCP, skills", panel: "settings" },
     { name: "model", hint: "Provider, model, API key, context budget", panel: "settings", seed: "model" },
     { name: "access", hint: "Files, host terminal, sudo, phone", panel: "settings", seed: "access" },
-  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm]);
+  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, activeMode, setChatMode]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -749,9 +774,10 @@ export default function App() {
           <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} onBrief={runBrief} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
           <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")}
+            activeMode={activeMode} onMode={(id) => { void setChatMode(id); }}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
             procs={procs} onOpenProc={(name) => openTerm({ proc: name })}
-            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
+            palette={{ commands, modes: modeList, setMode: (id) => { void setChatMode(id); }, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
           </div>
         </div>
 

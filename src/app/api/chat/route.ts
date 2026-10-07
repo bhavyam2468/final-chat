@@ -5,6 +5,7 @@ import { conversations, messages, Attachment } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { runAgent } from "@/lib/agent";
 import { activeIds, activeRun, anyRun, attach, injectSteer, startRun, stopRun } from "@/lib/runs";
+import { isModeId } from "@/lib/modes";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -48,7 +49,9 @@ export async function POST(req: NextRequest) {
   if (!conv) {
     convId = nanoid(10);
     const title = (b.user?.content || "New chat").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().split(" ").slice(0, 7).join(" ").slice(0, 60) || "New chat";
-    [conv] = await db.insert(conversations).values({ id: convId, title, ...(b.mode === "general" || b.mode === "search" ? { state: { mode: "general" } } : {}) }).returning();
+    // a new chat is born into a mode when the client asked for one; "general"/"search" are the old quiet-history ids
+    const born = isModeId(b.mode) ? b.mode : b.mode === "general" || b.mode === "search" ? "general" : "";
+    [conv] = await db.insert(conversations).values({ id: convId, title, ...(born ? { state: { mode: born } } : {}) }).returning();
   }
   let parentId = b.parentId;
   let userId: string | null = null;

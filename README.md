@@ -11,6 +11,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | Capability | Description |
 |---|---|
 | **General mode** | New Chat opens a separate General conversation for unrelated questions. It does not auto-search, keeps tool calls visible, and has its own history. "Open in chat" promotes it into normal chat without mixing histories. `/research`, `/background`, `/brief`, `/project`, `/google` remain composer workflows |
+| **Modes** | `/mode` turns the composer into a picker that focuses the chat on one job (Search, Plan, Code, Learn, Write, Data). A mode is a real tool policy — the tools it refuses are absent from the request — plus a prompt block and an auto-loaded skill. Spec: [`docs/MODES.md`](docs/MODES.md) |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, native flowcharts/trees/outlines, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |

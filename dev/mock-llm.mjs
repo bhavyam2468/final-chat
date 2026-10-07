@@ -260,6 +260,7 @@ function chunks(text) {
 
 /** Non-streaming completion (compaction/summaries). */
 export function complete(j) {
+  lastRequest = { at: Date.now(), model: j.model, messages: j.messages, tools: j.tools?.map((t) => t.function?.name) ?? null };
   const msgs = j.messages || [];
   const sys = msgs.find((m) => m.role === "system")?.content || "";
   const last = JSON.stringify(msgs.slice(-1));
@@ -268,8 +269,17 @@ export function complete(j) {
   return { choices: [{ message: { role: "assistant", content: text } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
 }
 
+/**
+ * What the app last sent us — the system prompt and the tool list, verbatim. Kept because "did the app
+ * really withhold that tool?" is otherwise invisible from the outside, and it is the only honest way to
+ * test a policy end to end. Dev-only: this file is loaded from disk by /api/dev/mock, never bundled.
+ */
+let lastRequest = null;
+export const last = () => lastRequest;
+
 /** Streaming completion as SSE lines. */
 export async function* stream(j) {
+  lastRequest = { at: Date.now(), model: j.model, messages: j.messages, tools: j.tools?.map((t) => t.function?.name) ?? null };
   const send = (delta, finish = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
   const sc = scenario(j.messages || []);
   for (const c of chunks(sc.reasoning || "")) { yield send({ reasoning_content: c }); await sleep(10 + Math.random() * 60); }

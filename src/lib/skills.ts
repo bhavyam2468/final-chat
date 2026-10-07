@@ -43,7 +43,10 @@ export const skillAllowed = (s: { requires: string }, st: Settings) =>
   !s.requires || (s.requires === "host-terminal" ? st.terminal === "host" : s.requires === "host-files" ? st.access !== "sandbox" : true);
 
 export async function skillsIndex(st: Settings) {
-  return (await listSkills()).filter((s) => skillAllowed(s, st)).map((s) => `- ${s.name}: ${s.description}`).join("\n");
+  // Mode skills (mode-research, mode-plan…) are loaded by the mode itself, not selected by the model: listing
+  // them next to the skills would invite the model to open one and change its own behaviour.
+  const { isModeSkill } = await import("./modes");
+  return (await listSkills()).filter((s) => skillAllowed(s, st) && !isModeSkill(s.name)).map((s) => `- ${s.name}: ${s.description}`).join("\n");
 }
 
 export async function findSkill(name: string) {

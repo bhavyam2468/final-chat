@@ -9,17 +9,20 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   Hash, FileText, MessageSquare, Folder, FolderOpen, AppWindow, Link2, Settings2, SquareTerminal, BookOpen,
-  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug, } from "lucide-react";
+  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug, Compass, } from "lucide-react";
 import { CanvasSpec, ProcInfo, TreeNode, flatFiles, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import type { ConvItem } from "./Panels";
 
-export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills";
+export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills" | "modes";
 export type PaletteTab = "model" | "tools" | "access" | "mcp" | "skills";
 export type PaletteCommand = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 export type PaletteApi = {
   commands: PaletteCommand[];
+  /** the mode lens for this chat: what each one is, and which is on */
+  modes: { id: string; label: string; hint: string; active: boolean }[];
+  setMode: (id: string | null) => void;
   convs: ConvItem[];
   runningIds: string[];
   sources: { url: string; title: string; snippet?: string }[];
@@ -132,6 +135,18 @@ export const Palette = forwardRef<PaletteHandle, {
         if (q && !c.name.startsWith(q) && !c.hint.toLowerCase().includes(q)) continue;
         out.push({ key: c.name, icon: c.panel ? ChevronRight : Hash, label: "/" + c.name, hint: c.hint, act: () => c.panel ? onPanel(c.panel, c.seed ?? (arg || undefined)) : (collapse(), c.run?.(arg || undefined)), drill: c.panel ? () => onPanel(c.panel!, c.seed ?? (arg || undefined)) : undefined });
       }
+      return out;
+    }
+    if (mode === "modes") {
+      for (const m of api.modes) {
+        if (q && !m.label.toLowerCase().includes(q) && !m.id.startsWith(q) && !m.hint.toLowerCase().includes(q)) continue;
+        out.push({
+          key: m.id, icon: Compass, label: m.label, hint: m.hint,
+          dim: !!api.modes.find((x) => x.active) && !m.active,
+          act: () => { api.setMode(m.active ? null : m.id); collapse(); },
+        });
+      }
+      if (api.modes.some((m) => m.active)) out.push({ key: "off", icon: X, label: "Leave the mode", hint: "back to a normal chat", act: () => { api.setMode(null); collapse(); } });
       return out;
     }
     if (mode === "chats") {
@@ -397,7 +412,7 @@ export const Palette = forwardRef<PaletteHandle, {
             </button>,
           ];
         })}
-        {!shown.length && <div className="pal-empty">{mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : "Nothing matches"}</div>}
+        {!shown.length && <div className="pal-empty">{mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : mode === "modes" ? (q ? "No mode matches" : "No modes available") : "Nothing matches"}</div>}
       </div>
       </div>
     </div>

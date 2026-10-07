@@ -8,6 +8,7 @@ import { getSettings, Settings } from "./settings";
 import { toolDefs, execTool, ToolDef, ToolCtx, ConvState, Pack, todoReminder } from "./tools";
 import { mcpTools, readServers } from "./mcp";
 import { skillsIndex, findSkill, skillMeta, skillAllowed } from "./skills";
+import { modeOf, modeBlock, modeRefusal, modeSkillName, toolsForMode, modeAllows } from "./modes";
 import { varsFor, varsIn } from "./credentials";
 import { lintFiles } from "./harness/check";
 import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, urlsIn, parsePartialJsonObject } from "./harness/stream";
@@ -65,6 +66,19 @@ This is a separate general-question conversation, not the user's normal chat his
 
 const isGeneral = (mode?: string) => mode === "general" || mode === "search";
 
+/** The mode block for a conversation, with its skill file when one exists (cached per process). */
+const modeCache = new Map<string, string>();
+async function modeSection(modeId?: string | null): Promise<string> {
+  const mode = modeOf(modeId);
+  if (!mode) return "";
+  if (!modeCache.has(mode.id)) {
+    // The mode's guidance is a skill on disk, so it can be read, edited or replaced without touching code.
+    const sk = await findSkill(modeSkillName(mode)).catch(() => null);
+    modeCache.set(mode.id, modeBlock(mode, sk?.text));
+  }
+  return modeCache.get(mode.id) || "";
+}
+
 async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget: number, query = ""): Promise<Sys> {
   const base = (await fs.readFile(path.join(WS, "system/SYSTEM.md"), "utf8").catch(() => "You are a helpful assistant.")).trim();
   const agents = (await fs.readFile(path.join(WS, "system/AGENTS.md"), "utf8").catch(() => "")).trim();
@@ -92,7 +106,7 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
     ["system", "System prompt", base],
     ["memory", "Memory", [userInstructions && `# Standing instructions from the user (AGENTS.md)\n${userInstructions}`, recall && `# Remembered\n${recall}\nThe user sees every note and can undo one with forget(id); remember only what they ask, or a decision that will matter later.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
-    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, isGeneral(conv.state?.mode) ? GENERAL_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
+    ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, isGeneral(conv.state?.mode) ? GENERAL_MODE : "", await modeSection(conv.state?.mode), `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
     ["tree", "Workspace tree", tree],
     ["files", "Files in context", files && `# Active context files\n${files}`],
   ];
@@ -151,11 +165,11 @@ async function mcpFor(st: Settings) {
   const servers = await readServers();
   return mcpTools(varsFor(st, varsIn(Object.values(servers).filter((c) => c.enabled))));
 }
-function allTools(st: Settings, packs: Pack[], mcp: Awaited<ReturnType<typeof mcpTools>>): ToolDef[] {
-  return [
+function allTools(st: Settings, packs: Pack[], mcp: Awaited<ReturnType<typeof mcpTools>>, mode?: string | null): ToolDef[] {
+  return toolsForMode(modeOf(mode), [
     ...toolDefs(st, packs),
     ...mcp.tools.map((t) => ({ type: "function" as const, function: { name: `mcp__${t.server}__${t.name}`.slice(0, 64), description: (t.description || "").slice(0, 300), parameters: (t.inputSchema as Record<string, unknown>) || { type: "object", properties: {} } } })),
-  ];
+  ]);
 }
 const budgetOf = (st: Settings) => { const w = Math.min(st.contextTokens, st.workingTokens || 64000); return Math.max(6000, w - Math.min(8000, Math.max(2500, Math.round(w * 0.12)))); };
 
@@ -168,7 +182,7 @@ export async function contextReport(convId: string, leafId: string | null, threa
   if (!conv) throw new Error("no conversation");
   const all = await db.select().from(messages).where(eq(messages.conversationId, conv.id));
   const mcp = await mcpFor(st).catch(() => ({ tools: [], errors: [] }));
-  const tools = allTools(st, packsFor(st, conv.state), mcp);
+  const tools = allTools(st, packsFor(st, conv.state), mcp, conv.state?.mode);
   const sys = await buildSystem(conv, st, [...new Set(mcp.tools.map((t) => t.server))], budget);
   const toolDefTok = est(JSON.stringify(tools));
   const leaf = leafId || [...all].filter((m) => (m.threadOf || null) === threadOf).sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.id || null;
@@ -226,7 +240,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const mcp = await mcpFor(st);
   if (mcp.errors.length) emit({ t: "notice", text: "MCP: " + mcp.errors.join("; ") });
   let state: ConvState = conv.state || {};
-  let tools = allTools(st, packsFor(st, state), mcp);
+  let tools = allTools(st, packsFor(st, state), mcp, state.mode);
   const mcpNames = [...new Set(mcp.tools.map((t) => t.server))];
   let toolDefTok = est(JSON.stringify(tools));
 
@@ -311,7 +325,8 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   let sep = false; // next visible text continues a cut-off part: start a new paragraph
   let qualityRounds = 0, loopRetries = 0, citeRounds = 0, uiRounds = 0, blockRounds = 0, cmdRounds = 0, lastEdit = -1, lastVerify = -1, callNo = 0, usedWeb = false, usedPython = false;
   const VERIFY = /^(shell|host_shell|run_python|check|proc_start|proc_logs|browser)$/;
-  const maxSteps = () => (packsFor(st, state).includes("dev") ? 40 : 16);
+  const modeNow = modeOf(state.mode);
+  const maxSteps = () => (modeNow ? modeNow.steps : packsFor(st, state).includes("dev") ? 40 : 16);
   /** Replace the text this step produced (retract reasoning, cut a loop, remove a printed tool call). */
   const rewriteStep = (stepText: string, next: string) => {
     const lt = lastText();
@@ -333,7 +348,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     for (let step = 0; step < maxSteps(); step++) {
       // Steers buffered while the last request was in flight ride along with the next one.
       takeSteers();
-      tools = allTools(st, packsFor(st, state), mcp);
+      tools = allTools(st, packsFor(st, state), mcp, state.mode);
       toolDefTok = est(JSON.stringify(tools));
       const res = await fetch(endpoint(st), {
         method: "POST", signal, headers: headers(st),
@@ -522,6 +537,15 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
           emit({ t: "tool", id: c.id, name: part.name, args, startedAt: c.startedAt });
         }
         const name = c.function.name;
+        // Mode policy, second gate: the tool list already hides these, but MCP tools and small models can
+        // still produce a call (a stale turn, a resumed run). Refuse it here rather than executing it.
+        if (modeNow && !modeAllows(modeNow, name)) {
+          const why = modeRefusal(modeNow, name);
+          Object.assign(part, { result: why, ok: false });
+          emit({ t: "toolResult", id: c.id, result: why, ok: false });
+          loopMsgs.push({ role: "tool", tool_call_id: c.id, content: why });
+          continue;
+        }
         if (/^fs_(write|edit|insert)$/.test(name) && typeof args.path === "string" && !snapshots.has(args.path)) snapshots.set(args.path, await fs.readFile(resolvePath(args.path, st.access), "utf8").catch(() => ""));
         // live output: batched every 120ms so a chatty process doesn't flood the stream; last 6 KB is what the row shows
         let buf = "", timer: ReturnType<typeof setTimeout> | null = null;

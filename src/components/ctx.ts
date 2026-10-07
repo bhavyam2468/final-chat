@@ -14,7 +14,7 @@ export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
   content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null; streamStartedAt?: number;
 };
-export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null; mode?: "chat" | "general"; state?: { mode?: "chat" | "general" | "search"; project?: string } };
+export type Conv = { id: string; title: string; context: string[]; summary: string | null; summaryUpTo: string | null; mode?: "chat" | "general"; state?: { mode?: string; project?: string } };
 export type TreeNode = { name: string; path: string; dir: boolean; size?: number; children?: TreeNode[] };
 export type CanvasSpec =
   | { kind: "ui"; title: string; source: string; path?: string }

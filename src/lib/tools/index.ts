@@ -25,6 +25,7 @@ import { ensureProject, projectSlug } from "../projects";
 import { adb, adbShot, phoneOff } from "../phone";
 import { createHash } from "crypto";
 import os from "os";
+import type { ModeId } from "../modes";
 
 export type ToolDef = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
 const T = (name: string, description: string, props: Record<string, unknown> = {}, required: string[] = []): ToolDef => ({
@@ -37,7 +38,7 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "general" | "search"; project?: string };
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: ModeId | "chat" | "general" | "search"; project?: string };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in

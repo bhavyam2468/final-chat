@@ -1,9 +1,10 @@
 "use client";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Plus, ArrowUp, Square, X, FileText, Inbox, Zap, Navigation, ArrowDownToLine } from "lucide-react";
+import { Plus, ArrowUp, Square, X, FileText, Inbox, Zap, Navigation, ArrowDownToLine, Compass } from "lucide-react";
 import { Attachment, ProcInfo, QueueItem, fileUrl, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import { Palette, PaletteHandle, PaletteMode, PaletteApi } from "./palette";
+import { MODES } from "@/lib/modes";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
 export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
@@ -29,6 +30,9 @@ type Props = {
   onOpenProc?: (name: string) => void;
   /** omnibox data (chats, workspace, sources, settings, processes) — omit for plain composers */
   palette?: Omit<PaletteApi, "mention" | "attachPath">;
+  /** the mode this chat is in ("search", "plan", …) — shown as a chip; null/undefined = a normal chat */
+  activeMode?: string | null;
+  onMode?: (id: string | null) => void;
 };
 type Draft = { text: string; chips: Attachment[] };
 const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
@@ -167,14 +171,20 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   // ---- omnibox triggers -------------------------------------------------
   // "/" at the start opens the command list; "@" opens file search; panel modes keep their own text.
   const slash = text.match(/^\/([\w-]*)(?:\s([\s\S]*))?$/);
+  const modeTok = text.match(/^\/mode(?:\s+(\S*))?\s*$/i);
+  const modeInfo = p.activeMode ? MODES.find((m) => m.id === p.activeMode) || null : null;
   const atTok = text.match(/(?:^|\s)@([\w./~-]*)$/);
 
   useEffect(() => {
-    if (mode === null) {
-      if (slash && !text.includes("\n")) setMode("commands");
-      else if (atTok) setMode("files");
-    } else if (mode === "commands" && !slash) setMode(null); // trigger edited away: back to plain input
-    else if (mode === "files" && !atTok) setMode(null);
+    // Where the text points right now. The palette follows the text while it is still being typed, and is
+    // left alone once a panel has been opened (then the panel owns the bar, not the trigger).
+    const want: PaletteMode | null = !text.includes("\n")
+      ? modeTok ? "modes" : slash ? "commands" : atTok ? "files" : null   // "/mode" opens the mode picker
+      : null;
+    const triggers: PaletteMode[] = ["commands", "files", "modes"];
+    if (mode === null) { if (want) setMode(want); }
+    else if (triggers.includes(mode) && want && want !== mode) setMode(want);   // "/" typed on into "/mode"
+    else if (triggers.includes(mode) && !want) setMode(null);                   // trigger edited away
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
 
@@ -264,11 +274,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     }
   };
 
-  const open = p.inline || focused || !!text || chips.length > 0 || !!p.quote || !!mode;
-  const palQuery = mode === "commands" ? (slash?.[1] || "") : mode === "files" ? (atTok?.[1] || "") : text;
+  const open = p.inline || focused || !!text || chips.length > 0 || !!p.quote || !!mode || !!p.activeMode;
+  const palQuery = mode === "modes" ? (modeTok?.[1] || "") : mode === "commands" ? (slash?.[1] || "") : mode === "files" ? (atTok?.[1] || "") : text;
   const palArg = slash?.[2] || "";
   const paletteApi: PaletteApi | null = p.palette ? {
     ...p.palette,
+    modes: p.palette.modes || [],
+    setMode: (id) => { p.onMode?.(id); collapsePalette(true); },
     mention: (path: string) => {
       // replace the "@token" that opened the palette, like the old inline menu did
       const el = ta.current; const at = el ? (el.selectionStart ?? el.value.length) : text.length;
@@ -316,6 +328,16 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           ))}
         </div>}
       </div>}
+      {modeInfo && (
+        <div className="modestrip">
+          <button className="modechip" onMouseDown={(e) => e.preventDefault()} onClick={() => { setText("/mode "); requestAnimationFrame(() => ta.current?.focus()); }}
+            title={`${modeInfo.label} mode — ${modeInfo.hint}. Click to change.`}>
+            <Compass size={12} /><span>{modeInfo.label}</span>
+          </button>
+          <span className="modehint">{modeInfo.hint}</span>
+          <button className="ib sm" aria-label="Leave this mode" onClick={() => p.onMode?.(null)}><X /></button>
+        </div>
+      )}
       {p.quote && <div className="cquote"><p>{p.quote}</p><button className="ib sm" aria-label="Remove quote" onClick={p.onClearQuote}><X /></button></div>}
       {chips.length > 0 && <div className="chips">{chips.map((c) => {
         const isImg = c.mime.startsWith("image/");
