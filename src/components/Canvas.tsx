@@ -5,6 +5,7 @@
    screen edge and it parks as a peek; click the peek to restore. Viewers contribute type-specific
    actions to the bottom bar, which scrolls inline instead of overflowing. */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Pin, PinOff, Minus, X, PenLine, Eraser, NotebookPen, MessageSquareQuote, Download, Save, ExternalLink, PanelRight, PictureInPicture2, RotateCw, ZoomIn, ZoomOut, Code2, Eye, Scissors, Scan, FileText } from "lucide-react";
 import { CanvasSpec, fileUrl, useApp } from "./ctx";
 import { Block } from "./Block";
@@ -12,8 +13,10 @@ import { StreamMarkdown, CodeBlock } from "@/lib/streammark/StreamMarkdown";
 import { useMdHandlers } from "./Message";
 import { SheetView, DocView, SlidesView, ArchiveView, MediaView, extOf } from "./viewers";
 import { canvasPath } from "@/lib/shared";
+import { MAX_PARALLEL_PDF_RENDERS, PDF_PREFETCH_RADIUS, PDF_TEXT_RADIUS, pdfPageRange, pdfRasterScale } from "@/lib/pdf-rendering";
+import { createPdfRenderQueue, type PdfRenderJob } from "@/lib/pdf-render-queue";
 import { ChatView } from "./ChatView";
-import { edgeAt, moveCanvasRect, peekCanvasRect, resizeCanvasRect, shouldDockCanvas, type CanvasRect, type PeekSide, type ResizeEdge } from "@/lib/canvas-layout";
+import { edgeAt, moveCanvasRect, peekCanvasRect, resizeCanvasRect, resizeEdgeAt, shouldDockCanvas, type CanvasRect, type PeekSide, type ResizeEdge } from "@/lib/canvas-layout";
 
 export type Rect = CanvasRect;
 export type Win = {
@@ -82,6 +85,7 @@ type PdfViewportLike = {
   convertToViewportPoint?: (x: number, y: number) => [number, number];
 };
 type PdfRenderTask = { promise: Promise<void>; cancel?: () => void };
+const pdfRenderQueue = createPdfRenderQueue(MAX_PARALLEL_PDF_RENDERS);
 type PdfPageLike = {
   getViewport: (options: { scale: number }) => PdfViewportLike;
   render: (options: { canvasContext: CanvasRenderingContext2D; viewport: PdfViewportLike; canvas?: HTMLCanvasElement }) => PdfRenderTask;
@@ -123,23 +127,34 @@ function textBoxes(items: unknown[], viewport: PdfViewportLike): TxtItem[] {
 }
 
 function PdfPageSurface({
-  doc, pageNumber, dimensions, zoom, onError, children,
+  doc, pageNumber, dimensions, zoom, currentPage, textEnabled, onError, children,
 }: {
   doc: PdfDocumentLike; pageNumber: number; dimensions: { w: number; h: number }; zoom: number;
-  onError: () => void; children?: React.ReactNode;
+  currentPage: number; textEnabled: boolean; onError: () => void; children?: React.ReactNode;
 }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderCycle = useRef(0);
   const renderTask = useRef<PdfRenderTask | null>(null);
   const renderPromise = useRef<Promise<void> | null>(null);
-  const [nearViewport, setNearViewport] = useState(() => pageNumber <= 2 || typeof IntersectionObserver === "undefined");
+  const queuedRender = useRef<PdfRenderJob | null>(null);
+  const priority = Math.abs(pageNumber - currentPage);
+  const priorityRef = useRef(priority);
   const [textItems, setTextItems] = useState<TxtItem[] | null>(null);
 
-  // Extract selectable text lazily too; unlike an arbitrary page cap, this still supports
-  // quoting from deep inside long documents without parsing every page up front.
   useEffect(() => {
-    if (!nearViewport || textItems !== null) return;
+    const outputCanvas = canvasRef.current;
+    return () => { if (outputCanvas) { outputCanvas.width = 0; outputCanvas.height = 0; } };
+  }, []);
+
+  useLayoutEffect(() => {
+    priorityRef.current = priority;
+    pdfRenderQueue.reprioritize(queuedRender.current, priority);
+  }, [priority]);
+
+  // Keep text extraction to the nearest few pages; canvas raster prefetch is broader.
+  useEffect(() => {
+    if (!textEnabled || textItems !== null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -149,32 +164,18 @@ function PdfPageSurface({
       } catch { if (!cancelled) setTextItems([]); }
     })();
     return () => { cancelled = true; };
-  }, [doc, pageNumber, nearViewport, textItems]);
-
-  // Render only nearby pages. This keeps long documents light while the observer's margin
-  // pre-renders the next page before it becomes visible.
-  useEffect(() => {
-    const el = pageRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const root = el.closest(".win-body");
-    const observer = new IntersectionObserver((entries) => {
-      setNearViewport(entries.some((entry) => entry.isIntersecting));
-    }, { root, rootMargin: "360px 0px" });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [doc, pageNumber]);
+  }, [doc, pageNumber, textEnabled, textItems]);
 
   useEffect(() => {
     const el = pageRef.current, canvas = canvasRef.current;
     if (!el || !canvas) return;
-    if (!nearViewport) { canvas.width = 0; canvas.height = 0; return; }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let request = 0;
     const cycle = ++renderCycle.current;
     const render = async (requested: number) => {
       try {
-        // Never resize/reuse a canvas while PDF.js still owns an earlier render task.
+        // Never reuse a canvas while an earlier PDF.js task still owns it.
         if (renderTask.current) {
           renderTask.current.cancel?.();
           try { await renderPromise.current; } catch { /* expected cancellation */ }
@@ -185,8 +186,9 @@ function PdfPageSurface({
         const page = await doc.getPage(pageNumber);
         if (cancelled || cycle !== renderCycle.current || requested !== request) return;
         const cssHeight = cssWidth * dimensions.h / dimensions.w;
-        const pixelBudgetScale = Math.sqrt(14_000_000 / Math.max(1, cssWidth * cssHeight));
-        const dpr = Math.min(window.devicePixelRatio || 1, 2, pixelBudgetScale);
+        // Bound each backing bitmap and run at most two renders at once. A useful page buffer
+        // then costs a predictable amount of memory instead of multiplying full-DPR canvases.
+        const dpr = pdfRasterScale(cssWidth, cssHeight, window.devicePixelRatio || 1);
         const viewport = page.getViewport({ scale: (cssWidth / dimensions.w) * dpr });
         const buffer = document.createElement("canvas");
         buffer.width = Math.max(1, Math.ceil(viewport.width));
@@ -220,9 +222,15 @@ function PdfPageSurface({
     const schedule = () => {
       request++;
       if (timer) clearTimeout(timer);
-      // A dock/window transition can produce many ResizeObserver callbacks; settle once it stops.
+      pdfRenderQueue.cancel(queuedRender.current);
+      queuedRender.current = null;
+      renderTask.current?.cancel?.();
       const requested = request;
-      timer = setTimeout(() => { void render(requested); }, 110);
+      const delay = Math.min(90, priorityRef.current * 14);
+      timer = setTimeout(() => {
+        if (cancelled || cycle !== renderCycle.current || requested !== request) return;
+        queuedRender.current = pdfRenderQueue.enqueue(() => render(requested), priorityRef.current);
+      }, delay);
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(el);
@@ -231,25 +239,27 @@ function PdfPageSurface({
       cancelled = true;
       if (timer) clearTimeout(timer);
       observer.disconnect();
+      pdfRenderQueue.cancel(queuedRender.current);
+      queuedRender.current = null;
       renderTask.current?.cancel?.();
     };
-  }, [doc, pageNumber, dimensions.w, dimensions.h, zoom, nearViewport, onError]);
+  }, [doc, pageNumber, dimensions.w, dimensions.h, zoom, onError]);
 
   return <div ref={pageRef} className="pdf-page" data-pdf-page={pageNumber}
     style={{ aspectRatio: `${dimensions.w}/${dimensions.h}`, width: `${zoom * 100}%` }}>
     <canvas ref={canvasRef} />
-    {textItems?.length ? <div className="txtlayer" aria-label={`PDF page ${pageNumber} text`}>
+    {textEnabled && textItems?.length ? <div className="txtlayer" aria-label={`PDF page ${pageNumber} text`}>
       {textItems.map((item, itemIndex) => <span key={itemIndex} style={{
         left: `${item.x * 100}cqw`, top: `${item.y * 100}cqh`, width: `${item.w * 100}cqw`, height: `${item.h * 100}cqh`,
         fontSize: `${item.h * 100}cqh`, transform: `rotate(${item.angle}rad)`, transformOrigin: "left top",
       }}>{item.s}</span>)}
     </div> : null}
-    {nearViewport ? children : null}
+    {children}
   </div>;
 }
 
 /** Stable PDF canvas pages, a geometry-aligned selectable text layer, and keyboard navigation. */
-function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Record<string, Stroke[]>; setInk?: (k: string, s: Stroke[]) => void; pen?: boolean; setBar?: (n: React.ReactNode) => void }) {
+function PdfView({ path, ink, setInk, pen, setBar, active }: { path: string; ink?: Record<string, Stroke[]>; setInk?: (k: string, s: Stroke[]) => void; pen?: boolean; setBar?: (n: React.ReactNode) => void; active: boolean }) {
   const [pages, setPages] = useState<{ w: number; h: number }[]>([]);
   const [pdf, setPdf] = useState<PdfDocumentLike | null>(null);
   const [failed, setFailed] = useState(false);
@@ -315,17 +325,12 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const midpoint = body.getBoundingClientRect().top + body.clientHeight * 0.34;
-        let best = 1, distance = Number.POSITIVE_INFINITY;
-        wrap.current?.querySelectorAll<HTMLElement>("[data-pdf-page]").forEach((page) => {
-          const rect = page.getBoundingClientRect();
-          const candidate = Math.abs(rect.top - midpoint);
-          if (rect.bottom > body.getBoundingClientRect().top && candidate < distance) {
-            distance = candidate;
-            best = Number(page.dataset.pdfPage) || best;
-          }
-        });
-        if (curRef.current !== best) {
+        const bodyRect = body.getBoundingClientRect();
+        const midpointY = bodyRect.top + body.clientHeight * 0.34;
+        const midpointX = bodyRect.left + body.clientWidth * 0.5;
+        const page = document.elementFromPoint(midpointX, midpointY)?.closest<HTMLElement>("[data-pdf-page]");
+        const best = Number(page?.dataset.pdfPage);
+        if (best && curRef.current !== best) {
           curRef.current = best;
           setCur(best);
           setPageEntry(String(best));
@@ -389,11 +394,19 @@ function PdfView({ path, ink, setInk, pen, setBar }: { path: string; ink?: Recor
 
   if (failed) return <iframe className="full" src={fileUrl(path)} title={path} />;
   if (!pdf || !pages.length) return <div className="pdf-loading" role="status">Loading PDF…</div>;
-  return <div ref={wrap} className="pdfwrap">{pages.map((dimensions, index) =>
-    <PdfPageSurface key={index} doc={pdf} pageNumber={index + 1} dimensions={dimensions} zoom={zoom} onError={onRenderError}>
-      {setInk && <Ink strokes={ink?.[index + 1] || []} onChange={(strokes) => setInk(String(index + 1), strokes)} active={!!pen} />}
-    </PdfPageSurface>,
-  )}</div>;
+  const prefetchRange = pdfPageRange(cur, pages.length, PDF_PREFETCH_RADIUS);
+  return <div ref={wrap} className="pdfwrap">{pages.map((dimensions, index) => {
+    const pageNumber = index + 1;
+    const distance = Math.abs(pageNumber - cur);
+    const pageStyle = { aspectRatio: `${dimensions.w}/${dimensions.h}`, width: `${zoom * 100}%` };
+    if (!active || pageNumber < prefetchRange.start || pageNumber > prefetchRange.end) {
+      return <div key={pageNumber} className="pdf-page" data-pdf-page={pageNumber} aria-hidden="true" style={pageStyle} />;
+    }
+    return <PdfPageSurface key={pageNumber} doc={pdf} pageNumber={pageNumber} dimensions={dimensions} zoom={zoom}
+      currentPage={cur} textEnabled={distance <= PDF_TEXT_RADIUS} onError={onRenderError}>
+      {setInk && <Ink strokes={ink?.[pageNumber] || []} onChange={(strokes) => setInk(String(pageNumber), strokes)} active={!!pen} />}
+    </PdfPageSurface>;
+  })}</div>;
 }
 
 /** Drag a rectangle over the rendered content; the region is composited from the visible
@@ -422,16 +435,37 @@ function SnipLayer({ winId, onDone }: { winId: string; onDone: (b: Blob) => void
     }
     out.toBlob((b) => b && onDone(b), "image/png");
   };
-  return <div className="snip" role="application" aria-label="Snip region"
-    onPointerDown={(e) => { e.preventDefault(); (e.target as Element).setPointerCapture(e.pointerId); start.current = { x: e.clientX, y: e.clientY }; setRect({ x: e.clientX, y: e.clientY, w: 0, h: 0 }); }}
-    onPointerMove={(e) => { if (!start.current) return; const s = start.current; setRect({ x: Math.min(s.x, e.clientX), y: Math.min(s.y, e.clientY), w: Math.abs(e.clientX - s.x), h: Math.abs(e.clientY - s.y) }); }}
-    onPointerUp={() => { if (start.current && rect) finish(rect); start.current = null; setRect(null); }}>
-    {rect && rect.w > 2 && <div className="snip-rect" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} />}
-    <span className="snip-hint">drag to snip · esc to cancel</span>
-  </div>;
+  const updateRect = (x: number, y: number) => {
+    const origin = start.current;
+    if (!origin) return null;
+    const next = { x: Math.min(origin.x, x), y: Math.min(origin.y, y), w: Math.abs(x - origin.x), h: Math.abs(y - origin.y) };
+    setRect(next);
+    return next;
+  };
+  return <>
+    <div className="snip" role="application" aria-label="Snip region"
+      onPointerDown={(event) => {
+        event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
+        start.current = { x: event.clientX, y: event.clientY };
+        setRect({ x: event.clientX, y: event.clientY, w: 0, h: 0 });
+      }}
+      onPointerMove={(event) => { updateRect(event.clientX, event.clientY); }}
+      onPointerUp={(event) => {
+        const finalRect = updateRect(event.clientX, event.clientY);
+        if (finalRect) finish(finalRect);
+        start.current = null; setRect(null);
+      }}
+      onPointerCancel={() => { start.current = null; setRect(null); }}>
+      <span className="snip-hint">drag to snip · esc to cancel</span>
+    </div>
+    {rect && rect.w > 2 && createPortal(
+      <div className="snip-rect" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }} />,
+      document.body,
+    )}
+  </>;
 }
 
-const Viewer = memo(function Viewer({ spec, winId, dock, onDock }: { spec: CanvasSpec; winId: string; dock: boolean; onDock: (id: string, dock: boolean) => void }) {
+const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spec: CanvasSpec; winId: string; dock: boolean; active: boolean; onDock: (id: string, dock: boolean) => void }) {
   const app = useApp();
   const md = useMdHandlers();
   const path = spec.kind === "file" ? spec.path : spec.kind === "ui" ? spec.path : undefined;
@@ -487,7 +521,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, onDock }: { spec: Canva
   };
 
   const editor = <textarea className="editor" value={src} spellCheck={false} onChange={(e) => { setSrc(e.target.value); setDirty(true); }} aria-label="Source" />;
-  const Pdf = useCallback((p: { path: string }) => <PdfView key={p.path} path={p.path} />, []);
+  const Pdf = useCallback((p: { path: string }) => <PdfView key={p.path} path={p.path} active={active} />, [active]);
   let body: React.ReactNode = null;
   if (spec.kind === "youtube") body = <iframe className="full black" src={`https://www.youtube-nocookie.com/embed/${spec.id}?autoplay=1`} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen title="YouTube" />;
   else if (spec.kind === "web") body = <iframe key={rev} className="full" src={spec.url} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" title={spec.title} />;
@@ -495,7 +529,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, onDock }: { spec: Canva
   else if (spec.kind === "chat") body = <ChatView id={spec.id} setBar={setBar} />;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
   else if (k === "image") body = <div className="imgview">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
-  else if (k === "pdf") body = <PdfView key={path} path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} />;
+  else if (k === "pdf") body = <PdfView key={path} path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} active={active} />;
   else if (k === "html") body = mode === "a" ? <div style={{ position: "relative", height: "100%" }}><iframe key={rev} className="full" src={fileUrl(path!)} sandbox="allow-scripts allow-forms allow-popups allow-modals" title={path} /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div> : editor;
   else if (k === "md") body = mode === "a" ? <div className="reader"><StreamMarkdown text={src} {...md} /></div> : editor;
   else if (k === "text") body = mode === "a" ? <div className="reader code"><CodeBlock code={src} lang={extOf(path!)} done /></div> : editor;
@@ -537,6 +571,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, onDock }: { spec: Canva
 
 export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; setWins: React.Dispatch<React.SetStateAction<Win[]>>; dockW: number; setDockW: (w: number) => void }) {
   const [show, setShow] = useState<Record<string, { t: boolean; b: boolean }>>({});
+  const [resizeHover, setResizeHover] = useState<Record<string, ResizeEdge | null>>({});
   const [ghost, setGhost] = useState<{ id: string; rect: CanvasRect; mode: "resize" | "undock"; title: string } | null>(null);
   const [dockPreviewW, setDockPreviewW] = useState<number | null>(null);
   const winsRef = useRef(wins);
@@ -551,6 +586,9 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
       return next.t === current.t && next.b === current.b ? state : { ...state, [id]: next };
     });
   };
+  const updateResizeHover = (id: string, edge: ResizeEdge | null) => setResizeHover((state) =>
+    state[id] === edge ? state : { ...state, [id]: edge },
+  );
   const upd = (id: string, patch: Partial<Win>) => setWins((state) => state.map((win) => win.id === id ? { ...win, ...patch } : win));
   const front = (id: string) => setWins((state) => {
     const top = Math.max(0, ...state.map((win) => win.z));
@@ -732,7 +770,7 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
         ? { x: innerWidth - 18, y: Math.max(24, Math.min(innerHeight - 168, win.y || 24)), w: 18, h: 144 }
         : null;
       const parkedRect = win.peek ? { x: win.x, y: win.y, w: win.w, h: win.h } : legacyDockPeekRect;
-      const className = `win${win.min ? " minimized" : ""}${win.pinned ? " pinned" : ""}${docked ? " docked" : ""}${parked ? ` peek peek-${parkedSide}` : ""}${win.dockPeek ? " dockpeek" : ""}${show[win.id]?.t ? " show-t" : ""}${show[win.id]?.b ? " show-b" : ""}`;
+      const className = `win${win.min ? " minimized" : ""}${win.pinned ? " pinned" : ""}${docked ? " docked" : ""}${parked ? ` peek peek-${parkedSide}` : ""}${win.dockPeek ? " dockpeek" : ""}${show[win.id]?.t ? " show-t" : ""}${show[win.id]?.b ? " show-b" : ""}${resizeHover[win.id] ? ` resize-hover-${resizeHover[win.id]}` : ""}`;
       const dockStyle: React.CSSProperties = { left: "calc(100vw - var(--dockw) - 8px)", top: 8, width: "var(--dockw)", height: "calc(100vh - 16px)", zIndex: 30 };
       const floatStyle: React.CSSProperties = parkedRect
         ? { left: parkedRect.x, top: parkedRect.y, width: parkedRect.w, height: parkedRect.h, zIndex: 40 + win.z }
@@ -749,15 +787,25 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
         onClick={() => { if (dragEnd.current?.id === win.id && Date.now() - dragEnd.current.at < 400) return; if (parked || win.dockPeek) restore(win.id); }}
         onKeyDown={(event) => { if (parked && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); restore(win.id); } }}
         onPointerMove={(pointer) => {
+          const bounds = pointer.currentTarget.getBoundingClientRect();
+          const edge = !win.dock && !win.min && !parked
+            ? resizeEdgeAt({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, pointer.clientX, pointer.clientY)
+            : null;
+          updateResizeHover(win.id, edge);
           if (win.pinned || parked || win.dockPeek) return;
-          const rect = pointer.currentTarget.getBoundingClientRect();
-          const offset = pointer.clientY - rect.top;
-          reveal(win.id, offset < 52 ? "t" : rect.height - offset < 52 ? "b" : null);
+          const offset = pointer.clientY - bounds.top;
+          reveal(win.id, offset < 52 ? "t" : bounds.height - offset < 52 ? "b" : null);
         }}
-        onPointerLeave={() => { if (!win.pinned) reveal(win.id, null); }}>
+        onPointerLeave={() => { updateResizeHover(win.id, null); if (!win.pinned) reveal(win.id, null); }}>
         {parked && <span className="peek-tab-handle" aria-hidden="true" />}
-        <div className="win-bar top" onPointerDown={(pointer) => drag(pointer, win, "move")}
-          onClick={(pointer) => { if (!(pointer.target as HTMLElement).closest("button")) pointer.stopPropagation(); }}>
+        <div className="win-bar top" onPointerDown={(pointer) => {
+          const target = pointer.target as HTMLElement;
+          const bounds = pointer.currentTarget.parentElement?.getBoundingClientRect();
+          const edge = !win.dock && !target.closest("button, a, input, textarea") && bounds
+            ? resizeEdgeAt({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, pointer.clientX, pointer.clientY)
+            : null;
+          drag(pointer, win, edge ? "resize" : "move", edge || undefined);
+        }} onClick={(pointer) => { if (!(pointer.target as HTMLElement).closest("button")) pointer.stopPropagation(); }}>
           <span className="title">{win.spec.title}</span>
           <button className="ib sm" aria-label={win.pinned ? "Unpin bars" : "Pin bars"}
             title={win.pinned ? "Unpin bars (bars float over content)" : "Pin bars (part of the layout)"}
@@ -767,7 +815,7 @@ export function CanvasLayer({ wins, setWins, dockW, setDockW }: { wins: Win[]; s
           <button className="ib sm" aria-label="Close" title="Close canvas"
             onClick={(pointer) => { pointer.stopPropagation(); setWins((state) => state.filter((item) => item.id !== win.id)); }}><X /></button>
         </div>
-        <Viewer spec={win.spec} winId={win.id} dock={win.dock} onDock={setDock} />
+        <Viewer spec={win.spec} winId={win.id} dock={win.dock} active={!win.min && !parked} onDock={setDock} />
         {docked
           ? <div className="win-dockresize" onPointerDown={(pointer) => drag(pointer, win, "dock")}
               aria-label="Resize sidebar" role="separator" aria-orientation="vertical" />

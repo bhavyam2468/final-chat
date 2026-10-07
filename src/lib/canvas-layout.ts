@@ -62,6 +62,22 @@ export function resizeCanvasRect(
   return { x, y, w, h };
 }
 
+/** Pick a resize handle close to a window edge, preferring diagonal corners. */
+export function resizeEdgeAt(rect: CanvasRect, x: number, y: number, threshold = 16): ResizeEdge | null {
+  if (x < rect.x || x > rect.x + rect.w || y < rect.y || y > rect.y + rect.h) return null;
+  const west = x - rect.x <= threshold, east = rect.x + rect.w - x <= threshold;
+  const north = y - rect.y <= threshold, south = rect.y + rect.h - y <= threshold;
+  if (north && west) return "nw";
+  if (north && east) return "ne";
+  if (south && west) return "sw";
+  if (south && east) return "se";
+  if (north) return "n";
+  if (south) return "s";
+  if (west) return "w";
+  if (east) return "e";
+  return null;
+}
+
 /** Select the nearest edge only when the pointer is deliberately close to it. */
 export function edgeAt(x: number, y: number, viewport: Viewport, threshold = 26): PeekSide | null {
   const distances: [PeekSide, number][] = [

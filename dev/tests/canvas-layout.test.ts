@@ -1,6 +1,6 @@
 // Run: node --experimental-strip-types dev/tests/canvas-layout.test.ts
 import assert from "node:assert/strict";
-import { dockCanvasRect, edgeAt, moveCanvasRect, peekCanvasRect, resizeCanvasRect, shouldDockCanvas } from "../../src/lib/canvas-layout.ts";
+import { dockCanvasRect, edgeAt, moveCanvasRect, peekCanvasRect, resizeCanvasRect, resizeEdgeAt, shouldDockCanvas } from "../../src/lib/canvas-layout.ts";
 
 let n = 0;
 const t = (name: string, f: () => void) => { f(); n++; console.log("ok", name); };
@@ -51,6 +51,18 @@ t("viewport clamps preserve the opposite edge while resizing", () => {
   assert.deepEqual(west, { x: 0, y: 100, w: 300, h: 300 });
   assert.deepEqual(south, { x: 100, y: 600, w: 300, h: 200 });
   assert.deepEqual(north, { x: 100, y: 0, w: 300, h: 300 });
+});
+t("resize hit testing favors corners and has a broad, deliberate edge zone", () => {
+  assert.equal(resizeEdgeAt(origin, 301, 181), "nw");
+  assert.equal(resizeEdgeAt(origin, 778, 181), "ne");
+  assert.equal(resizeEdgeAt(origin, 301, 538), "sw");
+  assert.equal(resizeEdgeAt(origin, 778, 538), "se");
+  assert.equal(resizeEdgeAt(origin, 500, 182), "n");
+  assert.equal(resizeEdgeAt(origin, 500, 538), "s");
+  assert.equal(resizeEdgeAt(origin, 302, 300), "w");
+  assert.equal(resizeEdgeAt(origin, 778, 300), "e");
+  assert.equal(resizeEdgeAt(origin, 500, 300), null);
+  assert.equal(resizeEdgeAt(origin, 500, 197, 16), null);
 });
 t("edge detection identifies each screen edge and ignores the interior", () => {
   assert.equal(edgeAt(3, 400, viewport), "left");
