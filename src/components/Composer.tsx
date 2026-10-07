@@ -4,9 +4,10 @@ import { Plus, ArrowUp, Square, X, FileText, Inbox, Zap, Navigation, ArrowDownTo
 import { Attachment, ProcInfo, QueueItem, fileUrl, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import { Palette, PaletteHandle, PaletteMode, PaletteApi } from "./palette";
+import { DEFAULT_MODE, ModeId, modeOf } from "@/lib/modes";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
-export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
+export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void; modes: () => void };
 export type Command = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 type Chip = Attachment & { loading?: boolean; key: string; preview?: string };
@@ -29,6 +30,8 @@ type Props = {
   onOpenProc?: (name: string) => void;
   /** omnibox data (chats, workspace, sources, settings, processes) — omit for plain composers */
   palette?: Omit<PaletteApi, "mention" | "attachPath">;
+  /** the chat's mode: shown as a chip, switched from the /mode picker */
+  mode?: ModeId; onMode?: (id: ModeId) => void;
 };
 type Draft = { text: string; chips: Attachment[] };
 const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
@@ -126,6 +129,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     insert: (t: string) => { setText((v) => (v && !v.endsWith(" ") ? v + " " : v) + t); setTimeout(() => ta.current?.focus(), 0); },
     focus: () => ta.current?.focus(),
     addFiles,
+    modes: () => openPanelRef.current?.("modes"),
   }), [addFiles]);
 
   // type-anywhere capture
@@ -184,11 +188,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     setTimeout(() => ta.current?.focus(), 0);
   }, []);
 
+  const openPanelRef = useRef<((m: PaletteMode, seed?: string) => void) | null>(null);
   const openPanel = useCallback((m: PaletteMode, seed?: string) => {
     setText(seed || ""); setCaret((seed || "").length);
     setMode(m); palRef.current?.reset();
     setTimeout(() => ta.current?.focus(), 0);
   }, []);
+  openPanelRef.current = openPanel;
 
   // ---- send / queue / steer --------------------------------------------
   const ready = chips.every((c) => !c.loading);
@@ -290,7 +296,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     <div className={`composer${open ? " open" : ""}${p.inline ? " inline" : ""}${drag ? " drag" : ""}${mode && paletteApi ? " pal-open" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
-      {mode && paletteApi && <Palette ref={palRef} mode={mode} query={palQuery} arg={palArg} api={paletteApi} collapse={() => collapsePalette(false)} onPanel={openPanel} setInput={(t) => { setText(t); setCaret(t.length); }} />}
+      {mode && paletteApi && <Palette ref={palRef} mode={mode} query={palQuery} arg={palArg} api={paletteApi} collapse={(clear) => collapsePalette(!!clear)} onPanel={openPanel} setInput={(t) => { setText(t); setCaret(t.length); }} />}
       {!!p.queue?.length && <div className="qstrip">
         <div className="qstrip-head"><Inbox size={12} /><span>{p.queue.length} queued</span></div>
         {p.queue.map((it, i) => (
@@ -330,6 +336,10 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           <button className="x" aria-label="Remove" onClick={() => setChips((x) => x.filter((y) => y.key !== c.key))}><X /></button>
         </div>; })}</div>}
       <div className="row">
+        {p.mode && p.mode !== DEFAULT_MODE && (
+          <button className="cmode" aria-label={`Mode: ${modeOf(p.mode).label}`} title={`${modeOf(p.mode).hint} — click to leave this mode`}
+            onClick={() => p.onMode?.(DEFAULT_MODE)}><span>{modeOf(p.mode).label}</span><X size={11} /></button>
+        )}
         <button className="ib" aria-label="Attach" onClick={() => fileIn.current?.click()}><Plus /></button>
         <input ref={fileIn} type="file" multiple hidden onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
         <textarea ref={ta} rows={1} value={text} aria-label="Message"

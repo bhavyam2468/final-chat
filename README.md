@@ -10,7 +10,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 | Capability | Description |
 |---|---|
-| **General mode** | New Chat opens a separate General conversation for unrelated questions. It does not auto-search, keeps tool calls visible, and has its own history. "Open in chat" promotes it into normal chat without mixing histories. `/research`, `/background`, `/brief`, `/project`, `/google` remain composer workflows |
+| **Modes** | `/mode` expands the input bar into a picker: `search`, `plan`, `debug`, `build`, `learn`, `write` (plus the default `chat`). A mode is a skill that is injected automatically, a tool restriction enforced twice (schemas and dispatcher) and a chip on the composer. Spec, restrictions and the full system prompts: [`docs/MODES.md`](docs/MODES.md) |
+| **General mode** | New Chat opens a separate General conversation for unrelated questions. It does not auto-search, keeps tool calls visible, and has its own history. "Open in chat" promotes it into normal chat without mixing histories |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
@@ -89,10 +90,12 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 |---|---|
 | `App.tsx` | Root client component: layout, panels, chat state, keyboard shortcuts |
 | `Composer.tsx` | Message input box: queue & steer while streaming, slash commands, `@`-mentions, attachments, the process strip |
-| `palette.tsx` | The omnibox the input bar expands into: commands, chats, workspace browser, sources, settings, processes, skills |
+| `palette.tsx` | The omnibox the input bar expands into: commands, modes, chats, workspace browser, sources, settings, processes, skills |
 | `Message.tsx` | Renders a single message (user or assistant) with tool calls, sources, branches |
 | `Panels.tsx` | Left panel (Chats and separate General history), right panel (workspace file browser) |
-| `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI |
+| `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI: viewer/editor switch, pinned bars while editing, the run drawer |
+| `Editor.tsx` | The canvas editor: highlight.js layer, gutter, auto-pairs, Tab/Shift-Tab, comment toggle, indent-aware Enter, Ctrl+S/Ctrl+Enter |
+| `Runner.tsx` | Run drawer (exit code, output, auto-run, ask-the-AI) and the NDJSON client for `/api/run` |
 | `Block.tsx` | Renders a `<canvas>` block (isolated iframe sandboxed to `/blocks/`) |
 | `Settings.tsx` | Settings panel (in-layout, beside the chat, not a modal): Model, Tools, Access, MCP, Skills |
 | `ctx.ts` | Shared React contexts (conversation, settings, theme) |
@@ -101,6 +104,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 | Module | Purpose |
 |---|---|
+| `modes.ts` | The mode registry (search, plan, debug, build, learn, write): label, hint, auto-injected skill, denied tools. See [`docs/MODES.md`](docs/MODES.md) |
+| `file-run.ts` / `run-langs.ts` | Sandbox runner behind the canvas Run button and the `file_run` / `file_runs` tools (15 languages, one command table, last 40 runs kept in memory) |
 | `agent.ts` | Agent loop: system prompt, history, tool packs per step, image hand-off, todo recitation, quality guard |
 | `tools/index.ts` | Tool schemas (core + dev pack) and the `execTool()` dispatcher |
 | `tools/edit.ts` / `tools/syntax.ts` | Robust edits (exact → whitespace-tolerant → indentation-shifted matching, placeholder rejection) and the syntax guard |

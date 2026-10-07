@@ -3,6 +3,7 @@ import fss from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { WS, resolvePath, rel, tree, Node, mimeOf, isImage, readText } from "../workspace";
+import { modeOf } from "../modes";
 import type { Settings } from "../settings";
 import { searchCatalog } from "../blocks/catalog";
 import { callMcp, readServers, writeServers, dropMcpPool, expandCfg, ServerCfg } from "../mcp";
@@ -38,7 +39,8 @@ const arr = (items: Record<string, unknown>, d?: string) => ({ type: "array", it
 
 export type Pack = "dev";
 export type TodoItem = { text: string; status: "todo" | "doing" | "done" };
-export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: "chat" | "general" | "search"; project?: string };
+/** `mode` holds either the quiet surface ("general") or an agent mode (see lib/modes.ts); anything else is plain chat. */
+export type ConvState = { packs?: Pack[]; todo?: TodoItem[]; approved?: string[]; mode?: string; project?: string };
 
 /**
  * Tool sets. Descriptions are terse because schemas ride along on every request; behaviour details live in
@@ -233,12 +235,22 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       adb_tap: "Sending touch input", adb_logcat: "Reading device logs", adb_shell: "Running device command",
       proc_start: "Starting process", proc_logs: "Reading process output", proc_wait: "Waiting on process", proc_write: "Writing to process", proc_signal: "Signalling process", proc_restart: "Restarting process", proc_stop: "Stopping process",
     };
+    // A mode restricts tools in the dispatcher too, not only in the definitions the model saw:
+    // queued and steered messages, or a conversation switched mid-run, can still name one it must not use.
+    const md = modeOf(ctx.state?.mode);
+    if (md.deny.includes(name)) return {
+      ok: false,
+      result: md.id === "plan"
+        ? `${name} is off in ${md.label} mode: nothing may change while planning. Present the plan and ask the user to switch to build mode.`
+        : `${name} is off in ${md.label} mode${md.id === "search" ? " (search mode is read-only: answer from the sources you opened instead of running code)" : ""}. Say what you need, or finish without it.`,
+    };
     ctx.progress?.(activity[name] || "Working on integration");
     switch (name) {
       case "skill_open": {
         const sk = await findSkill(String(a.name || ""));
         if (!sk) return { ok: false, result: `No skill "${a.name}". See the Skills list.` };
         const meta = skillMeta(sk.text);
+        if (meta.mode) return { ok: false, result: `${sk.name} belongs to a mode and is already in your instructions while that mode is on. Switch modes with /mode instead.` };
         if (meta.requires === "host-terminal" && st.terminal !== "host") return { ok: false, result: "This skill needs Host terminal (Settings → Access)." };
         if (meta.requires === "host-files" && st.access === "sandbox") return { ok: false, result: "This skill needs Home folder access (Settings → Access)." };
         if (a.file && !/^SKILL\.md$/i.test(String(a.file))) {

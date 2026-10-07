@@ -9,13 +9,19 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   Hash, FileText, MessageSquare, Folder, FolderOpen, AppWindow, Link2, Settings2, SquareTerminal, BookOpen,
-  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug, } from "lucide-react";
+  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug,
+  MessageSquareQuote, Globe, ListChecks, Bug, Hammer, GraduationCap, PenLine, } from "lucide-react";
 import { CanvasSpec, ProcInfo, TreeNode, flatFiles, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import type { ConvItem } from "./Panels";
+import { ModeDef, ModeId, DEFAULT_MODE, modeOf } from "@/lib/modes";
 
-export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills";
+export type PaletteMode = "commands" | "modes" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills";
 export type PaletteTab = "model" | "tools" | "access" | "mcp" | "skills";
+/** one glyph per mode, so the picker reads at a glance */
+const MODE_ICON: Record<ModeId, typeof FileText> = {
+  chat: MessageSquareQuote, search: Globe, plan: ListChecks, debug: Bug, build: Hammer, learn: GraduationCap, write: PenLine,
+};
 export type PaletteCommand = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 export type PaletteApi = {
@@ -32,6 +38,10 @@ export type PaletteApi = {
   mention: (path: string) => void;
   /** put a workspace file onto the composer as an attachment chip */
   attachPath: (path: string) => void;
+  /** mode picker (/mode): the registry plus what this chat is currently running */
+  modes: ModeDef[];
+  activeMode: ModeId;
+  setMode: (id: ModeId) => void;
 };
 
 type Row = {
@@ -65,7 +75,7 @@ const fileActs = (path: string, app: ReturnType<typeof useApp>, api: PaletteApi,
 export type PaletteHandle = { key: (e: React.KeyboardEvent) => boolean; reset: () => void; entering: () => boolean };
 
 export const Palette = forwardRef<PaletteHandle, {
-  mode: PaletteMode; query: string; arg?: string; api: PaletteApi; collapse: () => void; onPanel: (m: PaletteMode, seed?: string) => void;
+  mode: PaletteMode; query: string; arg?: string; api: PaletteApi; collapse: (clear?: boolean) => void; onPanel: (m: PaletteMode, seed?: string) => void;
   /** put text into the input bar (settings value entry hands the bar over and takes it back) */
   setInput?: (t: string) => void;
 }>(function Palette({ mode, query, arg, api, collapse, onPanel, setInput }, ref) {
@@ -91,6 +101,10 @@ export const Palette = forwardRef<PaletteHandle, {
   useEffect(() => { setIdx(0); }, [query, cwd]);
   // /settings model — a command can seed the section directly
   useEffect(() => { if (mode === "settings") setSec(arg && SET_SECS.includes(arg) ? arg : null); }, [mode, arg]);
+  // Typing re-filters the list: the highlight goes back to the first match, so Enter always means
+  // "the top row of what I see". Without this, a row that happened to be under the pointer keeps the
+  // cursor and Enter picks something the user never looked at.
+  useEffect(() => { setIdx(0); }, [query, mode]);
   // chats: full-text matches ride along under the title matches
   useEffect(() => {
     if (mode !== "chats" || query.trim().length < 2) { setHits([]); return; }
@@ -127,6 +141,18 @@ export const Palette = forwardRef<PaletteHandle, {
 
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
+    if (mode === "modes") {
+      // The picker: one row per mode, the active one marked. Filtering is plain text (the palette's query).
+      for (const m of api.modes) {
+        if (q && !m.id.startsWith(q) && !m.label.includes(q) && !m.hint.toLowerCase().includes(q)) continue;
+        const on = m.id === api.activeMode;
+        out.push({
+          key: m.id, icon: MODE_ICON[m.id] || Hash, label: m.label, hint: on ? "current mode" : m.hint, live: on,
+          act: () => { api.setMode(m.id); collapse(true); },
+        });
+      }
+      return out;
+    }
     if (mode === "commands") {
       for (const c of api.commands) {
         if (q && !c.name.startsWith(q) && !c.hint.toLowerCase().includes(q)) continue;
@@ -325,7 +351,7 @@ export const Palette = forwardRef<PaletteHandle, {
       return out;
     }
     return out;
-  }, [mode, q, arg, api, app, hits, skills, dir, collapse, onPanel, sec, entry, set, mcp, mkt, pick, pendSecret, saveS, putMcp, startEntry]);
+  }, [mode, q, arg, api, app, hits, skills, dir, collapse, onPanel, sec, set, mcp, mkt, pick, pendSecret, saveS, putMcp, startEntry]);
 
   // provider presets: a small sub-list built from the server's preset table
   function setPresets(pack: SetPack, s: Record<string, any>, save: (p: Record<string, unknown>) => void): Row[] {
@@ -365,6 +391,7 @@ export const Palette = forwardRef<PaletteHandle, {
 
   const crumb = acts ? actsTitle
     : entry ? entry.label
+    : mode === "modes" ? `mode · ${modeOf(api.activeMode).label === DEFAULT_MODE ? "chat" : modeOf(api.activeMode).label}`
     : mode === "settings" ? (sec ? { model: "Model", tools: "Tools", access: "Access", secrets: "Secrets", mcp: "MCP" }[sec] || sec : "settings")
     : mode === "workspace" ? dir.split("/").pop() || "workspace"
     : mode;
@@ -397,7 +424,7 @@ export const Palette = forwardRef<PaletteHandle, {
             </button>,
           ];
         })}
-        {!shown.length && <div className="pal-empty">{mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : "Nothing matches"}</div>}
+        {!shown.length && <div className="pal-empty">{mode === "modes" ? "No mode matches" : mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : "Nothing matches"}</div>}
       </div>
       </div>
     </div>

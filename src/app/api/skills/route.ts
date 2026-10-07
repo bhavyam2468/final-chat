@@ -11,7 +11,8 @@ const TEMPLATE = path.resolve("./workspace-template/system/skills");
 /** All skills from system/skills plus .agents/skills and .claude/skills (where `npx skills add` installs). */
 export async function GET() {
   await ensureWorkspace();
-  const list = await listSkills();
+  // mode skills (mode-search, mode-plan, …) are injected by their mode, not installed or listed here
+  const list = (await listSkills()).filter((s) => !s.mode);
   return Response.json(list.map((s) => ({
     name: s.name, description: s.description, tools: s.tools, requires: s.requires, root: s.root,
     builtin: s.root === "system/skills" && fss.existsSync(path.join(TEMPLATE, s.name)),

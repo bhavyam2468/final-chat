@@ -7,7 +7,8 @@ import { WS, treeText, resolvePath, readText, isImage, mimeOf, ensureWorkspace }
 import { getSettings, Settings } from "./settings";
 import { toolDefs, execTool, ToolDef, ToolCtx, ConvState, Pack, todoReminder } from "./tools";
 import { mcpTools, readServers } from "./mcp";
-import { skillsIndex, findSkill, skillMeta, skillAllowed } from "./skills";
+import { skillsIndex, findSkill, skillMeta, skillAllowed, skillBody } from "./skills";
+import { modeOf } from "./modes";
 import { varsFor, varsIn } from "./credentials";
 import { lintFiles } from "./harness/check";
 import { ReasoningSplitter, OpenerGate, trimCloser, findLoop, extractTextCalls, foreignSpans, fixPunct, replaceSpans, unverifiedUrls, urlsIn, parsePartialJsonObject } from "./harness/stream";
@@ -75,6 +76,10 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
   const proj = slug ? await projectText(slug).catch(() => "") : "";
   const notes = slug ? await fs.readFile(path.join(WS, "projects", slug, "NOTES.md"), "utf8").catch(() => "") : "";
   const skills = `# Skills (skill_open to load)\n${await skillsIndex(st)}`;
+  // The active mode: its skill is injected (not merely offered) so the model cannot skip its rules.
+  const md = modeOf(conv.state?.mode);
+  const mdSkill = md.skill ? await findSkill(md.skill).catch(() => null) : null;
+  const modeText = md.skill ? `# ${md.label} mode\n${mdSkill ? skillBody(mdSkill) : md.fallback}` : "";
   const tree = `# Workspace tree\n${await treeText(160, conv.id)}`;
   const items: { path: string; tokens: number }[] = [];
   let files = "";
@@ -90,6 +95,7 @@ async function buildSystem(conv: Conv, st: Settings, mcpNames: string[], budget:
   }
   const parts: [string, string, string][] = [
     ["system", "System prompt", base],
+    ["mode", `${md.label} mode`, modeText],
     ["memory", "Memory", [userInstructions && `# Standing instructions from the user (AGENTS.md)\n${userInstructions}`, recall && `# Remembered\n${recall}\nThe user sees every note and can undo one with forget(id); remember only what they ask, or a decision that will matter later.`, proj && `# Project ${conv.state?.project}\n${proj.slice(0, 2500)}${notes.trim() ? `\n\nNotes:\n${notes.slice(0, 1200)}` : ""}`].filter(Boolean).join("\n\n")],
     ["skills", "Skills index", skills],
     ["env", "Environment", [mcpNames.length ? `# MCP servers\n${mcpNames.join(", ")}` : "", envText(st), `This chat's folder: ${chatDir(conv.id)}/ · save what you make here (${chatDir(conv.id)}/artifacts/ for builds and documents) unless the user names a place. Other chats: chats/<id>/chat.json (readable).`, isGeneral(conv.state?.mode) ? GENERAL_MODE : "", `Date: ${new Date().toISOString().slice(0, 10)}`].filter(Boolean).join("\n\n")],
@@ -151,9 +157,10 @@ async function mcpFor(st: Settings) {
   const servers = await readServers();
   return mcpTools(varsFor(st, varsIn(Object.values(servers).filter((c) => c.enabled))));
 }
-function allTools(st: Settings, packs: Pack[], mcp: Awaited<ReturnType<typeof mcpTools>>): ToolDef[] {
+function allTools(st: Settings, packs: Pack[], mcp: Awaited<ReturnType<typeof mcpTools>>, mode?: string): ToolDef[] {
+  const deny = new Set(modeOf(mode).deny); // a restricted mode never sees the schema it cannot use
   return [
-    ...toolDefs(st, packs),
+    ...toolDefs(st, packs).filter((d) => !deny.has(d.function.name)),
     ...mcp.tools.map((t) => ({ type: "function" as const, function: { name: `mcp__${t.server}__${t.name}`.slice(0, 64), description: (t.description || "").slice(0, 300), parameters: (t.inputSchema as Record<string, unknown>) || { type: "object", properties: {} } } })),
   ];
 }
@@ -168,7 +175,7 @@ export async function contextReport(convId: string, leafId: string | null, threa
   if (!conv) throw new Error("no conversation");
   const all = await db.select().from(messages).where(eq(messages.conversationId, conv.id));
   const mcp = await mcpFor(st).catch(() => ({ tools: [], errors: [] }));
-  const tools = allTools(st, packsFor(st, conv.state), mcp);
+  const tools = allTools(st, packsFor(st, conv.state), mcp, conv.state?.mode);
   const sys = await buildSystem(conv, st, [...new Set(mcp.tools.map((t) => t.server))], budget);
   const toolDefTok = est(JSON.stringify(tools));
   const leaf = leafId || [...all].filter((m) => (m.threadOf || null) === threadOf).sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0]?.id || null;
@@ -226,7 +233,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   const mcp = await mcpFor(st);
   if (mcp.errors.length) emit({ t: "notice", text: "MCP: " + mcp.errors.join("; ") });
   let state: ConvState = conv.state || {};
-  let tools = allTools(st, packsFor(st, state), mcp);
+  let tools = allTools(st, packsFor(st, state), mcp, state.mode);
   const mcpNames = [...new Set(mcp.tools.map((t) => t.server))];
   let toolDefTok = est(JSON.stringify(tools));
 
@@ -333,7 +340,7 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     for (let step = 0; step < maxSteps(); step++) {
       // Steers buffered while the last request was in flight ride along with the next one.
       takeSteers();
-      tools = allTools(st, packsFor(st, state), mcp);
+      tools = allTools(st, packsFor(st, state), mcp, state.mode);
       toolDefTok = est(JSON.stringify(tools));
       const res = await fetch(endpoint(st), {
         method: "POST", signal, headers: headers(st),

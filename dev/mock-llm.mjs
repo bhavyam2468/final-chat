@@ -4,7 +4,7 @@
  * Streams deliberately irregular chunks (1–60 chars, 5–160 ms gaps, bursts) to exercise the streaming renderer.
  *   node dev/mock-llm.mjs [port=3099]   then LLM_BASE_URL=http://127.0.0.1:3099/v1
  * In the app: developer mode (DEV_MODE=1 or window.__dev.enable()) adds the "mock" provider, served at /api/dev/mock/v1.
- * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, plan|todo, ask, samples, else markdown.
+ * Scenarios by keyword in the last user message: jee|mock test, graph, chem|molecule, open <path>, plan|todo, ask, samples, modecheck, modewrite, else markdown.
  * Guardrail scenarios: "guard:think|orphan|reasoning|filler|link|loop|textcall|toolcode|cjk|cite|danger|pkg|stuck|slop|integrity".
  */
 import http from "node:http";
@@ -199,7 +199,7 @@ function searchAnswer(q) {
   return { text: `**${topic}** comes down to three facts. The official docs describe the current behaviour [1](${urls[0]}), and the wiki has the background and history [2](${urls[1] || urls[0]}).\n\nRecent coverage adds the newest changes [3](${urls[2] || urls[0]}).` };
 }
 
-function scenario(messages) {
+function scenario(messages, tools = []) {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   const q = (typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content || "")).toLowerCase();
   const afterTool = messages[messages.length - 1]?.role === "tool";
@@ -220,6 +220,19 @@ function scenario(messages) {
   if (open) return afterTool ? { text: "Opened beside the chat." } : { call: { name: "canvas_open", args: { target: open[1], dock: true } } };
   if (/samples|files/.test(q)) return { text: "The example files:\n\n[deck.pptx](uploads/samples/deck.pptx)\n\n[budget.xlsx](uploads/samples/budget.xlsx)\n\n[project.zip](uploads/samples/project.zip)\n\n[chart.png](uploads/samples/chart.png)\n\nAsk to open any of them." };
   if (/plan|todo/.test(q)) return afterTool ? { text: "Plan set. Starting with the data model." } : { text: "Breaking this into steps.", call: { name: "todo", args: { items: [{ text: "Data model", status: "doing" }, { text: "List view", status: "todo" }, { text: "Persistence", status: "todo" }, { text: "Verify in browser", status: "todo" }] } } };
+  // Mode harness: "modecheck" reports what the server actually sent (the injected mode section and the tool
+  // list it was given); "modewrite" calls a tool the active mode forbids, to prove the dispatcher refuses it.
+  if (/modecheck/.test(q)) {
+    const sys = messages.find((m) => m.role === "system")?.content || "";
+    const head = sys.match(/# (\w+) mode\n/);
+    const MARK = { search: "a snippet is not a source", plan: "Nothing in this mode may change state", debug: "A bug is a fact you have not read yet", build: "The user wants a working thing", learn: "The goal is that the user can do it without you", write: "Text is the deliverable here" };
+    const names = tools.map((t) => t?.function?.name).filter(Boolean);
+    const label = head ? head[1] : "none";
+    return { text: `mode=${label}\nskill=${MARK[label] && sys.includes(MARK[label]) ? "injected" : "missing"}\ntools=${names.length}\nfs_write=${names.includes("fs_write")}\nweb_search=${names.includes("web_search")}\nshell=${names.includes("shell")}` };
+  }
+  if (/modewrite/.test(q)) return afterTool
+    ? { text: "Read the refusal above." }
+    : { text: "Writing a file.", call: { name: "fs_write", args: { path: "scratch/mode-should-not-exist.txt", content: "a restricted mode let this through" } } };
   if (/procsuite/.test(q)) {
     const calls = messages.filter((m) => m.role === "assistant" && m.tool_calls).flatMap((m) => m.tool_calls.map((t) => t.function?.name || "")).filter((n) => n.startsWith("proc_"));
     const steps = [
@@ -271,7 +284,7 @@ export function complete(j) {
 /** Streaming completion as SSE lines. */
 export async function* stream(j) {
   const send = (delta, finish = null) => `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-  const sc = scenario(j.messages || []);
+  const sc = scenario(j.messages || [], j.tools || []);
   for (const c of chunks(sc.reasoning || "")) { yield send({ reasoning_content: c }); await sleep(10 + Math.random() * 60); }
   for (const c of chunks(sc.text || "")) { yield send({ content: c }); await sleep((sc.slow || 1) * (5 + Math.random() * (Math.random() < 0.1 ? 400 : 160))); }
   if (sc.call) {

@@ -92,6 +92,19 @@
 3. Dragging window past screen edge sets `isPeek: true`.
 4. Hovering edge expands peek bar; mouse dwell past time threshold or click event restores window coordinates.
 
+#### Modes & Tool Restrictions
+1. `src/lib/modes.ts` is the registry: `{ id, label, hint, skill, fallback, deny }` for chat, search, plan, debug, build, learn, write.
+2. `buildSystem()` (`agent.ts`) injects the active mode's skill body (`system/skills/mode-<id>/SKILL.md`, front matter `mode: true`) as its own context section; `skillsIndex()` hides those skills and `skill_open` refuses them.
+3. `allTools()` filters the deny list out of the tool definitions the model receives, so a restricted mode never sees the schema.
+4. `execTool()` (`tools/index.ts`) refuses a denied name a second time with a mode-specific message — the gate that catches queued/steered messages and mid-run mode switches.
+5. The UI mirror: `/mode` opens the palette's `modes` panel, the composer shows one chip, `App.applyMode()` maps `state.mode` ({"general"} = the quiet surface, a mode id = a posture) to (surface, mode), and `chooseMode()` PATCHes the conversation. Docs: `docs/MODES.md`; proof: `dev/modes-e2e.mjs`.
+
+#### Canvas Editor & Sandbox Runner
+1. Canvas files (`text`/`md`/`html`/`ui`) read through `readFile` into `Viewer` state and render in `<Editor>` (highlight.js layer behind a textarea, gutter, Ln/Col, auto-pairs, Tab indent, comment toggle, Ctrl+S save, Ctrl+Enter run).
+2. Save PUTs `/api/workspace`; Run POSTs `/api/run` (`start|chunk|done` NDJSON) via `Runner.startRun`, drawn in the `RunDrawer`; `auto` re-runs on save for compiled languages.
+3. `lib/file-run.ts` is shared with the model: `file_run(path)` executes the same command table (`run-langs.ts`) and records into the 40-entry run store that `file_runs(path)` reads back.
+4. Save/Run are gated on the file body having loaded, so a slow fetch plus a fast Ctrl+S cannot overwrite a file with an empty buffer.
+
 ---
 
 ## 2. DATABASE SCHEMA (`src/db/schema.ts`)

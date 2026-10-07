@@ -13,16 +13,18 @@ import type { Settings } from "./settings";
  * Extra front matter understood here:
  *   tools: dev              → opening the skill loads the dev tool pack (processes, browser, checks)
  *   requires: host-terminal | host-files → only listed when the user enabled that access
+ *   mode: true              → a mode skill (system/skills/mode-*): auto-injected by the mode, hidden from
+ *                             the index the model reads, so it is never loaded twice or by mistake
  */
 export const SKILL_ROOTS = () => [path.join(WS, "system/skills"), path.join(WS, ".agents/skills"), path.join(WS, ".claude/skills")];
 
 export function skillMeta(text: string) {
   const fm = text.match(/^---\n([\s\S]*?)\n---/)?.[1] || "";
   const get = (k: string) => fm.match(new RegExp(`^${k}:\\s*(.+)$`, "m"))?.[1].trim().replace(/^["']|["']$/g, "") || "";
-  return { name: get("name"), description: get("description"), tools: get("tools"), requires: get("requires") };
+  return { name: get("name"), description: get("description"), tools: get("tools"), requires: get("requires"), mode: get("mode") === "true" };
 }
 
-export type SkillInfo = { name: string; dir: string; text: string; description: string; tools: string; requires: string; root: string };
+export type SkillInfo = { name: string; dir: string; text: string; description: string; tools: string; requires: string; root: string; mode: boolean };
 export async function listSkills(): Promise<SkillInfo[]> {
   const out: SkillInfo[] = [];
   const seen = new Set<string>();
@@ -33,7 +35,7 @@ export async function listSkills(): Promise<SkillInfo[]> {
       if (!text || seen.has(d)) continue;
       seen.add(d);
       const m = skillMeta(text);
-      out.push({ name: d, dir, text, description: m.description, tools: m.tools, requires: m.requires, root: path.relative(WS, root) });
+      out.push({ name: d, dir, text, description: m.description, tools: m.tools, requires: m.requires, mode: m.mode, root: path.relative(WS, root) });
     }
   }
   return out;
@@ -43,7 +45,12 @@ export const skillAllowed = (s: { requires: string }, st: Settings) =>
   !s.requires || (s.requires === "host-terminal" ? st.terminal === "host" : s.requires === "host-files" ? st.access !== "sandbox" : true);
 
 export async function skillsIndex(st: Settings) {
-  return (await listSkills()).filter((s) => skillAllowed(s, st)).map((s) => `- ${s.name}: ${s.description}`).join("\n");
+  return (await listSkills()).filter((s) => skillAllowed(s, st) && !s.mode).map((s) => `- ${s.name}: ${s.description}`).join("\n");
+}
+
+/** Body of a skill (front matter stripped), for prompt injection. */
+export function skillBody(s: SkillInfo) {
+  return s.text.replace(/^---[\s\S]*?---\n/, "").trim();
 }
 
 export async function findSkill(name: string) {

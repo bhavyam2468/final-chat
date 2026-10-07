@@ -10,6 +10,7 @@ import { CanvasLayer, Win, contentRatio } from "./Canvas";
 import { shouldDockCanvas } from "@/lib/canvas-layout";
 import { Settings } from "./Settings";
 import type { PaletteTab } from "./palette";
+import { DEFAULT_MODE, isMode, MODES, type ModeId } from "@/lib/modes";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
 function DockStatus({ conv, offerBrief, streamId, onBrief, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; onBrief: () => void; onUnlink: () => void }) {
@@ -19,7 +20,7 @@ function DockStatus({ conv, offerBrief, streamId, onBrief, onUnlink }: { conv: C
     {offerBrief && !streamId && <button className="promote" onClick={onBrief}>Morning brief</button>}
   </div>;
 }
-const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "general" || c.state?.mode === "search" || c.mode === "general" ? "general" : "chat" });
+const withMode = (c: Conv): Conv => ({ ...c, mode: c.state?.mode === "general" || c.mode === "general" ? "general" : "chat" });
 const NONE: Msg[] = [];
 const keyOf = (parentId: string | null, threadOf: string | null) => parentId ?? `root:${threadOf ?? ""}`;
 const toXml = (d: unknown): string => typeof d !== "object" || d === null ? String(d) : Object.entries(d as Record<string, unknown>).map(([k, v]) => `<${k}>${typeof v === "object" ? toXml(v) : String(v)}</${k}>`).join("\n");
@@ -38,6 +39,10 @@ export default function App() {
   // normal chat history and can be promoted in one deliberate action.
   const [surface, setSurface] = useState<"general" | "chat">("general");
   const modeRef = useRef<"chat" | "general">("general");
+  // The agent mode of the chat in view (lib/modes.ts). Independent of `surface`: `general` is a separate
+  // quiet history, a mode is a posture inside a normal chat.
+  const [agentMode, setAgentMode] = useState<ModeId>(DEFAULT_MODE);
+  const agentModeRef = useRef<ModeId>(DEFAULT_MODE);
   const pendingProject = useRef<string | null>(null);
   const [offerBrief, setOfferBrief] = useState(false);
   // canvases live per chat: switching chats parks this chat's windows and restores that chat's
@@ -130,6 +135,23 @@ export default function App() {
   const mainRef = useRef<ComposerHandle>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const convRef = useRef<Conv | null>(null); convRef.current = conv;
+  /** One place that turns a conversation's stored mode into (surface, agent mode). */
+  const applyMode = useCallback((m?: string) => {
+    const gen = m === "general";
+    modeRef.current = gen ? "general" : "chat";
+    setSurface(modeRef.current);
+    const am: ModeId = !gen && isMode(m) ? m : DEFAULT_MODE;
+    agentModeRef.current = am; setAgentMode(am);
+  }, []);
+  const setMode = useCallback((m: "general" | "chat") => applyMode(m), [applyMode]);
+  /** /mode or the picker: switch this chat's posture (persisted once the chat exists). */
+  const chooseMode = useCallback((id: ModeId) => {
+    applyMode(id);
+    const c = convRef.current;
+    if (!c || viewRef.current.startsWith("new:")) return; // the next POST creates the row with this mode
+    setConv({ ...c, state: { ...(c.state || {}), mode: id } });
+    void fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: id }) });
+  }, [applyMode]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
   useEffect(() => { const t = localStorage.getItem("theme") || "dark"; setThemeS(t); const h = new Date().getHours(); const day = new Date().toISOString().slice(0, 10); setOfferBrief(h >= 5 && h < 11 && localStorage.getItem("briefDay") !== day); }, []);
@@ -216,7 +238,7 @@ export default function App() {
     if (t?.threadOf) setThread(t.threadOf); else if (target) setThread(null);
     while (t) { s[keyOf(t.parentId, t.threadOf)] = t.id; t = t.parentId ? by.get(t.parentId) : undefined; }
     if (t === undefined && target) { const tm = by.get(target); if (tm?.threadOf) { let a = by.get(tm.threadOf); while (a) { s[keyOf(a.parentId, a.threadOf)] = a.id; a = a.parentId ? by.get(a.parentId) : undefined; } } }
-    const loaded = withMode(j.conversation); modeRef.current = loaded.mode || "chat"; setSurface(loaded.mode || "chat"); setConv(loaded); setMsgsFor(id, () => ms); setSel((x) => ({ ...x, ...s }));
+    const loaded = withMode(j.conversation); applyMode(j.conversation.state?.mode); setConv(loaded); setMsgsFor(id, () => ms); setSel((x) => ({ ...x, ...s }));
     if (!target) setThread(null);
     if (!live) attachRef.current(id); // re-attach if the server is still answering (e.g. after a reload)
     // Reopen a conversation at its latest turn. A focused search result is
@@ -225,9 +247,8 @@ export default function App() {
       if (focusMsg) document.querySelector(`[data-mid="${focusMsg}"]`)?.scrollIntoView({ block: "center" });
       else scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "auto" });
     }, 80);
-  }, [setView, setMsgsFor]);
+  }, [applyMode, setView, setMsgsFor]);
 
-  const setMode = useCallback((m: "general" | "chat") => { modeRef.current = m; setSurface(m); }, []);
   const newChat = useCallback(() => { setMode("general"); setView("new:" + rid()); setConv(null); setThread(null); setEditing(null); setTimeout(() => mainRef.current?.focus(), 0); }, [setView, setMode]);
   const promote = useCallback(async () => {
     const c = convRef.current;
@@ -397,7 +418,7 @@ export default function App() {
     setSel((s) => ({ ...s, ...(payload ? { [keyOf(parentId, threadOf)]: tu } : {}), [keyOf(aParent, threadOf)]: ta }));
     setRunning((r) => ({ ...r, [key]: ta }));
     requestAnimationFrame(() => scroller.current?.scrollTo({ top: scroller.current.scrollHeight }));
-    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: modeRef.current }) }).catch(() => null);
+    const res = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ conversationId: cid || undefined, parentId, threadOf, user: payload || undefined, mode: agentModeRef.current !== DEFAULT_MODE ? agentModeRef.current : modeRef.current }) }).catch(() => null);
     if (!res || !res.ok) {
       const err = res ? ((await res.json().catch(() => ({}))) as { error?: string }).error : "Network error";
       setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, pending: false, parts: [{ type: "text", text: `> ${err || "Request failed"}` }] } : m)));
@@ -676,9 +697,12 @@ export default function App() {
     chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
   }, [chipNew]);
   const commands: Command[] = useMemo(() => [
+    { name: "mode", hint: "Switch this chat's mode — chat, search, plan, debug, build, learn, write", run: (arg?: string) => {
+      const id = (arg || "").trim().toLowerCase();
+      if (isMode(id)) chooseMode(id);
+      else mainRef.current?.modes(); // no argument: the input bar expands into the mode picker
+    } },
     { name: "new", hint: "New chat", run: newChat },
-    { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
-    { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
     { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
     { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
@@ -698,7 +722,7 @@ export default function App() {
     { name: "settings", hint: "Model, tools, access, secrets, MCP, skills", panel: "settings" },
     { name: "model", hint: "Provider, model, API key, context budget", panel: "settings", seed: "model" },
     { name: "access", hint: "Files, host terminal, sudo, phone", panel: "settings", seed: "access" },
-  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm]);
+  ], [newChat, linkProject, chipNew, chooseMode, mainPath, loadConv, setTheme, theme, openTerm]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -751,7 +775,8 @@ export default function App() {
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
             procs={procs} onOpenProc={(name) => openTerm({ proc: name })}
-            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
+            mode={agentMode} onMode={chooseMode}
+            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat, modes: MODES, activeMode: agentMode, setMode: chooseMode }} />
           </div>
         </div>
 
