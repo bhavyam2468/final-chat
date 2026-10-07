@@ -44,16 +44,16 @@ export const MODES: Mode[] = [
     label: "Search",
     hint: "Answers from the web, cited — nothing gets written",
     steps: 14,
-    deny: [...WRITES, ...RUNS, "canvas_open", "skill_create", "skill_install", "mcp_add", "mcp_remove", "remember", "forget"],
+    deny: [...WRITES, ...RUNS, "canvas_open", "skill_create", "skill_install", "workflow_save", "mcp_add", "mcp_remove", "remember", "forget"],
     prompt: `Every factual claim in this chat comes from a page opened in this turn. Search first, open the pages, cite them inline as [n](url) with the source date for anything that changes. If a search contradicts what you thought you knew, the page wins and the difference is worth one line.
-This chat writes nothing: no files, no canvases, no memory. A table of what the sources say belongs in the reply as a block; code the user might run belongs in the reply as a code fence. If the user wants something saved or run, say they can switch to Code (or run /mode code) and do it there.`,
+This chat writes nothing: no files, no canvases, no memory. A table of what the sources say belongs in the reply as a block; code the user might run belongs in the reply as a code fence. If the user wants something saved or run, say they can switch to Code (or run /mode code) and do it there.\nFor a question that deserves several sources, start the deep-research workflow (start_workflow) instead of searching step by step: the app does the searching and the reading in the run window, and the cited report comes back into this chat.`,
   },
   {
     id: "plan",
     label: "Plan",
     hint: "Think and structure it — nothing is executed",
     steps: 10,
-    deny: [...WRITES, ...RUNS, "canvas_open", "remember", "forget"],
+    deny: [...WRITES, ...RUNS, "canvas_open", "workflow_save", "remember", "forget"],
     prompt: `This chat plans; it does not do. Read what you need (files, web, the workspace tree) and produce the plan: ordered steps, what each one touches, the decisions that are actually open, the risks and how you would notice them, and what "done" looks like.
 Never edit a file, never run a shell command, never open a canvas. When a decision is the user's, ask it as one question with real options (ask_user) instead of assuming. End by naming the smallest first step, so a yes can turn this plan into work in a Code chat.`,
   },

@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { youtubeId } from "@/lib/shared";
 import { Copy, Check, GitBranch, RotateCcw, MessageSquare, ChevronLeft, ChevronRight, FileText, Search, Globe, Terminal, Code2, FilePen, FolderTree, BookOpen, Layers, Package, Trash2, Plug, AppWindow, X, Monitor, Image as ImageIcon, ListChecks, Play, ScrollText, RotateCw, Square, ShieldCheck, Send, Bookmark } from "lucide-react";
 import { StreamMarkdown, SMComponents } from "@/lib/streammark/StreamMarkdown";
+import { WorkflowCard } from "./Workflow";
 import { Block } from "./Block";
 import { useSmoothText } from "@/lib/streammark/useSmoothText";
 import { Msg, Part, useApp, fileUrl, isExternal } from "./ctx";
@@ -389,15 +390,19 @@ function StreamSilence({ revision, active }: { revision: Part[]; active: boolean
 
 export const AssistantBody = memo(function AssistantBody({ parts, streaming, last, mid, startedAt }: { parts: Part[]; streaming: boolean; last?: boolean; mid?: string; startedAt?: number }) {
   const h = useMdHandlers();
+  const app = useApp();
   const [animate] = useState(streaming); // messages loaded from history render instantly
   if (!parts.length && streaming) return <ThinkingState startedAt={startedAt} />;
   let lastTodo = -1;
   parts.forEach((p, i) => { if (p.type === "tool" && p.name === "todo") lastTodo = i; });
   const visible = parts.map((p, index) => ({ p, index })).filter(({ p }) => p.type !== "reasoning" || !!p.text.trim());
-  const render = ({ p, index }: { p: Part; index: number }, key: string): React.ReactNode => p.type === "text"
+  const render = ({ p, index }: { p: Part; index: number }, key: string): React.ReactNode => p.type === "workflow"
+    ? <WorkflowCard key={key} part={p} onOpen={(id) => app.openCanvas({ kind: "workflow", run: id, title: p.title })} />
+    : p.type === "text"
     ? animate ? <LiveText key={key} text={p.text} streaming={streaming && index === parts.length - 1} h={h} unverified={p.unverified} />
       : <StreamMarkdown key={key} text={p.text} streaming={false} unverified={p.unverified} {...h} />
     : p.type === "reasoning" ? <Reasoning key={key} text={p.text} ms={p.ms} startedAt={p.startedAt} live={streaming && p.ms === undefined && !parts.slice(index + 1).some((x) => x.type === "text")} />
+
       : <ToolCall key={key} p={p} lastTodo={index === lastTodo} live={!!last && !streaming} mid={mid} />;
   const isActivity = (p: Part) => p.type === "tool" || p.type === "reasoning";
   const activePart = ({ p, index }: { p: Part; index: number }) => p.type === "tool" ? p.result === undefined : p.type === "reasoning" && streaming && p.ms === undefined && !parts.slice(index + 1).some((x) => x.type === "text");

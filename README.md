@@ -10,8 +10,9 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 
 | Capability | Description |
 |---|---|
-| **General mode** | New Chat opens a separate General conversation for unrelated questions. It does not auto-search, keeps tool calls visible, and has its own history. "Open in chat" promotes it into normal chat without mixing histories. `/research`, `/background`, `/brief`, `/project`, `/google` remain composer workflows |
+| **General mode** | New Chat opens a separate General conversation for unrelated questions. It does not auto-search, keeps tool calls visible, and has its own history. "Open in chat" promotes it into normal chat without mixing histories. `/workflows`, `/project` and `/google` remain composer workflows (the one-liner research and brief commands became workflows) |
 | **Modes** | `/mode` turns the composer into a picker that focuses the chat on one job (Search, Plan, Code, Learn, Write, Data). A mode is a real tool policy — the tools it refuses are absent from the request — plus a prompt block and an auto-loaded skill. Spec: [`docs/MODES.md`](docs/MODES.md) |
+| **Workflows** | A named procedure the app performs: `workflows/<name>/workflow.md` declares steps the app runs itself (search, open the pages) and one thinking step, with real progress in a window and only the report in the chat. Ships deep research; the agent can save new ones (`workflow_save`) or run them (`start_workflow`). Spec: [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, native flowcharts/trees/outlines, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
@@ -50,7 +51,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `docker-compose.yml` | Starts Postgres 16 and the lightweight SearXNG + Valkey discovery stack (Firecrawl is not included) |
 | `.env` | **Local-only** environment variables (not committed) |
 | `DESIGN.md` | Visual/UX design principles for the app |
-| `workspace/` | Agent's working directory (gitignored). Contains `system/SYSTEM.md`, `system/AGENTS.md` (the user's own standing instructions), `system/skills/`, `system/mcp/servers.json`, `system/memory/` (profile + dated episodes), `uploads/`, `artifacts/`, `notes/`, `chats/` |
+| `workspace/` | Agent's working directory (gitignored). Contains `system/SYSTEM.md`, `system/AGENTS.md` (the user's own standing instructions), `system/skills/`, `system/mcp/servers.json`, `system/memory/` (profile + dated episodes), `workflows/` (the user's and shipped procedures), `.workflows/` (run records and the pages they fetched), `uploads/`, `artifacts/`, `notes/`, `chats/` |
 | `workspace-template/` | Seed files copied into `workspace/` on first run |
 | `public/blocks/` | Standalone Blocks runtime (extended HTML tags, Pyodide, relational style language, backend-neutral live streams) |
 | `agent/` | Reserved for agent-authored scripts/tools |
@@ -81,6 +82,9 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `api/python/route.ts` | POST — run a one-shot Python snippet in workspace |
 | `api/blocks/route.ts` | Streaming NDJSON bridge for sandbox Python, Bash/process output, and resource snapshots |
 | `api/search/route.ts` | GET — search conversations |
+| `api/workflows/route.ts` | GET — the workflow definitions and recent runs; POST — start one (inserts the card, returns at once) |
+| `api/workflows/[id]/route.ts` | GET — a run's record; POST — stop it |
+| `api/workflows/[id]/ui/route.ts` | GET — the workflow's own `ui.html`, if it ships one |
 | `api/health/route.ts` | GET — liveness probe (checks DB connection) |
 | `files/[...path]/route.ts` | GET — serve workspace files over HTTP |
 
@@ -93,7 +97,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `palette.tsx` | The omnibox the input bar expands into: commands, chats, workspace browser, sources, settings, processes, skills |
 | `Message.tsx` | Renders a single message (user or assistant) with tool calls, sources, branches |
 | `Panels.tsx` | Left panel (Chats and separate General history), right panel (workspace file browser) |
-| `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI |
+| `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI; hosts workflow windows |
+| `Workflow.tsx` | The workflow card in the chat and the window body: steps, sources, log, the report, and a workflow's own `ui.html` when it has one |
 | `Block.tsx` | Renders a `<canvas>` block (isolated iframe sandboxed to `/blocks/`) |
 | `Settings.tsx` | Settings panel (in-layout, beside the chat, not a modal): Model, Tools, Access, MCP, Skills |
 | `ctx.ts` | Shared React contexts (conversation, settings, theme) |
@@ -120,6 +125,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | `exec.ts` | Shell/Python/pip execution: bubblewrap sandbox when available, host terminal, sudo gate |
 | `api/blocks` + `public/blocks/runtime.js` | Backend-neutral Blocks bridge: streamed sandbox Bash/Python/process output, tails of explicitly agent-started host processes, and live resource snapshots can feed the same tables/charts |
 | `context.ts` | Scoped compaction (tools, web, messages, history), restore, context reports |
+| `workflows.ts` / `workflow-format.ts` | Workflow engine (runners, the hidden thinking conversation, the card and its report, saves) and the pure format — parser, record, progress, brief |
 | `shared.ts` | Client/server helpers (canvas slugs, YouTube ids) |
 
 ### `src/db/` — Database
@@ -214,8 +220,26 @@ Plain chat stays cheap: a short system prompt, core tools only, no plans or chec
 - **Planning.** `todo` shows a checklist in the chat, and the current step is recited after each tool result. `ask_user` shows option buttons and ends the turn.
 - **Presentation.** Blocks are the native medium, not decoration: `<ui>` first, prose for what a block cannot say. The loop checks each finished answer and gives one round to convert a markdown table (6+ rows), five or more number-carrying bullets, a spec sheet of lines, or a chart linked from `run_python` into blocks (`x-table`, `x-chart`, `x-graph`, `x-stat`, `x-kv`). The reference lives in `system/skills/blocks/SKILL.md`; the rule and examples live in `SYSTEM.md`.
 - **Quality guard.** HTML/CSS/JSX the agent writes is linted for generic AI styling (novelty fonts, neon, purple gradients, glass, emoji headings, marketing copy, helper text). With `fix`, the agent gets one repair round.
-- **Skills (11 shipped, one job each):** blocks (the UI language), canvas, documents (PDF/Office/CSV + sandbox Python), research (search craft, deep research, literature, critique), build (web, React, Electron, Go, Rust, Java, Android, iOS, Flutter), debug, design, memory (remember + context hygiene), extensions (MCP, credentials, skill authoring), terminal (sandbox vs host, home files, sudo), learn. Type `/name` in the composer to force one. The agent can author a skill (`skill_create`) or install one from GitHub (`skill_install`) in chat; Settings → Skills does the same by hand.
+- **Skills (12 shipped, one job each):** blocks (the UI language), canvas, documents (PDF/Office/CSV + sandbox Python), research (search craft, literature, critique), workflows (writing and running repeatable procedures), build (web, React, Electron, Go, Rust, Java, Android, iOS, Flutter), debug, design, memory (remember + context hygiene), extensions (MCP, credentials, skill authoring), terminal (sandbox vs host, home files, sudo), learn. Type `/name` in the composer to force one. The agent can author a skill (`skill_create`) or install one from GitHub (`skill_install`) in chat; Settings → Skills does the same by hand.
   A skill file the user edited is never overwritten; a shipped skill that no longer ships is moved to `.trash/template-updates` when the workspace syncs.
+
+## Workflows
+
+A workflow is a named procedure the app performs: `workspace/workflows/<name>/workflow.md` declares the steps in
+order and the app does the mechanical ones itself — `search` (the same path as the `web_search` tool, so your
+settings are honoured) and `read` (fetch + readability extraction, saved into the run's folder) — then the one
+`agent` step thinks over what was gathered and writes the report. Progress is real because it comes from the work
+rather than from the token stream: a step is done when its work is done.
+
+Start one from `/workflows` in the composer (pick it, type the input), or let the agent start it (`start_workflow`
+— useful in Search mode, where deep research is the only way to save or run anything). The run opens a window
+with the steps, the sources it found and opened, the log and the report; the chat gets the card and then the
+report, and nothing of the process, so what you carry into the next turn is the answer. A workflow can ship its
+own `ui.html` (a Blocks document) to present the run however it likes; a deep-research one does.
+
+The agent writes new workflows with `workflow_save`, which refuses anything the runner could not run (the format
+is small on purpose: front matter, one line per thing). Community workflows are folders — copy one into
+`workspace/workflows/` and it appears in `/workflows`. Full spec: [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md).
 
 ## Queue & Steer
 

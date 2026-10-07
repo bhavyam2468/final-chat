@@ -17,6 +17,7 @@ import { MAX_PARALLEL_PDF_RENDERS, PDF_PREFETCH_RADIUS, PDF_TEXT_RADIUS, pdfPage
 import { createPdfRenderQueue, type PdfRenderJob } from "@/lib/pdf-render-queue";
 import { ChatView } from "./ChatView";
 import { TermView } from "./Terminal";
+import { WorkflowView } from "./Workflow";
 import { edgeAt, moveCanvasRect, peekCanvasRect, resizeCanvasRect, resizeEdgeAt, shouldDockCanvas, type CanvasRect, type PeekSide, type ResizeEdge } from "@/lib/canvas-layout";
 
 export type Rect = CanvasRect;
@@ -45,6 +46,7 @@ export function contentRatio(spec: CanvasSpec): Promise<{ ratio: number; pw?: nu
     if (spec.kind === "youtube" || spec.kind === "web") return done({ ratio: 16 / 9 });
     if (spec.kind === "ui" || spec.kind === "md") return done({ ratio: 16 / 10 });
     if (spec.kind === "term") return done({ ratio: 1.72, pw: 780 });
+    if (spec.kind === "workflow") return done({ ratio: 1.22, pw: 720 });
     if (spec.kind !== "file") return done(null);
     const k = kindOf(spec.path);
     if (k === "video") return done({ ratio: 16 / 9 });
@@ -530,6 +532,7 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spe
   else if (spec.kind === "md") body = <div className="reader"><StreamMarkdown text={spec.body} {...md} /></div>;
   else if (spec.kind === "chat") body = <ChatView id={spec.id} setBar={setBar} />;
   else if (spec.kind === "term") body = <TermView spec={spec} setBar={setBar} />;
+  else if (spec.kind === "workflow") body = <WorkflowView id={spec.run} setBar={setBar} />;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
   else if (k === "image") body = <div className="imgview">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
   else if (k === "pdf") body = <PdfView key={path} path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} active={active} />;

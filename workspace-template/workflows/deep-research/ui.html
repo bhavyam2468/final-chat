@@ -1,0 +1,19 @@
+<ui>
+<x-card :title="run.title">
+  <x-row>
+    <x-text>{{run.status}} · {{run.activity}}</x-text>
+    <x-spacer />
+    <x-badge :tone="run.status === 'done' ? 'success' : 'info'">{{count(run.sources, function (s) { return s.read })}} of {{run.sources.length}} pages</x-badge>
+  </x-row>
+  <x-progress :value="run.progress" max="1" />
+  <ul>
+    <li each="s in run.steps">{{s.title}} — {{s.status}}{{s.detail ? ' · ' + s.detail : ''}}</li>
+  </ul>
+  <x-table dense sortable
+    :data="run.sources.map(function (s) { return { source: s.title, words: s.words || 0, opened: s.read ? 'yes' : 'no' } })"
+    cols="l,r,c" />
+  <x-callout tone="info" title="What it did">
+    <ul><li each="l in run.log">{{l.text}}</li></ul>
+  </x-callout>
+</x-card>
+</ui>

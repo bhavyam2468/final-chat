@@ -9,17 +9,24 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   Hash, FileText, MessageSquare, Folder, FolderOpen, AppWindow, Link2, Settings2, SquareTerminal, BookOpen,
-  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug, Compass, } from "lucide-react";
+  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug, Compass, Waypoints, Clock, } from "lucide-react";
 import { CanvasSpec, ProcInfo, TreeNode, flatFiles, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import type { ConvItem } from "./Panels";
 
-export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills" | "modes";
+export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills" | "modes" | "workflows";
 export type PaletteTab = "model" | "tools" | "access" | "mcp" | "skills";
 export type PaletteCommand = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
+export type WorkflowRunInfo = { id: string; name: string; title: string; input: Record<string, string>; status: string; progress: number; startedAt: number; /** the chat the run reports into, if any */ chat?: string | null };
+export type WorkflowInfo = { name: string; title: string; description: string; inputs: { name: string; label: string; required: boolean }[]; steps: { kind: string; title: string }[]; ok: boolean };
 export type PaletteApi = {
   commands: PaletteCommand[];
+  /** the workflows this workspace has, and the runs it has done */
+  workflows: WorkflowInfo[];
+  runs: WorkflowRunInfo[];
+  /** start one; `input` lands in the workflow's first declared input */
+  startWorkflow: (name: string, input: string) => void;
   /** the mode lens for this chat: what each one is, and which is on */
   modes: { id: string; label: string; hint: string; active: boolean }[];
   setMode: (id: string | null) => void;
@@ -134,6 +141,25 @@ export const Palette = forwardRef<PaletteHandle, {
       for (const c of api.commands) {
         if (q && !c.name.startsWith(q) && !c.hint.toLowerCase().includes(q)) continue;
         out.push({ key: c.name, icon: c.panel ? ChevronRight : Hash, label: "/" + c.name, hint: c.hint, act: () => c.panel ? onPanel(c.panel, c.seed ?? (arg || undefined)) : (collapse(), c.run?.(arg || undefined)), drill: c.panel ? () => onPanel(c.panel!, c.seed ?? (arg || undefined)) : undefined });
+      }
+      return out;
+    }
+    if (mode === "workflows") {
+      for (const w of api.workflows) {
+        if (q && !w.title.toLowerCase().includes(q) && !w.name.startsWith(q) && !w.description.toLowerCase().includes(q)) continue;
+        const ask = w.inputs[0];
+        out.push({
+          key: w.name, icon: Waypoints, label: w.title, hint: w.description,
+          act: () => startEntry("wf:" + w.name, ask?.label || "What should it do?", (v) => { api.startWorkflow(w.name, v); collapse(); }),
+        });
+      }
+      for (const r of api.runs.slice(0, 8)) {
+        if (q && !r.title.toLowerCase().includes(q) && !Object.values(r.input).join(" ").toLowerCase().includes(q)) continue;
+        out.push({
+          key: "run:" + r.id, icon: Clock, label: r.title, group: "Recent runs",
+          hint: `${Object.values(r.input).filter(Boolean).join(" ").slice(0, 60)} · ${r.status}${r.status === "running" ? ` · ${Math.round(r.progress * 100)}%` : ""}`,
+          act: () => { window.dispatchEvent(new CustomEvent("open-workflow", { detail: { run: r.id, title: r.title } })); collapse(); },
+        });
       }
       return out;
     }
@@ -412,7 +438,7 @@ export const Palette = forwardRef<PaletteHandle, {
             </button>,
           ];
         })}
-        {!shown.length && <div className="pal-empty">{mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : mode === "modes" ? (q ? "No mode matches" : "No modes available") : "Nothing matches"}</div>}
+        {!shown.length && <div className="pal-empty">{mode === "processes" ? "No background processes" : mode === "workflows" ? "No workflows yet — they live in workflows/<name>/workflow.md" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : mode === "modes" ? (q ? "No mode matches" : "No modes available") : "Nothing matches"}</div>}
       </div>
       </div>
     </div>

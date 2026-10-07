@@ -205,6 +205,28 @@ function scenario(messages) {
   const afterTool = messages[messages.length - 1]?.role === "tool";
   const g = [...messages].reverse().filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join(" ").match(/guard:(\w+)/);
   if (g && (q.includes("guard:") || /\[automatic|approved|denied/.test(q) || afterTool)) return guard(g[1], messages, q);
+  // a workflow brief (deep research): answer with a cited report built from the sources it was handed
+  if (q.includes("# workflow:") || q.includes("# the workflow's brief")) {
+    const urls = [...q.matchAll(/\[(\d+)\] .+? — (https?:\/\/[^\s]+)/g)].map((m) => m[2]);
+    const list = urls.length ? urls : ["https://docs.example/research"];
+    return { text: `CSS anchor positioning is specified and shipping; the practical changes are in how fallbacks and overflow are handled [1](${list[0]}).\n\n## What changed\n\nThe position-try fallback syntax replaced the older \`position-fallback\` proposal, and \`anchor-scope\` limits which anchors a query can see [2](${list[1] || list[0]}). Browsers that shipped early still accept the older spelling, so feature detection is worth keeping [3](${list[2] || list[0]}).\n\n## Where the sources disagree\n\nOne source calls the fallback ordering deterministic, another describes it as implementation-defined for overlapping candidates; the specification is the tiebreaker [1](${list[0]}), [2](${list[1] || list[0]}).\n\n## Not known\n\nNone of the pages states a date for the last specification change, so the schedule is not settled here.` };
+  }
+  // the workflows pair: save a definition, then run one — enough to exercise both tools end to end
+  if (/^wfsave:/.test(q)) {
+    const name = (q.split(":")[1] || "").trim().split(/\s+/)[0] || "digest";
+    return afterTool ? { text: `Saved workflows/${name}/workflow.md — search, read, then the report.` } : { call: { name: "workflow_save", args: {
+      name, title: "Digest", description: "Searches, opens the pages, writes a short digest with links.",
+      inputs: [{ name: "topic", label: "What should it cover?" }],
+      steps: [{ kind: "search", title: "Find sources", opts: { limit: 5 } }, { kind: "read", title: "Open the pages", opts: { limit: 4 } }, { kind: "agent", title: "Write the digest", opts: { expect: 6 } }],
+      body: "# What this run is for\n\nFive items, newest first, one line each, each with a link.",
+    } } };
+  }
+  if (/^wfrun:/.test(q)) {
+    const rest = (q.split(":")[1] || "").trim();
+    const m = /^(\S+)\s+(.+)$/.exec(rest);
+    const call = { name: "start_workflow", args: { name: m ? m[1] : rest, input: m ? m[2] : "what changed this week" } };
+    return afterTool ? { text: "It is running — the report will land here when it is done." } : { call };
+  }
   if (q.includes("<search_results") && !afterTool) return searchAnswer(q);
   if (q.includes("ui_event")) return { text: "You scored well on mechanics; kinetics and function graphs need work. Next: 10 targeted questions on first-order kinetics and cubic root counting via turning points." };
   if (/jee|mock test/.test(q)) return afterTool ? { text: JEE } : { text: "Checking recent paper patterns.", call: { name: "web_search", args: { query: "JEE Main 2026 question paper pattern physics chemistry maths", limit: 3 } } };
@@ -294,6 +316,19 @@ export async function* stream(j) {
 }
 
 export const models = () => ({ data: [{ id: "mock" }] });
+
+/**
+ * Fake pages for the scrape step: a deep-research run offline still reads real-looking articles, so the
+ * workflow's read step, the sources table and the report all have something to chew on. .example domains.
+ */
+export function scrape(j) {
+  const url = String(j.url || "");
+  const m = url.match(/^https:\/\/([^/]+)\/(.*)$/);
+  const host = m ? m[1] : "docs.example";
+  const slug = (m ? m[2] : "").replace(/[^a-z0-9-]+/gi, " ").trim() || "overview";
+  const paras = Array.from({ length: 6 }, (_, i) => `## ${slug} (part ${i + 1})\n\n${host} covers ${slug} in some detail. Paragraph ${i + 1} states the position, gives a number someone would quote (${10 + i * 7}% in ${2000 + i * 4}), and names the trade-off: the short path is faster, the long path is cheaper to change. It also notes when that changed, and what the previous guidance was.\n\n- point ${i + 1}.1 with a figure\n- point ${i + 1}.2 with a caveat`);
+  return { data: { markdown: `# ${slug} — ${host}\n\n${paras.join("\n\n")}`, metadata: { title: `${slug} — ${host}` } } };
+}
 
 /** Fake Firecrawl /v1/search (search mode offline). Domains are .example so nothing real is ever linked. */
 export function search(j) {

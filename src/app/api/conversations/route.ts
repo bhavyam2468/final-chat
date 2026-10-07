@@ -9,7 +9,8 @@ export async function GET() {
   const msgs = await db.select({ id: messages.id, c: messages.conversationId, p: messages.parentId, role: messages.role, content: messages.content }).from(messages).where(isNull(messages.threadOf));
   const byConv = new Map<string, typeof msgs>();
   for (const m of msgs) { if (!byConv.has(m.c)) byConv.set(m.c, []); byConv.get(m.c)!.push(m); }
-  return Response.json(convs.map((c) => {
+  // a workflow's process conversation is not a chat: it belongs to the run, and the window opens it
+  return Response.json(convs.filter((c) => !c.state?.workflow).map((c) => {
     const ms = byConv.get(c.id) || [];
     const hasChild = new Set(ms.map((m) => m.p));
     const by = new Map(ms.map((m) => [m.id, m]));

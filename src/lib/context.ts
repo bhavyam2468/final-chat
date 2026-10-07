@@ -38,7 +38,8 @@ export function toolText(p: ToolPart, short = false) {
 }
 export function assistantText(m: Msg, short = false) {
   // reasoning is never re-sent: it is large, and replaying it degrades later answers
-  return m.parts.map((p) => (p.type === "text" ? p.text : p.type === "tool" ? toolText(p, short) : "")).filter(Boolean).join("\n");
+  const hasText = m.parts.some((p) => p.type === "text" && p.text.trim());
+  return m.parts.map((p) => p.type === "text" ? p.text : p.type === "tool" ? toolText(p, short) : p.type === "workflow" && !hasText ? `[workflow ${p.title}: ${p.input}]` : "").filter(Boolean).join("\n");
 }
 export function toolTokens(m: Msg) {
   return m.parts.reduce((a, p) => a + (p.type === "tool" ? est(toolText(p)) : 0), 0);

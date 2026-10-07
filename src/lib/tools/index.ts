@@ -24,6 +24,7 @@ import { banPackages, installNames, noteMissing, shellPreflight } from "../harne
 import { ensureProject, projectSlug } from "../projects";
 import { adb, adbShot, phoneOff } from "../phone";
 import { createHash } from "crypto";
+import { saveWorkflow, startInChat } from "../workflows";
 import os from "os";
 import type { ModeId } from "../modes";
 
@@ -83,6 +84,8 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("diff_since", "Files changed in this chat's folder (and the linked project) in the last N hours", { hours: n("default 24") }),
     T("canvas_open", "Open a file, web page or YouTube URL in a canvas. It uses the free sidebar automatically and floats if occupied; set dock=false to force floating or dock=true to request the sidebar.", { target: s("path or URL"), title: s(), dock: b("request sidebar; defaults to automatic") }, ["target"]),
     T("ui_search", "Find BlocksUI components. Do not invent a tag; if it is not in the system prompt, search here", { query: s() }, ["query"]),
+    T("start_workflow", "Run a workflow from workflows/<name>/ — the app performs its steps in the background and the report arrives in this chat as its own message. Returns at once: do not wait, and do not do the same work yourself", { name: s("workflow name, e.g. deep-research"), input: s("the question or input for this run") }, ["name"]),
+    T("workflow_save", "Create or update a workflow: a named procedure the app can perform again. search/read steps do the fetching, the last agent step thinks and writes the report", { name: s("one word, e.g. deep-research"), title: s(), description: s("one line, shown in the workflow list"), inputs: arr({ type: "object", properties: { name: s("one word"), label: s("what the user is asked for when it starts"), optional: b() } }, "usually one: the question the run is about"), steps: arr({ type: "object", properties: { kind: { type: "string", enum: ["search", "read", "agent"] }, title: s("what this step is called in the window"), opts: { type: "object", properties: { query: s("search: one or more queries, ; separated"), limit: n("search: results to keep / read: pages to open"), parallel: n("read: pages fetched at once"), expect: n("agent: tool calls to expect, for the progress bar") } } } }, "in order; the agent step is last"), body: s("markdown brief: what the run is for, how the answer should read, what to cite"), overwrite: b() }, ["name", "steps", "body"]),
   ];
   const phone: ToolDef[] = st.phone ? [
     T("adb_devices", "List Android devices. Phone testing must already be on", {}, []),
@@ -603,6 +606,29 @@ They can also press Connect in Settings → MCP.` : "";
         return { ok: true, stop: true, result: "Shown to the user. Stop here; the answer arrives as the next message.", meta: { question: String(a.question || ""), options, multi: !!a.multi } };
       }
       case "ui_search": return { ok: true, result: searchCatalog(a.query) };
+      case "start_workflow": {
+        const input = typeof a.input === "string" ? { question: a.input } : { ...((a.input || {}) as Record<string, string>) };
+        const { run } = await startInChat(String(a.name || "").trim(), input, ctx.conversationId);
+        const first = Object.values(run.input)[0] || "";
+        return {
+          ok: true,
+          result: `Started "${run.title}" (run ${run.id})${first ? ` on: ${first}` : ""}. It works in the background — the bar is in its window and the report will appear in this chat as its own message. Tell the user it is running; do not do this work yourself${" "}and do not wait for it.`,
+          meta: { run: run.id, workflow: run.name, title: run.title },
+        };
+      }
+      case "workflow_save": {
+        const def = await saveWorkflow({
+          name: String(a.name || ""), title: a.title, description: a.description,
+          inputs: Array.isArray(a.inputs) ? a.inputs : [],
+          steps: Array.isArray(a.steps) ? a.steps : [],
+          body: String(a.body || ""), overwrite: !!a.overwrite,
+        });
+        return {
+          ok: true,
+          result: `Saved workflows/${def.name}/workflow.md. Steps: ${def.steps.map((x) => `${x.kind}${x.title ? ` (${x.title})` : ""}`).join(" → ")}${def.inputs.length ? `. Inputs: ${def.inputs.map((i) => i.name).join(", ")}` : ""}. Run it with start_workflow, or the user picks it in /workflows.`,
+          meta: { workflow: def.name, steps: def.steps.map((x) => x.kind), inputs: def.inputs.map((i) => i.name) },
+        };
+      }
       case "proc_start": return await procStart(st, { name: String(a.name || "app"), command: String(a.command || ""), cwd: a.cwd, host: !!a.host, wait: a.wait !== undefined ? Number(a.wait) : undefined, env: (a.env && typeof a.env === "object" ? Object.fromEntries(Object.entries(a.env as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : undefined) });
       case "proc_logs": return await procLogs({ name: a.name, tail: Number(a.tail) || undefined, grep: a.grep, wait_for: a.wait_for, pattern: a.pattern, timeout: Number(a.timeout) || undefined });
       case "proc_wait": return await procWait({ name: String(a.name || ""), until: a.until, pattern: a.pattern, timeout: Number(a.timeout) || undefined });

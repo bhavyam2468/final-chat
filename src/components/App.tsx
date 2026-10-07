@@ -5,6 +5,7 @@ import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, ProcInfo, QueueI
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
 import { MODES, isModeId } from "@/lib/modes";
+import type { WorkflowInfo as PaletteWorkflow, WorkflowRunInfo as PaletteRun } from "./palette";
 import { chatDir } from "@/lib/shared";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win, contentRatio } from "./Canvas";
@@ -331,6 +332,12 @@ export default function App() {
             setSel((x) => ({ ...x, [keyOf(spid, null)]: sid }));
           }
           else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, { dock: e.dock }); }
+          else if (e.t === "workflow-open") { if (viewRef.current === key) openCanvasRef.current({ kind: "workflow", run: String(e.run), title: String(e.title || "Workflow") }); void refreshWfRef.current(); }
+          else if (e.t === "workflow-done") {
+            // the report is already appended to the card message: take the saved copy so it shows
+            if (viewRef.current === key) fetch(`/api/conversations/${key}`).then((r) => r.json()).then((j) => { if (j.messages && !runningRef.current[key]) setMsgsFor(key, () => j.messages); }).catch(() => {});
+            void refreshWfRef.current();
+          }
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
           else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, status: undefined, live: undefined } : x))); refreshTree(); }
           else if (e.t === "context") { if (viewRef.current === key) setConv((c) => (c ? { ...c, context: e.context } : c)); }
@@ -350,6 +357,7 @@ export default function App() {
       setQueuesFor(key, (q) => q.slice(1));
       sendRef.current(key, { content: cur[0].content, attachments: cur[0].attachments, quote: null }, mainLeafId(key), null);
     }, 650);
+    void refreshWfRef.current(); // a turn may have started a workflow: the card and the run list are due
     // the server saved the final message (partial if stopped) before it reported done: take the saved copy
     if (!key.startsWith("new:")) fetch(`/api/conversations/${key}`).then((r) => r.json()).then((j) => { if (!j.messages || runningRef.current[key]) return; setMsgsFor(key, () => j.messages); if (viewRef.current === key) { const c = withMode(j.conversation); setConv(c); if (c.mode) { modeRef.current = c.mode; setSurface(c.mode); } } }).catch(() => {});
   }, [setMsgsFor, setRunning, setView, refreshConvs, refreshTree]);
@@ -450,6 +458,12 @@ export default function App() {
   // ---- canvases
   // a window is sized around its content: a 16:9 image opens as a ~16:9 window hugging it, centred,
   // with just a little padding — never a generic box the content floats around
+  useEffect(() => {
+    const onOpen = (e: Event) => { const d = (e as CustomEvent).detail as { run: string; title?: string }; if (d?.run) openCanvasRef.current({ kind: "workflow", run: d.run, title: d.title || "Workflow" }); };
+    window.addEventListener("open-workflow", onOpen);
+    return () => window.removeEventListener("open-workflow", onOpen);
+  }, []);
+
   const openCanvas = useCallback((spec: CanvasSpec, o?: OpenOpts) => {
     const remember = () => {
       const k = viewRef.current; if (k.startsWith("new:")) return;
@@ -698,13 +712,67 @@ export default function App() {
   const modeList = useMemo(() => MODES.map((m) => ({ id: m.id as string, label: m.label, hint: m.hint, active: (conv?.state?.mode ?? pending) === m.id })), [conv?.state?.mode, pending]);
   const activeMode = isModeId(conv?.state?.mode) ? conv!.state!.mode! : pending;
 
+  // workflows: the definitions live in the workspace (workflows/<name>/workflow.md), the runs on disk
+  const [wf, setWf] = useState<{ workflows: PaletteWorkflow[]; runs: PaletteRun[] }>({ workflows: [], runs: [] });
+  const refreshWf = useCallback(async () => {
+    const j = await fetch("/api/workflows").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (j) setWf({ workflows: j.workflows || [], runs: j.runs || [] });
+  }, []);
+  useEffect(() => { void refreshWf(); }, [refreshWf]);
+  // A run finishing has to land in the conversation that owns it (the report is appended to the card there),
+  // and the run itself is not a stream we can subscribe to, so we keep the catalog warm while anything runs
+  // and re-read the owning chat the moment a run settles.
+  useEffect(() => { if (!wf.runs.some((r) => r.status === "running")) return; const t = setInterval(refreshWf, 2500); return () => clearInterval(t); }, [wf.runs, refreshWf]);
+  const settled = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    // runs that had already finished when the catalog first arrived are history (their report is in the chat);
+    // a run that was still going when the page opened is not, so its ending is worth re-reading for
+    if (!settled.current) settled.current = new Set(wf.runs.filter((r) => r.status !== "running").map((r) => r.id));
+    for (const r of wf.runs) {
+      if (r.status === "running" || settled.current.has(r.id) || !r.chat) continue;
+      settled.current.add(r.id);
+      const cid = r.chat;
+      // a live answer is rewriting this chat, so wait for it: it would clobber the new parts otherwise
+      const take = async (left = 6): Promise<boolean> => {
+        if (!runningRef.current[cid]) {
+          const j = await fetch(`/api/conversations/${cid}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+          if (j?.messages && !runningRef.current[cid]) { setMsgsFor(cid, () => j.messages); return true; }
+        }
+        if (left > 0) { await new Promise((r) => setTimeout(r, 3000)); return take(left - 1); }
+        return false;
+      };
+      void take();
+    }
+  }, [wf.runs, setMsgsFor]);
+
+  const startWorkflow = useCallback(async (name: string, input: string) => {
+    const cid = convRef.current?.id;
+    const r = await fetch("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, input: { question: input }, conversationId: cid }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.run) { void sendMain({ content: `The workflow could not start: ${j.error || r.statusText}`, attachments: [], quote: null }); return; }
+    // started from a chat that does not exist yet: the server made one, and we follow the run into it
+    if (j.chat && j.chat !== cid) { openCanvas({ kind: "workflow", run: j.run.id, title: j.run.title }); await loadConvRef.current(j.chat); void refreshWf(); return; }
+    // the card joins the conversation the moment the run starts, so it is visible while the work happens
+    if (cid && j.messageId) {
+      const key = viewRef.current;
+      const parent = mainLeafId(key);
+      const part = { type: "workflow" as const, run: j.run.id as string, name: name, title: j.run.title as string, input };
+      setMsgsFor(key, (ms) => [...ms, { id: j.messageId, conversationId: cid, parentId: parent, threadOf: null, role: "assistant" as const, content: "", parts: [part], attachments: [], quote: null, createdAt: new Date().toISOString() }]);
+      setSel((x) => ({ ...x, [keyOf(parent, null)]: j.messageId as string }));
+    }
+    openCanvas({ kind: "workflow", run: j.run.id, title: j.run.title });
+    void refreshWf();
+  }, [openCanvas, refreshWf, sendMain, mainLeafId, setMsgsFor, setSel]);
+
+  const refreshWfRef = useRef(refreshWf); refreshWfRef.current = refreshWf;
+  const loadConvRef = useRef(loadConv); loadConvRef.current = loadConv;
+
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
     { name: "mode", hint: activeMode ? `Mode: ${MODES.find((m) => m.id === activeMode)?.label} — change or leave it` : "Focus this chat on one job", panel: "modes" },
     ...MODES.map((m) => ({ name: "mode " + m.id, hint: m.hint, run: () => { void setChatMode(activeMode === m.id ? null : m.id); } })),
-    { name: "research", hint: "Deep research in a new chat", run: (arg?: string) => chipNew("chat", "Research this. Search, open the pages, cite only those, and put the report in a canvas.\n\n" + (arg || "")) },
-    { name: "background", hint: "Keep working if I switch chats", run: (arg?: string) => chipNew("chat", "Do this to completion even if I switch chats. Write the result in this chat's artifacts folder and end with where it is.\n\n" + (arg || "")) },
-    { name: "brief", hint: "Morning brief", run: (arg?: string) => { localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10)); setOfferBrief(false); chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n" + (arg || "")); } },
+    { name: "workflows", hint: wf.runs.some((r) => r.status === "running") ? "Run a workflow, or watch the one that is running" : "Run a workflow: research, brief, a pipeline of your own", panel: "workflows" },
+    ...wf.workflows.filter((w) => w.ok).map((w): Command => ({ name: "run " + w.name, hint: w.description || w.title, run: (arg?: string) => { void startWorkflow(w.name, arg || ""); } })),
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
     { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
     { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
@@ -723,7 +791,7 @@ export default function App() {
     { name: "settings", hint: "Model, tools, access, secrets, MCP, skills", panel: "settings" },
     { name: "model", hint: "Provider, model, API key, context budget", panel: "settings", seed: "model" },
     { name: "access", hint: "Files, host terminal, sudo, phone", panel: "settings", seed: "access" },
-  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, activeMode, setChatMode]);
+  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, activeMode, setChatMode, wf, startWorkflow]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -777,7 +845,7 @@ export default function App() {
             activeMode={activeMode} onMode={(id) => { void setChatMode(id); }}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
             procs={procs} onOpenProc={(name) => openTerm({ proc: name })}
-            palette={{ commands, modes: modeList, setMode: (id) => { void setChatMode(id); }, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
+            palette={{ commands, modes: modeList, setMode: (id) => { void setChatMode(id); }, workflows: wf.workflows, runs: wf.runs, startWorkflow, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
           </div>
         </div>
 

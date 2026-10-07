@@ -8,7 +8,7 @@ export const conversations = pgTable("conversations", {
   summary: text("summary"),
   summaryUpTo: text("summary_up_to"),
   /** Harness state: loaded tool packs (kept so the tool list stays stable across turns) and the task checklist. */
-  state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[]; approved?: string[]; mode?: ModeId | "chat" | "general" | "search"; project?: string }>().notNull().default({}),
+  state: jsonb("state").$type<{ packs?: "dev"[]; todo?: { text: string; status: "todo" | "doing" | "done" }[]; approved?: string[]; /** a workflow's hidden process conversation: the definition it ran, and the run id */ workflow?: string; run?: string; mode?: ModeId | "chat" | "general" | "search"; project?: string }>().notNull().default({}),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -16,7 +16,9 @@ export const conversations = pgTable("conversations", {
 export type Part =
   | { type: "text"; text: string; unverified?: string[] }
   | { type: "reasoning"; id?: string; text: string; ms?: number; startedAt?: number }
-  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string };
+  | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string }
+  /** a workflow run: the card in the chat, and the pointer to the window that holds the process */
+  | { type: "workflow"; run: string; name: string; title: string; input: string };
 
 export type Attachment = { path: string; name: string; mime: string; size: number };
 
