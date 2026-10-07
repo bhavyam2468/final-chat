@@ -7,7 +7,7 @@ import { Palette, PaletteHandle, PaletteMode, PaletteApi } from "./palette";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
 export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
-export type Command = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; run: (arg?: string) => void };
+export type Command = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 type Chip = Attachment & { loading?: boolean; key: string; preview?: string };
 
@@ -232,11 +232,14 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // omnibox navigation first: the palette owns the arrow keys while it is open
     if (mode) {
-      if (e.key === "Escape") { e.preventDefault(); collapsePalette(!["commands", "files"].includes(mode)); return; }
-      if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Tab", "Enter"].includes(e.key) && !(e.key === "Enter" && (e.metaKey || e.ctrlKey))) {
-        if (palRef.current?.key(e)) { e.preventDefault(); return; }
+      if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Tab", "Enter", "Escape"].includes(e.key) && !(e.key === "Enter" && (e.metaKey || e.ctrlKey))) {
+        if (palRef.current?.key(e)) { e.preventDefault(); return; } // Esc while entering a value cancels the entry instead of closing
       }
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && hasContent) { e.preventDefault(); steerNow(); return; }
+      if (e.key === "Escape") { e.preventDefault(); collapsePalette(!["commands", "files"].includes(mode)); return; }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        if (palRef.current?.entering()) { e.preventDefault(); return; } // a settings value owns the bar right now
+        if (hasContent) { e.preventDefault(); steerNow(); return; }
+      }
       return; // typing filters; other keys behave as usual
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -281,18 +284,17 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     <div className={`composer${open ? " open" : ""}${p.inline ? " inline" : ""}${drag ? " drag" : ""}${mode && paletteApi ? " pal-open" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
-      {mode && paletteApi && <Palette ref={palRef} mode={mode} query={palQuery} arg={palArg} api={paletteApi} collapse={() => collapsePalette(false)} onPanel={openPanel} />}
+      {mode && paletteApi && <Palette ref={palRef} mode={mode} query={palQuery} arg={palArg} api={paletteApi} collapse={() => collapsePalette(false)} onPanel={openPanel} setInput={(t) => { setText(t); setCaret(t.length); }} />}
       {!!p.queue?.length && <div className="qstrip">
-        <div className="qstrip-head"><Inbox size={12} /><span>{p.queue.length} queued — sends after this reply</span><span className="sp" /><span className="qhint"><kbd>⏎</kbd> steer newest · <kbd>↑</kbd> edit</span></div>
+        <div className="qstrip-head"><Inbox size={12} /><span>{p.queue.length} queued</span></div>
         {p.queue.map((it, i) => (
           <div key={it.id} className={"qitem" + (editingQ === it.id ? " editing" : "")}>
             <span className="q-n">{i + 1}</span>
-            <button className="q-body" onMouseDown={(e) => e.preventDefault()} onClick={() => editQueued(it)} title="Edit">
+            <button className="q-body" onMouseDown={(e) => e.preventDefault()} onClick={() => editQueued(it)}>
               <span className="q-text">{it.content || it.attachments.map((a) => a.name).join(", ")}</span>
-              {i === p.queue!.length - 1 && <span className="q-hint"><kbd>⏎</kbd> steer now</span>}
             </button>
-            <button className="ib sm" aria-label="Steer now" title="Steer now" onClick={() => { if (editingQ === it.id) { setEditingQ(null); setText(""); } p.onSteerQueued?.(it.id); }}><Zap /></button>
-            <button className="ib sm" aria-label="Remove from queue" title="Remove" onClick={() => { if (editingQ === it.id) { setEditingQ(null); setText(""); } p.onDequeue?.(it.id); }}><X /></button>
+            <button className="ib sm" aria-label="Steer now" onClick={() => { if (editingQ === it.id) { setEditingQ(null); setText(""); } p.onSteerQueued?.(it.id); }}><Zap /></button>
+            <button className="ib sm" aria-label="Remove from queue" onClick={() => { if (editingQ === it.id) { setEditingQ(null); setText(""); } p.onDequeue?.(it.id); }}><X /></button>
           </div>
         ))}
       </div>}
@@ -323,9 +325,9 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
         <span className={"send-slot" + (p.streaming ? " two" : "")}>
           {p.streaming ? (
             <>
-              {canQueue && <button className="send ghost" aria-label="Steer now" title="Steer now (⌘⏎)" onClick={steerNow}><Navigation /></button>}
-              {canQueue ? <button className="send" aria-label="Queue message" title="Queue — sends after this reply (⏎)" onClick={queueIt}><ArrowDownToLine /></button>
-                : p.queue?.length ? <button className="send" aria-label="Steer queued message" title="Steer the queued message now (⏎)" onClick={() => p.onSteerQueued?.(p.queue![p.queue!.length - 1].id)}><Zap /></button>
+              {canQueue && <button className="send ghost" aria-label="Steer now" onClick={steerNow}><Navigation /></button>}
+              {canQueue ? <button className="send" aria-label="Queue message" onClick={queueIt}><ArrowDownToLine /></button>
+                : p.queue?.length ? <button className="send" aria-label="Steer queued message" onClick={() => p.onSteerQueued?.(p.queue![p.queue!.length - 1].id)}><Zap /></button>
                 : <span className="send-placeholder" aria-hidden="true" />}
             </>
           ) : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button>

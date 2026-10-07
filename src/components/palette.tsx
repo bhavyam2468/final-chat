@@ -3,18 +3,20 @@
    Typing "/" lists commands; picking a navigational one (/chats, /workspace, /settings, /processes…)
    turns the input itself into that surface's search field — arrow keys move, Right drills in
    (folders, then per-file actions), Left backs out, Enter acts, Esc collapses back to the message.
+   Settings work the same way: /settings (or /model) browses the real settings; rows toggle on Enter,
+   and value rows hand the input bar over for typing (Enter saves, Esc cancels).
    It is not a second mode of the app: every list here is the same data the mouse panels show. */
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   Hash, FileText, MessageSquare, Folder, FolderOpen, AppWindow, Link2, Settings2, SquareTerminal, BookOpen,
-  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, } from "lucide-react";
+  Layers, Trash2, Pin, PinOff, Zap, RotateCw, Plus, Monitor, CornerLeftUp, ChevronRight, Check, X, KeyRound, Wrench, Shield, Plug, } from "lucide-react";
 import { CanvasSpec, ProcInfo, TreeNode, flatFiles, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import type { ConvItem } from "./Panels";
 
 export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills";
 export type PaletteTab = "model" | "tools" | "access" | "mcp" | "skills";
-export type PaletteCommand = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; run: (arg?: string) => void };
+export type PaletteCommand = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 export type PaletteApi = {
   commands: PaletteCommand[];
@@ -26,7 +28,6 @@ export type PaletteApi = {
   hostTerm: boolean;
   openChat: (id: string, msg?: string) => void;
   deleteChat: (id: string) => void;
-  openSettings: (tab?: PaletteTab) => void;
   /** insert "@path " into the message (files mode) */
   mention: (path: string) => void;
   /** put a workspace file onto the composer as an attachment chip */
@@ -37,6 +38,14 @@ type Row = {
   key: string; icon: typeof FileText; label: string; hint?: string; group?: string;
   act: () => void; drill?: () => void; dim?: boolean; live?: boolean; danger?: boolean;
 };
+
+type SetPack = {
+  s: Record<string, any>;
+  presets: Record<string, { baseUrl: string; model: string; contextTokens?: number }>;
+  caps: { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked: boolean } | null;
+};
+type Entry = { key: string; label: string; prev: string; secret?: boolean; commit: (v: string) => void };
+const SET_SECS = ["model", "tools", "access", "secrets", "mcp"];
 
 const findNode = (ns: TreeNode[], path: string): TreeNode | null => {
   for (const n of ns) { if (n.path === path) return n; if (n.dir && path.startsWith(n.path + "/")) { const f = findNode(n.children || [], path); if (f) return f; } }
@@ -53,23 +62,35 @@ const fileActs = (path: string, app: ReturnType<typeof useApp>, api: PaletteApi,
   return rows;
 };
 
-export type PaletteHandle = { key: (e: React.KeyboardEvent) => boolean; reset: () => void };
+export type PaletteHandle = { key: (e: React.KeyboardEvent) => boolean; reset: () => void; entering: () => boolean };
 
 export const Palette = forwardRef<PaletteHandle, {
   mode: PaletteMode; query: string; arg?: string; api: PaletteApi; collapse: () => void; onPanel: (m: PaletteMode, seed?: string) => void;
-}>(function Palette({ mode, query, arg, api, collapse, onPanel }, ref) {
+  /** put text into the input bar (settings value entry hands the bar over and takes it back) */
+  setInput?: (t: string) => void;
+}>(function Palette({ mode, query, arg, api, collapse, onPanel, setInput }, ref) {
   const app = useApp();
   const [idx, setIdx] = useState(0);
   const [cwd, setCwd] = useState<string | null>(null); // null = follow the chat (same rule as WorkspacePanel)
   const [acts, setActs] = useState<Row[] | null>(null);
   const [actsTitle, setActsTitle] = useState("");
   const [hits, setHits] = useState<{ convId: string; title: string; messageId: string; snippet: string }[]>([]);
-  const [skills, setSkills] = useState<{ name: string; description: string; requires?: string }[] | null>(null);
+  const [skills, setSkills] = useState<{ name: string; description: string; requires?: string; builtin?: boolean }[] | null>(null);
+  // settings browser: section level + a value-entry that borrows the input bar
+  const [sec, setSec] = useState<string | null>(null);
+  const [entry, setEntry] = useState<Entry | null>(null);
+  const [set, setSet] = useState<SetPack | null>(null);
+  const [mcp, setMcp] = useState<Record<string, { url?: string; command?: string; args?: string[]; enabled: boolean }> | null>(null);
+  const [mkt, setMkt] = useState<{ mcp?: { id: string; title: string; description?: string; oauth?: boolean; installed?: boolean; missingBin?: string }[] } | null>(null);
+  const [pick, setPick] = useState<{ source: string; available: string[] } | null>(null);
+  const [pendSecret, setPendSecret] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   // each mode opens fresh
-  useEffect(() => { setIdx(0); setActs(null); setHits([]); }, [mode]);
+  useEffect(() => { setIdx(0); setActs(null); setHits([]); setSec(null); setEntry(null); setPick(null); setPendSecret(null); }, [mode]);
   useEffect(() => { setIdx(0); }, [query, cwd]);
+  // /settings model — a command can seed the section directly
+  useEffect(() => { if (mode === "settings") setSec(arg && SET_SECS.includes(arg) ? arg : null); }, [mode, arg]);
   // chats: full-text matches ride along under the title matches
   useEffect(() => {
     if (mode !== "chats" || query.trim().length < 2) { setHits([]); return; }
@@ -80,17 +101,36 @@ export const Palette = forwardRef<PaletteHandle, {
     if (mode !== "skills" || skills) return;
     fetch("/api/skills").then((r) => r.json()).then((j) => Array.isArray(j) && setSkills(j)).catch(() => setSkills([]));
   }, [mode, skills]);
+  useEffect(() => {
+    if (mode !== "settings" || set) return;
+    fetch("/api/settings").then((r) => r.json()).then((j) => setSet({ s: j.settings, presets: j.presets, caps: j.caps || null })).catch(() => {});
+  }, [mode, set]);
+  useEffect(() => {
+    if (mode !== "settings" || sec !== "mcp" || mcp) return;
+    fetch("/api/mcp").then((r) => r.json()).then(setMcp).catch(() => setMcp({}));
+    fetch("/api/market").then((r) => r.json()).then(setMkt).catch(() => {});
+  }, [mode, sec, mcp]);
   useEffect(() => { const el = listRef.current?.querySelector(`[data-i="${idx}"]`); el?.scrollIntoView({ block: "nearest" }); }, [idx]);
 
   const q = query.trim().toLowerCase();
   const dir = cwd === null ? (app.convId ? chatDir(app.convId) : "") : cwd;
+
+  const saveS = async (patch: Record<string, unknown>) => {
+    const r = await fetch("/api/settings", { method: "PUT", body: JSON.stringify(patch) }).then((x) => x.json()).catch(() => null);
+    if (r?.settings) setSet((old) => (old ? { ...old, s: r.settings } : old));
+  };
+  const putMcp = async (next: Record<string, unknown>) => { setMcp(next as typeof mcp); await fetch("/api/mcp", { method: "PUT", body: JSON.stringify(next) }).catch(() => {}); };
+  const refetchMcp = () => { setMcp(null); };
+  /** borrow the input bar for typing a value; Enter commits, Esc restores the previous text */
+  const startEntry = (key: string, label: string, commit: (v: string) => void, secret = false) =>
+    setEntry({ key, label, prev: query, secret, commit });
 
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
     if (mode === "commands") {
       for (const c of api.commands) {
         if (q && !c.name.startsWith(q) && !c.hint.toLowerCase().includes(q)) continue;
-        out.push({ key: c.name, icon: c.panel ? ChevronRight : Hash, label: "/" + c.name, hint: c.hint, act: () => c.panel ? onPanel(c.panel, arg || undefined) : (collapse(), c.run(arg || undefined)), drill: c.panel ? () => onPanel(c.panel!, arg || undefined) : undefined });
+        out.push({ key: c.name, icon: c.panel ? ChevronRight : Hash, label: "/" + c.name, hint: c.hint, act: () => c.panel ? onPanel(c.panel, c.seed ?? (arg || undefined)) : (collapse(), c.run?.(arg || undefined)), drill: c.panel ? () => onPanel(c.panel!, c.seed ?? (arg || undefined)) : undefined });
       }
       return out;
     }
@@ -148,16 +188,91 @@ export const Palette = forwardRef<PaletteHandle, {
       return out;
     }
     if (mode === "settings") {
-      const secs: [PaletteTab, string, string, typeof FileText][] = [
-        ["model", "Model", "provider, base url, key, context budget", Settings2],
-        ["tools", "Tools", "tool loading, vision, quality guard", Zap],
-        ["access", "Access", "files, host terminal, sudo, phone", FolderOpen],
-        ["mcp", "MCP", "connect servers and sign in", Layers],
-        ["skills", "Skills", "installed skills, install from GitHub", BookOpen],
-      ];
-      for (const [tab, label, hint, icon] of secs) {
-        if (q && !label.toLowerCase().includes(q)) continue;
-        out.push({ key: tab, icon, label, hint, act: () => { api.openSettings(tab); collapse(); }, drill: () => { api.openSettings(tab); collapse(); } });
+      if (!set) return [{ key: "loading", icon: Settings2, label: "Loading settings…", act: () => {} }];
+      const s = set.s, caps = set.caps;
+      const tog = (key: string, label: string, on: boolean, run: () => void, hint?: string, dim = false): Row =>
+        ({ key, icon: on ? Check : X, label, hint: hint ?? (on ? "on" : "off"), act: () => { if (!dim) run(); }, dim });
+      if (!sec) {
+        const secs: [string, string, string, typeof FileText][] = [
+          ["model", "Model", "provider, model, key, context budget", Settings2],
+          ["tools", "Tools", "search, quality guard, tool loading, secrets", Wrench],
+          ["access", "Access", "files, host terminal, sudo, phone", Shield],
+          ["secrets", "Secrets", "SUDO_PASSWORD, API keys for MCP", KeyRound],
+          ["mcp", "MCP", "connect servers and sign in", Plug],
+        ];
+        for (const [name, label, hint, icon] of secs) {
+          if (q && !label.toLowerCase().includes(q)) continue;
+          out.push({ key: name, icon, label, hint, act: () => { setSec(name); setIdx(0); }, drill: () => { setSec(name); setIdx(0); } });
+        }
+        out.push({ key: "skills", icon: BookOpen, label: "Skills", hint: "installed skills, install from GitHub", act: () => onPanel("skills"), drill: () => onPanel("skills") });
+        return out;
+      }
+      if (sec === "model") {
+        out.push({ key: "provider", icon: Settings2, label: "Provider", hint: String(s.provider || ""), drill: () => { setActs(setPresets(set, s, saveS)); setActsTitle("Provider"); }, act: () => { setActs(setPresets(set, s, saveS)); setActsTitle("Provider"); } });
+        out.push({ key: "baseUrl", icon: Link2, label: "Base URL", hint: String(s.baseUrl || "not set"), act: () => startEntry("baseUrl", "Base URL", (v) => v && saveS({ baseUrl: v })) });
+        out.push({ key: "apiKey", icon: KeyRound, label: "API key", hint: s.apiKey ? "saved (" + String(s.apiKey).slice(-4) + ")" : "not set", act: () => startEntry("apiKey", "API key", (v) => v && !v.startsWith("••••") && saveS({ apiKey: v }), true) });
+        out.push({ key: "model", icon: FileText, label: "Model", hint: String(s.model || "not set"), act: () => startEntry("model", "Model", (v) => v && saveS({ model: v })) });
+        out.push({ key: "contextTokens", icon: Layers, label: "Context window", hint: Number(s.contextTokens).toLocaleString() + " tokens", act: () => startEntry("contextTokens", "Context window (tokens)", (v) => { const n = Number(v.replace(/[_,\s]/g, "")); if (n > 0) saveS({ contextTokens: n }); }) });
+        out.push({ key: "workingTokens", icon: Layers, label: "Working context per request", hint: Number(s.workingTokens).toLocaleString() + " tokens", act: () => startEntry("workingTokens", "Working context (tokens)", (v) => { const n = Number(v.replace(/[_,\s]/g, "")); if (n > 0) saveS({ workingTokens: n }); }) });
+        out.push(tog("vision", "Vision", !!s.vision, () => saveS({ vision: !s.vision })));
+        return out;
+      }
+      if (sec === "tools") {
+        out.push({ key: "searxngUrl", icon: Link2, label: "Local SearXNG URL", hint: s.searxngUrl ? String(s.searxngUrl) : "not set", act: () => startEntry("searxngUrl", "SearXNG URL", (v) => saveS({ searxngUrl: v.trim() })) });
+        out.push(tog("searxng", "Local-first web search", !!s.searxngUrl, () => saveS({ searxngUrl: s.searxngUrl ? "" : "http://localhost:8080" })));
+        out.push(tog("firecrawl", "Firecrawl escalation", !!s.firecrawlEnabled, () => saveS({ firecrawlEnabled: !s.firecrawlEnabled })));
+        out.push({ key: "firecrawlUrl", icon: Link2, label: "Firecrawl URL", hint: String(s.firecrawlUrl || "not set"), act: () => startEntry("firecrawlUrl", "Firecrawl URL", (v) => v && saveS({ firecrawlUrl: v })) });
+        out.push({ key: "firecrawlKey", icon: KeyRound, label: "Firecrawl key", hint: s.firecrawlKey ? "saved" : "not set", act: () => startEntry("firecrawlKey", "Firecrawl key", (v) => v && !v.startsWith("••••") && saveS({ firecrawlKey: v }), true) });
+        out.push({ key: "quality", icon: Check, label: "Quality guard", hint: { fix: "check and repair", warn: "check only", off: "off" }[s.quality as string] || "", act: () => { setActs((["fix", "warn", "off"] as const).map((v) => ({ key: v, icon: Check, label: { fix: "Check and repair", warn: "Check only", off: "Off" }[v], act: () => { saveS({ quality: v }); setActs(null); } }))); setActsTitle("Quality guard"); }, drill: () => { setActs((["fix", "warn", "off"] as const).map((v) => ({ key: v, icon: Check, label: { fix: "Check and repair", warn: "Check only", off: "Off" }[v], act: () => { saveS({ quality: v }); setActs(null); } }))); setActsTitle("Quality guard"); } });
+        out.push({ key: "toolLoading", icon: Zap, label: "Developer tools", hint: { auto: "auto (on demand below 48k)", lean: "on demand", all: "always loaded" }[s.toolLoading as string] || "", act: () => { setActs((["auto", "lean", "all"] as const).map((v) => ({ key: v, icon: Check, label: { auto: "Auto — on demand below 48k context", lean: "On demand", all: "Always loaded" }[v], act: () => { saveS({ toolLoading: v }); setActs(null); } }))); setActsTitle("Developer tools"); }, drill: () => { setActs((["auto", "lean", "all"] as const).map((v) => ({ key: v, icon: Check, label: { auto: "Auto — on demand below 48k context", lean: "On demand", all: "Always loaded" }[v], act: () => { saveS({ toolLoading: v }); setActs(null); } }))); setActsTitle("Developer tools"); } });
+        return out;
+      }
+      if (sec === "access") {
+        const locked = !!caps?.locked;
+        out.push(tog("home", "Home folder", s.access !== "sandbox", () => saveS({ access: s.access === "sandbox" ? "home" : "sandbox" }), s.access === "sandbox" ? `off — files stay in ${caps?.workspace || "the workspace"}` : `on — the agent can use ${caps?.home || "~"}`, locked));
+        out.push(tog("full", "Entire disk", s.access === "full", () => saveS({ access: s.access === "full" ? "home" : "full" }), s.access === "sandbox" ? "needs home folder first" : "absolute paths outside home", locked || s.access === "sandbox"));
+        out.push(tog("host", "Host terminal", s.terminal === "host", () => saveS(s.terminal === "host" ? { terminal: "sandbox", sudo: false, phone: false } : { terminal: "host" }), s.terminal === "host" ? "on — shell runs as you" : caps?.bwrap ? "off — sandboxed with bubblewrap" : "off — sandboxed, secrets stripped", locked));
+        out.push(tog("sudo", "Allow sudo", !!s.sudo, () => saveS({ sudo: !s.sudo }), s.terminal !== "host" ? "needs the host terminal" : s.secrets?.SUDO_PASSWORD ? "uses the SUDO_PASSWORD secret" : "passwordless sudo only", locked || s.terminal !== "host"));
+        out.push(tog("phone", "Phone testing", !!s.phone, () => saveS({ phone: !s.phone }), s.terminal !== "host" ? "needs the host terminal" : "adb on a plugged-in device", locked || s.terminal !== "host"));
+        return out;
+      }
+      if (sec === "secrets") {
+        for (const k of Object.keys(s.secrets || {})) {
+          out.push({ key: "s_" + k, icon: KeyRound, label: k, hint: "saved — Enter to change", act: () => startEntry("s_" + k, k, (v) => saveS({ secrets: { [k]: v } }), true) });
+        }
+        out.push({ key: "add", icon: Plus, label: "Add a secret", hint: pendSecret ? "typing the value…" : "name, then value", act: () => {
+          if (pendSecret) { startEntry("add", "Value for " + pendSecret, (v) => { const n = pendSecret; setPendSecret(null); if (v) saveS({ secrets: { [n]: v } }); }, true); }
+          else startEntry("add", "Secret name", (v) => { const n = v.trim().toUpperCase().replace(/[^\w-]/g, ""); if (n) { setPendSecret(n); startEntry("add", "Value for " + n, (val) => { setPendSecret(null); if (val) saveS({ secrets: { [n]: val } }); }, true); } });
+        } });
+        return out;
+      }
+      if (sec === "mcp") {
+        for (const [name, c] of Object.entries(mcp || {})) {
+          out.push({
+            key: name, icon: Plug, label: name, dim: !c.enabled, live: c.enabled, hint: (c.enabled ? "on · " : "off · ") + (c.url || [c.command, ...(c.args || [])].join(" ")),
+            act: () => putMcp({ ...(mcp || {}), [name]: { ...c, enabled: !c.enabled } }),
+            drill: () => {
+              setActsTitle(name);
+              setActs([
+                { key: "tog", icon: c.enabled ? X : Check, label: c.enabled ? "Disable" : "Enable", act: () => { putMcp({ ...(mcp || {}), [name]: { ...c, enabled: !c.enabled } }); setActs(null); } },
+                ...(c.url ? [{ key: "signin", icon: Link2, label: "Sign in", act: async () => { setActs(null); const r = await fetch("/api/mcp/oauth", { method: "POST", body: JSON.stringify({ name }) }).then((x) => x.json()).catch(() => null); if (r?.url) window.open(r.url, "_blank", "noopener"); else refetchMcp(); } }] : []),
+                { key: "rm", icon: Trash2, label: "Remove", danger: true, act: () => { const n = { ...(mcp || {}) }; delete n[name]; putMcp(n); setActs(null); } },
+              ]);
+            },
+          });
+        }
+        const avail = (mkt?.mcp || []).filter((e) => !e.installed);
+        out.push({ key: ":cat", icon: Plus, label: "Add an integration", hint: avail.length ? avail.length + " available" : "catalog", act: () => { setActsTitle("Add an integration"); setActs(avail.map((e) => ({ key: e.id, icon: Plug, label: e.title + (e.oauth ? "  — one-click sign-in" : ""), hint: e.missingBin ? `needs ${e.missingBin}` : e.description, dim: !!e.missingBin, act: async () => { await fetch("/api/market", { method: "POST", body: JSON.stringify({ id: e.id }) }).catch(() => {}); refetchMcp(); setActs(null); } }))); }, drill: () => {
+          setActsTitle("Add an integration");
+          setActs(avail.map((e) => ({ key: e.id, icon: Plug, label: e.title + (e.oauth ? "  — one-click sign-in" : ""), hint: e.missingBin ? `needs ${e.missingBin}` : e.description, dim: !!e.missingBin, act: async () => { await fetch("/api/market", { method: "POST", body: JSON.stringify({ id: e.id }) }).catch(() => {}); refetchMcp(); setActs(null); } })));
+        } });
+        out.push({ key: ":custom", icon: Wrench, label: "Custom server", hint: "name = url, or name = command", act: () => startEntry(":custom", "name = url or command", (v) => {
+          const m = v.match(/^\s*([\w-]+)\s*=\s*(.+)$/); if (!m) return;
+          const val = m[2].trim();
+          const srv = /^https?:/.test(val) ? { url: val, enabled: true } : { command: val.split(/\s+/)[0], args: val.split(/\s+/).slice(1), enabled: true };
+          putMcp({ ...(mcp || {}), [m[1]]: srv }); refetchMcp();
+        }) });
+        return out;
       }
       return out;
     }
@@ -181,22 +296,63 @@ export const Palette = forwardRef<PaletteHandle, {
       return out;
     }
     if (mode === "skills") {
+      if (pick) {
+        out.push({ key: ":all", icon: Plus, label: `Install all (${pick.available.length})`, hint: pick.source, act: async () => { await fetch("/api/skills", { method: "POST", body: JSON.stringify({ source: pick.source, pick: pick.available }) }); setPick(null); setSkills(null); } });
+        for (const n of pick.available) out.push({ key: ":" + n, icon: BookOpen, label: n, hint: pick.source, act: async () => { await fetch("/api/skills", { method: "POST", body: JSON.stringify({ source: pick.source, pick: [n] }) }); setPick(null); setSkills(null); } });
+        return out;
+      }
+      out.push({ key: ":install", icon: Plus, label: "Install from GitHub…", hint: "owner/repo, a path, or a URL", act: () => startEntry(":install", "owner/repo or GitHub URL", (v) => {
+        if (!v.trim()) return;
+        fetch("/api/skills", { method: "POST", body: JSON.stringify({ source: v.trim() }) }).then((r) => r.json()).then((j) => {
+          if (j.error) return;
+          if (!j.installed?.length && j.available?.length > 1) setPick({ source: v.trim(), available: j.available });
+          else setSkills(null);
+        }).catch(() => {});
+      }) });
       for (const s of skills || []) {
         if (q && !(s.name + " " + s.description).toLowerCase().includes(q)) continue;
-        out.push({ key: s.name, icon: BookOpen, label: s.name, hint: s.description, act: () => { app.openFile(`system/skills/${s.name}/SKILL.md`); collapse(); }, drill: () => { app.openFile(`system/skills/${s.name}/SKILL.md`); collapse(); } });
+        out.push({
+          key: s.name, icon: BookOpen, label: s.name, hint: s.description, act: () => { app.openFile(`system/skills/${s.name}/SKILL.md`); collapse(); },
+          drill: () => {
+            setActsTitle(s.name);
+            setActs([
+              { key: "open", icon: FileText, label: "Open SKILL.md", act: () => { app.openFile(`system/skills/${s.name}/SKILL.md`); collapse(); } },
+              ...(!s.builtin ? [{ key: "rm", icon: Trash2, label: "Remove skill", danger: true, act: () => { fetch("/api/skills?name=" + encodeURIComponent(s.name), { method: "DELETE" }); setSkills(null); setActs(null); } }] : []),
+            ]);
+          },
+        });
       }
       return out;
     }
     return out;
-  }, [mode, q, arg, api, app, hits, skills, dir, collapse, onPanel]);
+  }, [mode, q, arg, api, app, hits, skills, dir, collapse, onPanel, sec, entry, set, mcp, mkt, pick, pendSecret, saveS, putMcp, startEntry]);
+
+  // provider presets: a small sub-list built from the server's preset table
+  function setPresets(pack: SetPack, s: Record<string, any>, save: (p: Record<string, unknown>) => void): Row[] {
+    return Object.keys(pack.presets || {}).map((name) => {
+      const p = pack.presets[name];
+      return {
+        key: name, icon: Settings2, label: name, hint: (s.provider === name ? "current · " : "") + (p.model || "your own values"),
+        act: () => save({ provider: name, ...(p.baseUrl ? { baseUrl: p.baseUrl, model: p.model, ...(p.contextTokens ? { contextTokens: p.contextTokens } : {}) } : {}) }),
+      };
+    });
+  }
 
   const shown = acts || rows;
   if (acts) { /* clamp index into drilled actions */ if (idx >= shown.length) setIdx(0); }
 
   useImperativeHandle(ref, () => ({
     reset: () => { setIdx(0); setActs(null); },
+    entering: () => !!entry,
     key: (e: React.KeyboardEvent) => {
+      // a value entry owns the input bar: Enter commits, Esc gives it back untouched
+      if (entry) {
+        if (e.key === "Enter") { const en = entry; setEntry(null); setInput?.(en.prev); en.commit(query); return true; }
+        if (e.key === "Escape") { setEntry(null); setInput?.(entry.prev); return true; }
+        return false; // arrows and editing keys belong to the text while entering a value
+      }
       if (acts && e.key === "ArrowLeft") { setActs(null); setIdx(0); return true; }
+      if (!acts && mode === "settings" && e.key === "ArrowLeft" && sec) { setSec(null); setIdx(0); return true; }
       if (!acts && mode === "workspace" && e.key === "ArrowLeft" && dir) { setCwd(dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : ""); return true; }
       if (!acts && mode !== "commands" && e.key === "ArrowLeft") { onPanel("commands"); return true; }
       if (e.key === "ArrowDown") { setIdx((i) => (shown.length ? (i + 1) % shown.length : 0)); return true; }
@@ -205,28 +361,28 @@ export const Palette = forwardRef<PaletteHandle, {
       if (e.key === "Enter") { const r = shown[idx]; if (r) r.act(); return true; }
       return false;
     },
-  }), [acts, shown, idx, mode, dir, onPanel]);
+  }), [acts, shown, idx, mode, dir, sec, entry, query, onPanel, setInput]);
 
-  const hints: [string, string][] = acts
-    ? [["←", "back"], ["⏎", "select"]]
-    : mode === "commands" ? [["↑↓", "navigate"], ["⏎", "run"], ["→", "browse"], ["esc", "close"]]
-    : mode === "workspace" ? [["↑↓", "navigate"], ["→", "open folder · file actions"], ["←", "up / back"], ["⏎", "open"], ["esc", "close"]]
-    : [["↑↓", "navigate"], ["→", "actions"], ["←", "back"], ["⏎", "select"], ["esc", "close"]];
-
+  const crumb = acts ? actsTitle
+    : entry ? entry.label
+    : mode === "settings" ? (sec ? { model: "Model", tools: "Tools", access: "Access", secrets: "Secrets", mcp: "MCP" }[sec] || sec : "settings")
+    : mode === "workspace" ? dir.split("/").pop() || "workspace"
+    : mode;
   let lastGroup: string | undefined;
   return (
     <div className="pal" role="listbox" aria-label={mode}>
       <div className="pal-in">
       <div className="pal-head">
-        <span className="pal-crumb">{acts ? actsTitle : mode === "workspace" ? dir.split("/").pop() || "workspace" : mode}</span>
+        <span className="pal-crumb">{crumb}</span>
         <span className="sp" />
-        {mode !== "commands" && <button className="pal-back" onMouseDown={(e) => e.preventDefault()} onClick={() => (acts ? setActs(null) : onPanel("commands"))}><CornerLeftUp size={12} />commands</button>}
+        {mode !== "commands" && <button className="pal-back" onMouseDown={(e) => e.preventDefault()} onClick={() => (entry ? (setEntry(null), setInput?.(entry.prev)) : acts ? setActs(null) : sec ? setSec(null) : onPanel("commands"))}><CornerLeftUp size={12} />back</button>}
       </div>
       <div className="pal-list" ref={listRef}>
         {shown.map((r, i) => {
           const head = r.group && r.group !== lastGroup ? r.group : null;
           lastGroup = r.group || lastGroup;
           const I = r.icon;
+          const hint = entry && entry.key === r.key ? (entry.secret ? "type it below — Enter saves, Esc cancels" : "type the new value — Enter saves, Esc cancels") : r.hint;
           return [
             head && <div key={r.key + ":g"} className="pal-group">{head}</div>,
             <button key={r.key} data-i={i} className={"pal-row" + (i === idx ? " on" : "") + (r.dim ? " dim" : "") + (r.danger ? " danger" : "")}
@@ -236,14 +392,13 @@ export const Palette = forwardRef<PaletteHandle, {
               onDoubleClick={() => r.drill?.()}>
               <span className="pal-ic"><I />{r.live && <i className="live-dot" />}</span>
               <span className="pal-label">{r.label}</span>
-              {r.hint && <span className="pal-hint">{r.hint}</span>}
-              {r.drill && <ChevronRight size={12} className="pal-more" />}
+              {hint && <span className="pal-hint">{hint}</span>}
+              {r.drill && !entry && <ChevronRight size={12} className="pal-more" />}
             </button>,
           ];
         })}
         {!shown.length && <div className="pal-empty">{mode === "processes" ? "No background processes" : mode === "sources" ? "No sources yet" : mode === "skills" ? (skills === null ? "Loading skills…" : "No skills installed") : "Nothing matches"}</div>}
       </div>
-      <div className="pal-foot">{hints.map(([k, h]) => <span key={k}><kbd>{k}</kbd>{h}</span>)}</div>
       </div>
     </div>
   );

@@ -331,7 +331,8 @@ npm start
 | Type anywhere | Focus composer |
 | `Backspace` on empty composer | Release / unfocus |
 | `/` | Expand the input bar into the command list |
-| `/chats` `/workspace` `/settings` `/processes` `/sources` `/artifacts` `/skills` | The input bar becomes that surface (↑↓ navigate, `→` drill in, `←` back, `Esc` collapses) |
+| `/chats` `/workspace` `/settings` `/model` `/access` `/processes` `/sources` `/artifacts` `/skills` | The input bar becomes that surface (↑↓ navigate, `→` drill in, `←` back, `Esc` collapses) |
+| In `/settings` | Rows toggle on `Enter`; value rows hand the input bar over for typing (`Enter` saves, `Esc` cancels) — the whole settings menu, keyboard only |
 | `@` | Mention workspace files |
 | `Enter` | Send message |
 | `Shift+Enter` | Newline |

@@ -227,23 +227,17 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
 .pal-more { color: var(--faint); flex: none; }
 .pal-row.on .pal-more { color: var(--accent); }
 .pal-empty { padding: 18px 12px; color: var(--muted); font-size: 13px; text-align: center; }
-.pal-foot { display: flex; gap: 14px; padding: 6px 14px 8px; font-size: 11.5px; color: var(--faint); border-top: 1px solid var(--line); flex-wrap: wrap; }
-.pal-foot span { display: inline-flex; gap: 5px; align-items: center; }
-.pal-foot kbd { font-size: 10px; padding: 1px 4px 2px; }
 
 /* ============ Queue — messages held while the AI responds ============ */
 .qstrip { padding: 8px 8px 0; display: flex; flex-direction: column; gap: 6px; }
 .qstrip-head { display: flex; align-items: center; gap: 6px; padding: 0 6px 2px; font-size: 11.5px; color: var(--muted); animation: palIn .25s var(--ease); }
 .qstrip-head svg { width: 12px; height: 12px; color: var(--accent); }
 .qstrip-head .sp { flex: 1; }
-.qhint { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--faint); }
 .qitem { display: flex; align-items: center; gap: 4px; background: var(--surface); border-radius: calc(var(--r) - 3px); padding: 3px 4px 3px 8px; animation: palIn .28s var(--spring); }
 .qitem.editing { opacity: .45; }
 .q-n { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--faint); flex: none; width: 14px; }
 .q-body { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; padding: 4px 0; }
 .q-text { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.q-hint { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--faint); opacity: 0; transition: opacity .15s; }
-.qitem:hover .q-hint, .qitem:last-child .q-hint { opacity: 1; }
 .qitem .ib.sm { opacity: 0; transition: opacity .15s; }
 .qitem:hover .ib.sm, .qitem .ib.sm:focus-visible { opacity: 1; }
 .qitem .ib.sm svg { width: 12px; height: 12px; }

@@ -691,12 +691,14 @@ export default function App() {
     { name: "processes", hint: "Terminals and background processes", panel: "processes", run: () => openTerm({}) },
     { name: "terminal", hint: "New sandboxed terminal", run: () => openTerm({}) },
     { name: "host-terminal", hint: "A terminal on your machine", run: () => openTerm({ host: true }) },
-    { name: "skills", hint: "Installed skills", panel: "skills", run: () => openSettings("skills") },
+    { name: "skills", hint: "Installed skills, install from GitHub", panel: "skills" },
     { name: "context", hint: "Clear active context", run: async () => { const c = convRef.current; if (!c) return; setConv({ ...c, context: [] }); await fetch(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ context: [] }) }); } },
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
-    { name: "settings", hint: "Model, tools, access, MCP, skills", panel: "settings", run: () => openSettings() },
-  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, openSettings]);
+    { name: "settings", hint: "Model, tools, access, secrets, MCP, skills", panel: "settings" },
+    { name: "model", hint: "Provider, model, API key, context budget", panel: "settings", seed: "model" },
+    { name: "access", hint: "Files, host terminal, sudo, phone", panel: "settings", seed: "access" },
+  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -749,7 +751,7 @@ export default function App() {
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
             procs={procs.filter((pr) => pr.running)} onOpenProc={(name) => openTerm({ proc: name })}
-            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat, openSettings }} />
+            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
           </div>
         </div>
 
