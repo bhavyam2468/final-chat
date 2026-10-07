@@ -220,6 +220,24 @@ function scenario(messages) {
   if (open) return afterTool ? { text: "Opened beside the chat." } : { call: { name: "canvas_open", args: { target: open[1], dock: true } } };
   if (/samples|files/.test(q)) return { text: "The example files:\n\n[deck.pptx](uploads/samples/deck.pptx)\n\n[budget.xlsx](uploads/samples/budget.xlsx)\n\n[project.zip](uploads/samples/project.zip)\n\n[chart.png](uploads/samples/chart.png)\n\nAsk to open any of them." };
   if (/plan|todo/.test(q)) return afterTool ? { text: "Plan set. Starting with the data model." } : { text: "Breaking this into steps.", call: { name: "todo", args: { items: [{ text: "Data model", status: "doing" }, { text: "List view", status: "todo" }, { text: "Persistence", status: "todo" }, { text: "Verify in browser", status: "todo" }] } } };
+  if (/procsuite/.test(q)) {
+    const calls = messages.filter((m) => m.role === "assistant" && m.tool_calls).flatMap((m) => m.tool_calls.map((t) => t.function?.name || "")).filter((n) => n.startsWith("proc_"));
+    const steps = [
+      { text: "Starting the test process.", call: { name: "proc_start", args: { name: "repl", command: "bash -c 'echo READY; while read l; do echo got:$l; done'" } } },
+      { text: "", call: { name: "proc_logs", args: { name: "repl", wait_for: "pattern", pattern: "READY", timeout: 5 } } },
+      { text: "", call: { name: "proc_write", args: { name: "repl", input: "hello-write" } } },
+      { text: "", call: { name: "proc_logs", args: { name: "repl", grep: "got:" } } },
+      { text: "", call: { name: "proc_signal", args: { name: "repl", signal: "SIGHUP" } } },
+      { text: "", call: { name: "proc_logs", args: { name: "repl", wait_for: "exit", timeout: 5 } } },
+      { text: "", call: { name: "proc_restart", args: { name: "repl" } } },
+      { text: "", call: { name: "proc_logs", args: { name: "repl", grep: "READY", tail: 400 } } },
+      { text: "", call: { name: "proc_stop", args: { name: "repl" } } },
+    ];
+    const step = calls.length;
+    if (step < steps.length) return steps[step];
+    const results = messages.filter((m) => m.role === "tool").slice(-9).map((m, i) => `step ${i + 1}: ${String(typeof m.content === "string" ? m.content : JSON.stringify(m.content)).slice(0, 220)}`);
+    return { text: "Process suite finished.\n\n" + results.join("\n\n") };
+  }
   if (/slowpy/.test(q)) return afterTool ? { text: "Done counting." } : { text: "Running it.", call: { name: "run_python", args: { code: "import time\nfor i in range(8):\n    print('step', i, flush=True)\n    time.sleep(0.8)" } } };
   if (/longtext/.test(q)) return { text: MD, slow: 20 }; // same answer, ~20x slower (~15s): for testing chat switching and Stop
   if (/\bask\b/.test(q)) return { call: { name: "ask_user", args: { question: "Which stack should the app use?", options: ["Plain HTML/JS", "React + TypeScript", "Electron"] } } };

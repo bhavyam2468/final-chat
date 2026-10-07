@@ -66,13 +66,14 @@ export async function procStart(st: Settings, o: { name: string; command: string
 
 /** Block until the process exits, opens a port or prints something matching `pattern`. Bounded by timeout. */
 async function waitFor(p: Proc, o: { until?: "exit" | "port" | "pattern"; pattern?: string; timeout: number }) {
-  const t0 = Date.now(), ports0 = p.ports.size, len0 = p.log.length + p.dropped;
+  const t0 = Date.now(), ports0 = p.ports.size;
   let re: RegExp | null = null;
   if (o.pattern) { try { re = new RegExp(o.pattern, "i"); } catch { re = new RegExp(o.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"); } }
   while (Date.now() - t0 < o.timeout * 1000) {
     if (p.exit !== null) return "exited";
     if (o.until === "port" && p.ports.size > ports0) return "port";
-    if (re && re.test(p.log.slice(Math.max(0, len0 - p.dropped)))) return "pattern";
+    // a pattern already in the backlog satisfies "wait until it prints X" — match the whole retained log
+    if (re && re.test(p.log)) return "pattern";
     await new Promise((r) => setTimeout(r, 250));
   }
   return "timeout";

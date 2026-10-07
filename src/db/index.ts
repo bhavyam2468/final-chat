@@ -45,5 +45,18 @@ function make(): NodePgDatabase {
   return drizzleLite(client) as NodePgDatabase;
 }
 
-export const db: NodePgDatabase = (g.__wsDb ??= make());
+/**
+ * `db` must not open the database on import: Next's build imports every route module to
+ * collect its config, and an import-time PGlite open would (a) slow every build and
+ * (b) fight over ./data/pglite with a dev server running elsewhere — two WASM Postgres
+ * instances on one directory abort each other. The proxy defers make() to the first real
+ * query, so builds touch nothing and the first request opens the database once.
+ */
+export const db: NodePgDatabase = new Proxy({} as NodePgDatabase, {
+  get(_t, prop) {
+    const d = (g.__wsDb ??= make());
+    const v = Reflect.get(d as object, prop, d);
+    return typeof v === "function" ? v.bind(d) : v;
+  },
+});
 export const schemaReady = () => g.__wsSchema ?? Promise.resolve();
