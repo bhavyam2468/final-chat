@@ -49,6 +49,7 @@ const TOOL_META: Record<string, Meta> = {
   view_image: M(ImageIcon, "Opening image", "Opened image", "path"), todo: M(ListChecks, "Updating plan", "Updated plan"), ask_user: M(MessageSquare, "Asking you", "Asked you", "question"),
   canvas_open: M(AppWindow, "Opening preview", "Opened preview", "target"), ui_search: M(AppWindow, "Searching UI components", "Found UI components", "query"),
   proc_start: M(Play, "Starting process", "Started process", "name"), proc_logs: M(ScrollText, "Reading process output", "Read process output", "name"), proc_restart: M(RotateCw, "Restarting process", "Restarted process", "name"),
+  proc_wait: M(ScrollText, "Waiting on process", "Waited on process", "name"), proc_write: M(Play, "Writing to process", "Wrote to process", "name"), proc_signal: M(Square, "Signalling process", "Signalled process", "name"),
   proc_stop: M(Square, "Stopping process", "Stopped process", "name"), browser: M(Globe, "Using browser", "Used browser", "target"), check: M(ShieldCheck, "Running checks", "Finished checks", "path"),
   quality_check: M(ShieldCheck, "Reviewing design", "Reviewed design"), remember: M(Bookmark, "Saving memory", "Saved memory", "text"), forget: M(Bookmark, "Removing memory", "Removed memory", "id"),
   project_open: M(FolderTree, "Opening project", "Opened project", "name"), diff_since: M(GitBranch, "Checking recent changes", "Checked recent changes", "hours"),

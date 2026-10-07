@@ -74,7 +74,7 @@ function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.Pro
 
 /** Wrap argv in bubblewrap when sandboxing is requested and available. */
 
-function wrap(argv: string[], sandboxed: boolean, cwd: string = WS): string[] {
+export function wrap(argv: string[], sandboxed: boolean, cwd: string = WS): string[] {
   if (!sandboxed || !hasBwrap()) return argv;
   const app = process.cwd();
   const hide = ["/home", "/root", "/Users"].filter((d) => fs.existsSync(d));

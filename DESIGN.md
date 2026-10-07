@@ -8,7 +8,7 @@ The interface is a desk, not a dashboard. The only loud thing on screen is the c
 4. **Distinction by space, not chrome.** User = right-aligned bubble. Assistant = plain text on the page. No avatars, names, labels, or hints.
 5. **Nothing until needed.** Actions appear on hover/focus. Empty states are empty. No placeholders, no helper text, no keyboard hints.
 6. **Typography carries hierarchy.** Geist 15.5/1.7 body, measure ≤ 68ch, headings by weight and size (not color), tabular numbers, Geist Mono for code.
-7. **Motion explains state.** Streaming content fades up; finished blocks never re-render; highlights sweep in after they close; charts draw in; windows scale in. 120–450ms, ease-out, no bounce.
-8. **Keyboard first.** Typing anywhere writes into the composer. Backspace on empty releases focus. `/` commands, `@` files, `Esc` closes.
+7. **Motion explains state.** Streaming content fades up; finished blocks never re-render; highlights sweep in after they close; charts draw in; windows scale in. 120–450ms, ease-out, no bounce. Expansions grow, they don't pop: the input bar opens into the palette on a damped spring (`--spring`, grid rows 0fr→1fr), rows fading up as the box grows. Every motion names a state change; nothing moves for decoration.
+8. **Keyboard first, one surface.** Typing anywhere writes into the composer, and the composer is the whole app: `/` expands it into the command list, `/chats`, `/workspace`, `/settings`, `/processes` turn the input itself into that surface's search field (↑↓ navigate, → drills into folders and per-file actions, ← backs out, `Esc` collapses back to the message). While the AI responds, `Enter` queues, `Enter` again steers now, `↑` pulls a queued message back to edit. The same data stays in the panels for the mouse; there are no modes, only surfaces.
 
 Spacing scale: 4 · 8 · 12 · 16 · 24 · 32 · 48. Type scale: 12 · 13 · 15.5 · 18 · 22 · 28.

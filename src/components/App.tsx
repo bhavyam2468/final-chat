@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelLeft, SquarePen, MessageSquareShare, Folder, AppWindow, Link2, Settings2, X } from "lucide-react";
-import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, TreeNode, isExternal } from "./ctx";
+import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, ProcInfo, QueueItem, TreeNode, isExternal } from "./ctx";
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
 import { chatDir } from "@/lib/shared";
@@ -9,6 +9,7 @@ import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, Ctx
 import { CanvasLayer, Win, contentRatio } from "./Canvas";
 import { shouldDockCanvas } from "@/lib/canvas-layout";
 import { Settings } from "./Settings";
+import type { PaletteTab } from "./palette";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
 function DockStatus({ conv, offerBrief, streamId, onBrief, onUnlink }: { conv: Conv | null; offerBrief: boolean; streamId: string | null; onBrief: () => void; onUnlink: () => void }) {
@@ -57,6 +58,27 @@ export default function App() {
   const runningRef = useRef(running);
   const setRunning = useCallback((fn: (r: Record<string, string>) => Record<string, string>) => setRunningS((r) => { const n = fn(r); runningRef.current = n; return n; }), []);
   const streamId = running[view] || null;
+  // per-chat queue of messages typed while the AI responds; they send in order when the turn ends
+  const [queues, setQueuesS] = useState<Record<string, QueueItem[]>>({});
+  const queuesRef = useRef(queues); queuesRef.current = queues;
+  const dequeuedAt = useRef<{ id: string; at: number } | null>(null);
+  const setQueuesFor = useCallback((k: string, fn: (q: QueueItem[]) => QueueItem[]) => setQueuesS((qs) => ({ ...qs, [k]: fn(qs[k] || []) })), []);
+  const queueOf = useCallback((k: string) => queuesRef.current[k] || [], []);
+  // the queue survives reloads and chat switches; "new:" drafts are theirs alone
+  useEffect(() => {
+    for (const [k, q] of Object.entries(queues)) {
+      if (k.startsWith("new:")) continue;
+      try { if (q.length) localStorage.setItem("queue:" + k, JSON.stringify(q)); else localStorage.removeItem("queue:" + k); } catch { /* quota */ }
+    }
+  }, [queues]);
+  /* eslint-disable react-hooks/set-state-in-effect -- restore saved queues after hydration */
+  useEffect(() => {
+    if (view.startsWith("new:") || queuesRef.current[view] !== undefined) return;
+    let v: QueueItem[] = [];
+    try { v = JSON.parse(localStorage.getItem("queue:" + view) || "[]"); } catch {}
+    if (Array.isArray(v) && v.length) setQueuesS((s) => ({ ...s, [view]: v }));
+  }, [view]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const attached = useRef(new Set<string>()); // chats this page is currently reading a stream for
   const [serverRunning, setServerRunning] = useState<string[]>([]);
   // side panel widths (drag the inner edge); persisted
@@ -219,6 +241,13 @@ export default function App() {
   // ---- streaming (one reader per chat; events patch that chat's messages wherever the user is)
   const storeRef = useRef(store); storeRef.current = store;
   const stopAsked = useRef(new Set<string>()); // Stop pressed before a new chat got its id
+  /** newest message on a chat's main line — the parent a queued/steered message chains onto */
+  const mainLeafId = (key: string) => {
+    const ms = (storeRef.current[key] || []).filter((m) => !m.threadOf && !m.id.startsWith("tmp"));
+    return ms.length ? ms[ms.length - 1].id : null;
+  };
+  // consume finishes runs that may belong to a background chat; sending is wired through a ref to avoid a cycle
+  const sendRef = useRef<(key: string, p: SendPayload | null, parentId: string | null, threadOf: string | null) => void>(() => {});
   const consume = useCallback(async (res: Response, key0: string, ids: { ta: string; tu?: string }, attach = false) => {
     let key = key0, ta = ids.ta; const tu = ids.tu;
     const patchA = (fn: (parts: Part[]) => Part[]) => setMsgsFor(key, (ms) => ms.map((m) => (m.id === ta ? { ...m, parts: fn(m.parts) } : m)));
@@ -244,10 +273,11 @@ export default function App() {
             }
             const map: Record<string, string> = { [ta]: e.assistantId, ...(e.userId && tu ? { [tu]: e.userId } : {}) };
             const r = (x: string | null) => (x && map[x]) || x;
-            if (key !== cid) { // a new chat got its id: move its messages, stream and view over
+            if (key !== cid) { // a new chat got its id: move its messages, stream, queue and view over
               const old = key; key = cid; attached.current.delete(old); attached.current.add(cid);
               setStore((st) => { const n = { ...st, [cid]: st[old] || [] }; delete n[old]; return n; });
               setRunning((x) => { const n = { ...x, [cid]: x[old] }; delete n[old]; return n; });
+              setQueuesS((qs) => { const q = qs[old]; if (!q) return qs; const n = { ...qs, [cid]: q }; delete n[old]; return n; });
               if (viewRef.current === old) {
                 setView(cid);
                 const project = pendingProject.current || undefined;
@@ -292,6 +322,11 @@ export default function App() {
           });
           else if (e.t === "toolStatus") patchA((p) => p.map((x) => x.type === "tool" && x.id === e.id ? { ...x, status: String(e.status || "") } : x));
           else if (e.t === "toolOutput") patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, live: (x.live || "") + e.chunk } : x)));
+          else if (e.t === "steer") { // a mid-run steer (live, or replayed on re-attach): the user message joins the chain
+            const sid = String(e.id), spid = String(e.parentId);
+            setMsgsFor(key, (ms) => ms.some((m) => m.id === sid) ? ms : [...ms, { id: sid, conversationId: key, parentId: spid, threadOf: null, role: "user", content: String(e.content || ""), parts: [], attachments: [], quote: null, createdAt: new Date(Number(e.createdAt) || Date.now()).toISOString() }]);
+            setSel((x) => ({ ...x, [keyOf(spid, null)]: sid }));
+          }
           else if (e.t === "canvas") { if (viewRef.current === key) openCanvasRef.current(e.spec, { dock: e.dock }); }
           else if (e.t === "compacted") setCtxRev((r) => r + 1);
           else if (e.t === "toolResult") { patchA((p) => p.map((x) => (x.type === "tool" && x.id === e.id ? { ...x, result: e.result, ok: e.ok, meta: e.meta, status: undefined, live: undefined } : x))); refreshTree(); }
@@ -304,6 +339,14 @@ export default function App() {
     attached.current.delete(key);
     setRunning((r) => { const n = { ...r }; delete n[key]; return n; });
     refreshTree(); refreshConvs(); setCtxRev((r) => r + 1);
+    // a natural end flushes the queue in order (an explicit Stop keeps it parked)
+    if (queueOf(key).length && !stopAsked.current.has(key)) setTimeout(() => {
+      if (runningRef.current[key] || stopAsked.current.has(key)) return;
+      const cur = queueOf(key);
+      if (!cur.length) return;
+      setQueuesFor(key, (q) => q.slice(1));
+      sendRef.current(key, { content: cur[0].content, attachments: cur[0].attachments, quote: null }, mainLeafId(key), null);
+    }, 650);
     // the server saved the final message (partial if stopped) before it reported done: take the saved copy
     if (!key.startsWith("new:")) fetch(`/api/conversations/${key}`).then((r) => r.json()).then((j) => { if (!j.messages || runningRef.current[key]) return; setMsgsFor(key, () => j.messages); if (viewRef.current === key) { const c = withMode(j.conversation); setConv(c); if (c.mode) { modeRef.current = c.mode; setSurface(c.mode); } } }).catch(() => {});
   }, [setMsgsFor, setRunning, setView, refreshConvs, refreshTree]);
@@ -316,12 +359,37 @@ export default function App() {
   }, [consume]);
   const attachRef = useRef(attachTo); attachRef.current = attachTo;
 
-  const send = useCallback(async (payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
-    const key = viewRef.current;
-    if (runningRef.current[key]) return;
+  // ---- queue actions (the input bar holds messages while the AI responds)
+  const enqueue = useCallback((key: string, p: SendPayload) => {
+    setQueuesFor(key, (q) => [...q, { id: rid(), content: p.content, attachments: p.attachments, createdAt: Date.now() }]);
+  }, [setQueuesFor]);
+  const dequeue = useCallback((id: string) => {
+    setQueuesFor(viewRef.current, (q) => {
+      const i = q.findIndex((x) => x.id === id);
+      if (i >= 0) dequeuedAt.current = { id, at: i };
+      return q.filter((x) => x.id !== id);
+    });
+  }, [setQueuesFor]);
+  const updateQueued = useCallback((id: string, p: SendPayload) => {
+    setQueuesFor(viewRef.current, (q) => {
+      const at = dequeuedAt.current?.id === id ? dequeuedAt.current.at : q.length;
+      dequeuedAt.current = null;
+      const nq = q.filter((x) => x.id !== id);
+      nq.splice(Math.min(at, nq.length), 0, { id, content: p.content, attachments: p.attachments, createdAt: Date.now() });
+      return nq;
+    });
+  }, [setQueuesFor]);
+
+  const sendTo = useCallback(async (key: string, payload: SendPayload | null, parentId: string | null, threadOf: string | null) => {
+    if (runningRef.current[key]) {
+      // a send racing the queue flush (or any in-flight run) joins the queue instead of being dropped
+      if (payload) enqueue(key, payload);
+      return;
+    }
+    stopAsked.current.delete(key);
     const tu = rid(); const ta = rid();
     const now = new Date().toISOString();
-    const cid = convRef.current?.id || "";
+    const cid = key.startsWith("new:") ? "" : key;
     const aParent = payload ? tu : parentId;
     setMsgsFor(key, (ms) => [...ms,
       ...(payload ? [{ id: tu, conversationId: cid, parentId, threadOf, role: "user" as const, content: payload.content, parts: [], attachments: payload.attachments, quote: payload.quote, createdAt: now }] : []),
@@ -338,14 +406,42 @@ export default function App() {
     }
     consume(res, key, { ta, tu: payload ? tu : undefined });
   }, [consume, setMsgsFor, setRunning]);
+  const send = useCallback((payload: SendPayload | null, parentId: string | null, threadOf: string | null) => { void sendTo(viewRef.current, payload, parentId, threadOf); }, [sendTo]);
+  sendRef.current = sendTo;
 
-  // Stop: the server stops the run, saves what was written so far, then ends the stream
+  /** Steer the running turn: the message jumps straight into it (falls back to a normal send if it just ended). */
+  const steer = useCallback(async (p: SendPayload) => {
+    const key = viewRef.current;
+    const cid = convRef.current?.id;
+    if (!cid || !runningRef.current[key]) { void sendTo(key, p, mainLeafId(key), null); return; }
+    try {
+      const r = await fetch("/api/chat", { method: "POST", body: JSON.stringify({ steer: { content: p.content, attachments: p.attachments }, conversationId: cid }) });
+      if (!r.ok) throw new Error("not running");
+    } catch { void sendTo(key, p, mainLeafId(key), null); } // the run ended before the steer landed
+  }, [sendTo]);
+
+  const steerQueued = useCallback((id: string) => {
+    const key = viewRef.current;
+    const item = (queuesRef.current[key] || []).find((x) => x.id === id);
+    if (!item) return;
+    setQueuesFor(key, (q) => q.filter((x) => x.id !== id));
+    void steer({ content: item.content, attachments: item.attachments, quote: null });
+  }, [setQueuesFor, steer]);
+
+  // Stop: the server stops the run, saves what was written so far, then ends the stream.
+  // An explicit stop also parks the queue — nothing flushes until the user sends again.
   const stop = useCallback(() => {
     const key = viewRef.current;
-    if (key.startsWith("new:")) { stopAsked.current.add(key); return; }
+    stopAsked.current.add(key);
+    if (key.startsWith("new:")) return;
     fetch("/api/chat", { method: "POST", body: JSON.stringify({ stop: true, conversationId: key }) });
   }, []);
-  const sendMain = useCallback((p: SendPayload) => { const last = mainPath[mainPath.length - 1]; send(p, last?.id ?? null, null); }, [mainPath, send]);
+  const sendMain = useCallback((p: SendPayload) => {
+    const key = viewRef.current;
+    if (runningRef.current[key]) { enqueue(key, p); return; } // belt and braces: the composer queues while streaming
+    const last = mainPath[mainPath.length - 1];
+    send(p, last?.id ?? null, null);
+  }, [mainPath, send, enqueue]);
   const sendThread = useCallback((p: SendPayload) => { const last = threadPath[threadPath.length - 1]; send(p, last?.id ?? null, thread); }, [threadPath, send, thread]);
 
   // ---- canvases
@@ -398,6 +494,30 @@ export default function App() {
     });
   }, [setDockW]);
   const openCanvasRef = useRef(openCanvas); openCanvasRef.current = openCanvas;
+
+  // ---- terminal windows & background processes
+  const openTerm = useCallback((o?: { id?: string; host?: boolean; proc?: string; title?: string }) => {
+    openCanvas({ kind: "term", title: o?.proc ? o.proc : o?.title || (o?.host ? "Host terminal" : "Terminal"), id: o?.id, host: o?.host, proc: o?.proc });
+  }, [openCanvas]);
+  // the input bar reviews the agent's background processes; poll cheaply, it is a local endpoint
+  const [procs, setProcs] = useState<ProcInfo[]>([]);
+  useEffect(() => {
+    let stop = false;
+    const load = () => fetch("/api/proc").then((r) => r.json()).then((j) => { if (!stop && Array.isArray(j.procs)) setProcs(j.procs); }).catch(() => {});
+    load();
+    const t = setInterval(load, 3000);
+    return () => { stop = true; clearInterval(t); };
+  }, []);
+  // whether the user's own terminal is on (palette shows "Host terminal" only then)
+  const [hostTerm, setHostTerm] = useState(false);
+  useEffect(() => { fetch("/api/settings").then((r) => r.json()).then((j) => setHostTerm(j.settings?.terminal === "host")).catch(() => {}); }, [settings]);
+  const [settingsTab, setSettingsTab] = useState<PaletteTab>("model");
+  const openSettings = useCallback((tab?: PaletteTab) => { setSettingsTab(tab || "model"); setSettings(true); }, []);
+  const deleteChat = useCallback(async (id: string) => {
+    await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    if (convRef.current?.id === id) newChat();
+    refreshConvs();
+  }, [newChat, refreshConvs]);
   // while something runs in the background, keep the Chats dots current
   useEffect(() => { if (!serverRunning.length) return; const t = setInterval(refreshConvs, 4000); return () => clearInterval(t); }, [serverRunning.length, refreshConvs]);
   const runningIds = useMemo(() => [...new Set([...serverRunning, ...Object.keys(running)])], [serverRunning, running]);
@@ -418,7 +538,7 @@ export default function App() {
   }, []);
 
   const api: AppApi = useMemo(() => ({
-    openFile, openCanvas, refreshTree, tree, context: conv?.context || [], toggleContext,
+    openFile, openCanvas, openTerm, refreshTree, tree, context: conv?.context || [], toggleContext,
     sendUiEvent: (d: unknown, o?: { label?: string; prompt?: string }) => {
       const attr = o?.label ? ` label="${o.label.replace(/"/g, "&quot;")}"` : "";
       sendMain({ content: `<ui_event${attr}>\n${o?.prompt ? `<instruction>${o.prompt}</instruction>\n` : ""}${toXml(d)}\n</ui_event>`, attachments: [], quote: null });
@@ -438,7 +558,7 @@ export default function App() {
     convId: conv?.id || null,
     convTitles,
     openChat: (id: string) => { loadConv(id); },
-  }), [openFile, openCanvas, refreshTree, tree, conv?.context, conv?.id, convTitles, loadConv, toggleContext, sendMain, setMsgs]);
+  }), [openFile, openCanvas, openTerm, refreshTree, tree, conv?.context, conv?.id, convTitles, loadConv, toggleContext, sendMain, setMsgs]);
 
   // ---- quote on selection
   useEffect(() => {
@@ -517,8 +637,8 @@ export default function App() {
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); setPanels((p) => ({ ...p, chats: true })); }
-      else if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); setPanels((p) => ({ ...p, chats: !p.chats })); }
+      // ⌘K belongs to the omnibox now (handled in the composer): chats, workspace, settings, terminals
+      if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); setPanels((p) => ({ ...p, chats: !p.chats })); }
       else if (mod && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); newChat(); }
       else if (mod && e.key === ".") { e.preventDefault(); setPanels((p) => ({ ...p, ws: !p.ws })); }
       else if (e.key === "Escape" && !(e.target as HTMLElement).closest("input,textarea")) { if (thread) setThread(null); else if (settings) setSettings(false); else setPanels({ chats: false, ws: false, art: false, src: false }); }
@@ -564,15 +684,19 @@ export default function App() {
     { name: "project", hint: "Link a project: /project name", run: (arg?: string) => { void linkProject(arg); } },
     { name: "compact", hint: "Summarise history", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "history", keepLast: 4 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
     { name: "fold", hint: "Fold old tool output", run: async () => { const c = convRef.current, last = mainPath[mainPath.length - 1]; if (!c || !last) return; await fetch(`/api/conversations/${c.id}/compact`, { method: "POST", body: JSON.stringify({ leafId: last.id, scope: "tools", keepLast: 2 }) }); loadConv(c.id, last.id); setCtxRev((r) => r + 1); } },
-    { name: "chats", hint: "Chats", run: () => setPanels((p) => ({ ...p, chats: true })) },
-    { name: "workspace", hint: "Files", run: () => setPanels((p) => ({ ...p, ws: true })) },
-    { name: "artifacts", hint: "Artifacts", run: () => setPanels((p) => ({ ...p, art: true })) },
-    { name: "sources", hint: "Sources", run: () => setPanels((p) => ({ ...p, src: true })) },
+    { name: "chats", hint: "Find and open chats", panel: "chats", run: () => setPanels((p) => ({ ...p, chats: true })) },
+    { name: "workspace", hint: "Browse files", panel: "workspace", run: () => setPanels((p) => ({ ...p, ws: true })) },
+    { name: "artifacts", hint: "Built files and windows", panel: "artifacts", run: () => setPanels((p) => ({ ...p, art: true })) },
+    { name: "sources", hint: "Pages from this chat", panel: "sources", run: () => setPanels((p) => ({ ...p, src: true })) },
+    { name: "processes", hint: "Terminals and background processes", panel: "processes", run: () => openTerm({}) },
+    { name: "terminal", hint: "New sandboxed terminal", run: () => openTerm({}) },
+    { name: "host-terminal", hint: "A terminal on your machine", run: () => openTerm({ host: true }) },
+    { name: "skills", hint: "Installed skills", panel: "skills", run: () => openSettings("skills") },
     { name: "context", hint: "Clear active context", run: async () => { const c = convRef.current; if (!c) return; setConv({ ...c, context: [] }); await fetch(`/api/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ context: [] }) }); } },
     { name: "export", hint: "Download chat", run: () => { if (convRef.current) location.href = `/api/conversations/${convRef.current.id}/export`; } },
     { name: "theme", hint: "Toggle theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
-    { name: "settings", hint: "Model, tools, MCP, skills", run: () => setSettings(true) },
-  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme]);
+    { name: "settings", hint: "Model, tools, access, MCP, skills", panel: "settings", run: () => openSettings() },
+  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, openSettings]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);
@@ -611,7 +735,7 @@ export default function App() {
           <button className={"ib" + (panels.ws ? " on" : "")} aria-label="Workspace" onClick={() => tog("ws")}><Folder /></button>
           <button className={"ib" + (panels.art ? " on" : "")} aria-label="Artifacts" onClick={() => tog("art")}><AppWindow /></button>
           {sources.length > 0 && <button className={"ib" + (panels.src ? " on" : "")} aria-label="Sources" onClick={() => tog("src")}><Link2 /></button>}
-          <button className="ib" aria-label="Settings" onClick={() => setSettings(true)}><Settings2 /></button>
+          <button className="ib" aria-label="Settings" onClick={() => openSettings()}><Settings2 /></button>
         </div>
 
         <div className="scroll" ref={scroller}>
@@ -622,16 +746,19 @@ export default function App() {
           <div className="dock-stack">
           <DockStatus conv={conv} offerBrief={offerBrief} streamId={streamId} onBrief={runBrief} onUnlink={async () => { const c = convRef.current; if (!c) return; await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: null }) }); setConv({ ...c, state: { ...(c.state || {}), project: undefined } }); }} />
           <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
-            quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")} />
+            quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")}
+            queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
+            procs={procs.filter((pr) => pr.running)} onOpenProc={(name) => openTerm({ proc: name })}
+            palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat, openSettings }} />
           </div>
         </div>
 
         {panels.chats && <div className="lstack"><div className="rsz" onPointerDown={resize("l")} aria-hidden /><ChatsPanel convs={convs} current={conv?.id || null} running={runningIds}
           onOpen={(id, leaf, msg) => { loadConv(id, leaf, msg); }} onClose={() => setPanels((p) => ({ ...p, chats: false }))}
-          onDelete={async (id) => { await fetch(`/api/conversations/${id}`, { method: "DELETE" }); if (conv?.id === id) newChat(); refreshConvs(); }} /></div>}
+          onDelete={deleteChat} /></div>}
 
         {rightCount > 0 && <div className={"rstack" + (rightCount > 1 ? " multi" : "")}><div className="rsz" onPointerDown={resize("r")} aria-hidden />
-          {settings && <Settings onClose={() => setSettings(false)} theme={theme} setTheme={setTheme} />}
+          {settings && <Settings onClose={() => setSettings(false)} theme={theme} setTheme={setTheme} initialTab={settingsTab} />}
             {thread && anchor && <div className="panel thread">
             <div className="panel-head"><span>Thread</span><span className="sp" /><button className="ib sm" aria-label="Close thread" onClick={() => setThread(null)}><X /></button></div>
             <div className="anchor">{anchor.content.replace(/<[^>]+>/g, "").slice(0, 300)}</div>

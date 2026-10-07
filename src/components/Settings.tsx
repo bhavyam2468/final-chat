@@ -7,8 +7,10 @@ type S = { provider: string; baseUrl: string; apiKey: string; model: string; con
 type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
-export function Settings({ onClose, theme, setTheme }: { onClose: () => void; theme: string; setTheme: (t: string) => void }) {
-  const [tab, setTab] = useState<"model" | "tools" | "access" | "mcp" | "skills">("model");
+export function Settings({ onClose, theme, setTheme, initialTab }: { onClose: () => void; theme: string; setTheme: (t: string) => void; initialTab?: "model" | "tools" | "access" | "mcp" | "skills" }) {
+  const [tab, setTab] = useState<"model" | "tools" | "access" | "mcp" | "skills">(initialTab || "model");
+  const [lastTab, setLastTab] = useState(initialTab);
+  if (initialTab && initialTab !== lastTab) { setLastTab(initialTab); setTab(initialTab); } // adjust to the palette's pick while rendering
   const [caps, setCaps] = useState<Caps | null>(null);
   const [s, setS] = useState<S | null>(null);
   const [presets, setPresets] = useState<Record<string, { baseUrl: string; model: string; contextTokens?: number }>>({});

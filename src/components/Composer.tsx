@@ -1,12 +1,13 @@
 "use client";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Plus, ArrowUp, Square, X, FileText, Hash, File as FileIcon } from "lucide-react";
-import { Attachment, flatFiles, fileUrl, useApp } from "./ctx";
+import { Plus, ArrowUp, Square, X, FileText, Inbox, Zap, Navigation, ArrowDownToLine } from "lucide-react";
+import { Attachment, ProcInfo, QueueItem, fileUrl, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
+import { Palette, PaletteHandle, PaletteMode, PaletteApi } from "./palette";
 
 export type SendPayload = { content: string; attachments: Attachment[]; quote: string | null };
 export type ComposerHandle = { insert: (t: string) => void; focus: () => void; addFiles: (f: FileList | File[]) => void };
-export type Command = { name: string; hint: string; run: (arg?: string) => void };
+export type Command = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; run: (arg?: string) => void };
 
 type Chip = Attachment & { loading?: boolean; key: string; preview?: string };
 
@@ -16,6 +17,18 @@ type Props = {
   commands?: Command[]; initial?: SendPayload; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean;
   /** per-chat draft: text + attachments survive chat switches and reloads (localStorage "draft:<key>") */
   draftKey?: string;
+  /** queued messages (main composer): Enter queues while the AI responds; the queue sends when it ends */
+  queue?: QueueItem[];
+  onEnqueue?: (p: SendPayload) => void;
+  onSteer?: (p: SendPayload) => void;
+  onSteerQueued?: (id: string) => void;
+  onDequeue?: (id: string) => void;
+  onUpdateQueued?: (id: string, p: SendPayload) => void;
+  /** agent-started background processes, shown for review above the input */
+  procs?: ProcInfo[];
+  onOpenProc?: (name: string) => void;
+  /** omnibox data (chats, workspace, sources, settings, processes) — omit for plain composers */
+  palette?: Omit<PaletteApi, "mention" | "attachPath">;
 };
 type Draft = { text: string; chips: Attachment[] };
 const readDraft = (k: string): Draft | null => { try { return JSON.parse(localStorage.getItem("draft:" + k) || "null"); } catch { return null; } };
@@ -28,16 +41,27 @@ export async function upload(files: File[], dir?: string): Promise<Attachment[]>
   return r.json();
 }
 
+const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i;
+const mimeGuess = (name: string) =>
+  IMG_EXT.test(name) ? `image/${name.split(".").pop()!.toLowerCase().replace("jpg", "jpeg")}`
+  : /\.pdf$/i.test(name) ? "application/pdf"
+  : /\.(mp4|webm|mov|mkv|m4v)$/i.test(name) ? "video/mp4"
+  : /\.(mp3|wav|ogg|m4a|flac|opus)$/i.test(name) ? "audio/mpeg"
+  : "application/octet-stream";
+
 export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, ref) {
   const app = useApp();
   const ta = useRef<HTMLTextAreaElement>(null);
   const fileIn = useRef<HTMLInputElement>(null);
+  const palRef = useRef<PaletteHandle>(null);
   const [text, setText] = useState(p.initial?.content || "");
   const [chips, setChips] = useState<Chip[]>(() => (p.initial?.attachments || []).map((a) => ({ ...a, key: a.path })));
   const [focused, setFocused] = useState(false);
   const [drag, setDrag] = useState(false);
-  const [menuIdx, setMenuIdx] = useState(0);
   const [caret, setCaret] = useState(0);
+  // omnibox: null = plain input; "commands"/"files" open automatically, panel modes are explicit
+  const [mode, setMode] = useState<PaletteMode | null>(null);
+  const [editingQ, setEditingQ] = useState<string | null>(null);
 
   // drafts: save on every change (cheap), load when the chat changes
   const keyRef = useRef(p.draftKey);
@@ -45,7 +69,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     if (!p.draftKey) return;
     keyRef.current = p.draftKey;
     const d = readDraft(p.draftKey);
-    setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path })));
+    setText(d?.text || ""); setChips((d?.chips || []).map((a) => ({ ...a, key: a.path }))); setMode(null); setEditingQ(null);
   }, [p.draftKey]);
   useEffect(() => {
     const k = keyRef.current; if (!k) return;
@@ -91,6 +115,12 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     } catch { setChips((c) => c.filter((x) => !temp.some((t) => t.key === x.key))); }
   }, [app]);
 
+  /** a workspace file becomes a chip without re-uploading it */
+  const addPathChip = useCallback((path: string) => {
+    const name = path.split("/").pop() || path;
+    setChips((c) => c.some((x) => x.path === path) ? c : [...c, { key: Math.random().toString(36), path, name, mime: mimeGuess(name), size: 0 }]);
+  }, []);
+
   useImperativeHandle(ref, () => ({
     insert: (t: string) => { setText((v) => (v && !v.endsWith(" ") ? v + " " : v) + t); setTimeout(() => ta.current?.focus(), 0); },
     focus: () => ta.current?.focus(),
@@ -101,6 +131,10 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   useEffect(() => {
     if (!p.capture) return;
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && p.commands && !document.querySelector(".scrim, .panel.settings")) {
+        // the omnibox: every surface one keystroke away
+        e.preventDefault(); ta.current?.focus(); setMode((m) => (m ? null : "commands")); return;
+      }
       const t = e.target as HTMLElement;
       if (t.closest("input, textarea, select, [contenteditable=true], iframe")) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -129,50 +163,147 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   useEffect(() => { if (p.autoFocus) ta.current?.focus(); }, [p.autoFocus]);
   useEffect(() => { if (p.quote) ta.current?.focus(); }, [p.quote]);
 
-  // menus
-  const before = text.slice(0, caret);
-  const mentionQ = before.match(/(?:^|\s)@([\w./~-]*)$/)?.[1];
-  const slash = text.match(/^\/([a-z][\w-]*)(?:\s+([\s\S]*))?$/i);
-  const cmdQ = slash && !text.includes("\n") ? slash[1] : undefined;
-  const cmdArg = slash?.[2]?.trim();
-  const items = useMemo(() => {
-    if (cmdQ !== undefined && p.commands) return p.commands.filter((c) => c.name.startsWith(cmdQ.toLowerCase())).map((c) => ({ key: c.name, label: "/" + c.name, hint: c.hint, run: () => { setText(""); c.run(cmdArg); }, icon: Hash }));
-    if (mentionQ !== undefined) return flatFiles(app.tree).filter((f) => f.path.toLowerCase().includes(mentionQ.toLowerCase()) && !f.path.startsWith("chats/")).slice(0, 8).map((f) => ({
-      key: f.path, label: f.name, hint: f.path, icon: FileIcon,
-      run: () => { const start = before.lastIndexOf("@"); const nt = text.slice(0, start) + "@" + f.path + " " + text.slice(caret); setText(nt); setTimeout(() => { const c = start + f.path.length + 2; ta.current?.setSelectionRange(c, c); setCaret(c); }, 0); },
-    }));
-    return [];
-  }, [cmdQ, cmdArg, mentionQ, p.commands, app.tree, before, text, caret]);
-  useEffect(() => setMenuIdx(0), [items.length]);
+  // ---- omnibox triggers -------------------------------------------------
+  // "/" at the start opens the command list; "@" opens file search; panel modes keep their own text.
+  const slash = text.match(/^\/([\w-]*)(?:\s([\s\S]*))?$/);
+  const atTok = text.match(/(?:^|\s)@([\w./~-]*)$/);
 
+  useEffect(() => {
+    if (mode === null) {
+      if (slash && !text.includes("\n")) setMode("commands");
+      else if (atTok) setMode("files");
+    } else if (mode === "commands" && !slash) setMode(null); // trigger edited away: back to plain input
+    else if (mode === "files" && !atTok) setMode(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
+
+  const collapsePalette = useCallback((clear = false) => {
+    setMode(null); setEditingQ(null);
+    if (clear) { setText(""); setCaret(0); }
+    setTimeout(() => ta.current?.focus(), 0);
+  }, []);
+
+  const openPanel = useCallback((m: PaletteMode, seed?: string) => {
+    setText(seed || ""); setCaret((seed || "").length);
+    setMode(m); palRef.current?.reset();
+    setTimeout(() => ta.current?.focus(), 0);
+  }, []);
+
+  // ---- send / queue / steer --------------------------------------------
   const ready = chips.every((c) => !c.loading);
-  const canSend = (text.trim() || chips.length) && ready && !p.streaming;
+  const hasContent = !!(text.trim() || chips.length);
+  const payload = (): SendPayload | null => {
+    if (!hasContent || !ready) return null;
+    return { content: text.trim(), attachments: chips.map(({ path, name, mime, size }) => ({ path, name, mime, size })), quote: p.quote || null };
+  };
+  const clearInput = () => { setText(""); setChips([]); setCaret(0); p.onClearQuote?.(); };
+
   const send = () => {
-    if (!canSend) return;
-    p.onSend({ content: text.trim(), attachments: chips.map(({ path, name, mime, size }) => ({ path, name, mime, size })), quote: p.quote || null });
-    setText(""); setChips([]); p.onClearQuote?.();
+    const pay = payload(); if (!pay) return;
+    clearInput(); p.onSend(pay);
+  };
+  const queueIt = () => {
+    const pay = payload(); if (!pay) return;
+    clearInput();
+    if (p.onEnqueue) p.onEnqueue(pay); else p.onSend(pay);
+  };
+  const steerNow = () => {
+    const pay = payload(); if (!pay) return;
+    clearInput();
+    if (p.onSteer) p.onSteer(pay); else p.onSend(pay);
+  };
+  /** pull a queued item back into the editor (order is kept when it is committed again) */
+  const editQueued = (it: QueueItem) => {
+    if (!p.onDequeue) return;
+    p.onDequeue(it.id); setEditingQ(it.id); setText(it.content); setMode(null);
+    requestAnimationFrame(() => { ta.current?.focus(); const c = it.content.length; ta.current?.setSelectionRange(c, c); setCaret(c); });
+  };
+  const commitQueuedEdit = () => {
+    const id = editingQ; if (!id) return;
+    const pay = payload();
+    setEditingQ(null);
+    if (pay) { clearInput(); p.onUpdateQueued?.(id, pay); }
+    else if (!text.trim() && !chips.length) setEditingQ(null); // emptied: drop it
   };
 
+  const canSend = hasContent && ready && !p.streaming;
+  const canQueue = hasContent && ready && !!p.streaming;
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (items.length) {
-      if (e.key === "ArrowDown") { e.preventDefault(); setMenuIdx((i) => (i + 1) % items.length); return; }
-      if (e.key === "ArrowUp") { e.preventDefault(); setMenuIdx((i) => (i - 1 + items.length) % items.length); return; }
-      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); items[menuIdx]?.run(); return; }
+    // omnibox navigation first: the palette owns the arrow keys while it is open
+    if (mode) {
+      if (e.key === "Escape") { e.preventDefault(); collapsePalette(!["commands", "files"].includes(mode)); return; }
+      if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Tab", "Enter"].includes(e.key) && !(e.key === "Enter" && (e.metaKey || e.ctrlKey))) {
+        if (palRef.current?.key(e)) { e.preventDefault(); return; }
+      }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && hasContent) { e.preventDefault(); steerNow(); return; }
+      return; // typing filters; other keys behave as usual
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); return; }
-    if (e.key === "Escape") { if (p.onCancel) p.onCancel(); else ta.current?.blur(); return; }
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      if ((e.metaKey || e.ctrlKey) && hasContent && (p.onSteer || !p.streaming)) { steerNow(); return; } // ⌘/Ctrl+⏎: steer now (sends if idle)
+      if (p.streaming) {
+        if (editingQ) { commitQueuedEdit(); return; }
+        if (!hasContent && p.queue?.length && p.onSteerQueued) { p.onSteerQueued(p.queue[p.queue.length - 1].id); return; } // ⏎ again: steer it now
+        if (canQueue) { queueIt(); return; }
+        if (!p.onEnqueue) return; // plain composers (threads) stay read-only while streaming
+        return;
+      }
+      if (canSend) send();
+      return;
+    }
+    if (e.key === "ArrowUp" && !text && !chips.length && p.streaming && p.queue?.length && p.onDequeue) { e.preventDefault(); editQueued(p.queue[p.queue.length - 1]); return; }
+    if (e.key === "Escape") { if (editingQ) { setEditingQ(null); setText(""); return; } if (p.onCancel) p.onCancel(); else ta.current?.blur(); return; }
     if (e.key === "Backspace" && !text && !chips.length) {
       if (p.quote) { p.onClearQuote?.(); return; }
       e.preventDefault(); if (p.onCancel) p.onCancel(); else ta.current?.blur();
     }
   };
 
-  const open = p.inline || focused || !!text || chips.length > 0 || !!p.quote;
+  const open = p.inline || focused || !!text || chips.length > 0 || !!p.quote || !!mode;
+  const palQuery = mode === "commands" ? (slash?.[1] || "") : mode === "files" ? (atTok?.[1] || "") : text;
+  const palArg = slash?.[2] || "";
+  const paletteApi: PaletteApi | null = p.palette ? {
+    ...p.palette,
+    mention: (path: string) => {
+      // replace the "@token" that opened the palette, like the old inline menu did
+      const el = ta.current; const at = el ? (el.selectionStart ?? el.value.length) : text.length;
+      const before = text.slice(0, at); const m = before.match(/(?:^|\s)@([\w./~-]*)$/);
+      const start = m ? before.lastIndexOf("@") : at;
+      const nt = text.slice(0, start) + "@" + path + " " + text.slice(at);
+      setText(nt); collapsePalette();
+      setTimeout(() => { const c = start + path.length + 2; ta.current?.setSelectionRange(c, c); ta.current?.focus(); setCaret(c); }, 0);
+    },
+    attachPath: (path: string) => { addPathChip(path); collapsePalette(); },
+  } : null;
+
   return (
-    <div className={`composer${open ? " open" : ""}${p.inline ? " inline" : ""}${drag ? " drag" : ""}`}
+    <div className={`composer${open ? " open" : ""}${p.inline ? " inline" : ""}${drag ? " drag" : ""}${mode ? " pal-open" : ""}`}
       onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}>
-      {items.length > 0 && focused && <div className="menu" role="listbox">{items.map((it, i) => { const I = it.icon; return <button key={it.key} className={i === menuIdx ? "on" : ""} onMouseDown={(e) => { e.preventDefault(); it.run(); }}><I />{it.label}<small>{it.hint}</small></button>; })}</div>}
+      {mode && paletteApi && <Palette ref={palRef} mode={mode} query={palQuery} arg={palArg} api={paletteApi} collapse={() => collapsePalette(false)} onPanel={openPanel} />}
+      {!!p.queue?.length && <div className="qstrip">
+        <div className="qstrip-head"><Inbox size={12} /><span>{p.queue.length} queued — sends after this reply</span><span className="sp" /><span className="qhint"><kbd>⏎</kbd> steer newest · <kbd>↑</kbd> edit</span></div>
+        {p.queue.map((it, i) => (
+          <div key={it.id} className={"qitem" + (editingQ === it.id ? " editing" : "")}>
+            <span className="q-n">{i + 1}</span>
+            <button className="q-body" onMouseDown={(e) => e.preventDefault()} onClick={() => editQueued(it)} title="Edit">
+              <span className="q-text">{it.content || it.attachments.map((a) => a.name).join(", ")}</span>
+              {i === p.queue!.length - 1 && <span className="q-hint"><kbd>⏎</kbd> steer now</span>}
+            </button>
+            <button className="ib sm" aria-label="Steer now" title="Steer now" onClick={() => { if (editingQ === it.id) { setEditingQ(null); setText(""); } p.onSteerQueued?.(it.id); }}><Zap /></button>
+            <button className="ib sm" aria-label="Remove from queue" title="Remove" onClick={() => { if (editingQ === it.id) { setEditingQ(null); setText(""); } p.onDequeue?.(it.id); }}><X /></button>
+          </div>
+        ))}
+      </div>}
+      {!!p.procs?.length && <div className="pstrip">
+        {p.procs.map((pr) => (
+          <button key={pr.name} className={"ppill" + (pr.running ? " live" : "")} onMouseDown={(e) => e.preventDefault()}
+            onClick={() => p.onOpenProc?.(pr.name)} title={`${pr.command}${pr.running ? " · running" : ` · exited ${pr.exit}`}`}>
+            <i className="pdot" />{pr.name}{pr.ports.length > 0 && <span className="pport">:{pr.ports[0]}</span>}{!pr.running && <span className="pexit">exited</span>}
+          </button>
+        ))}
+      </div>}
       {p.quote && <div className="cquote"><p>{p.quote}</p><button className="ib sm" aria-label="Remove quote" onClick={p.onClearQuote}><X /></button></div>}
       {chips.length > 0 && <div className="chips">{chips.map((c) => {
         const isImg = c.mime.startsWith("image/");
@@ -189,10 +320,16 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
           onKeyDown={onKeyDown} onFocus={() => { setFocused(true); p.onFocus?.(); }} onBlur={() => setFocused(false)}
           onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }} />
-        <span className="send-slot">
-          {p.streaming ? <button className="send" aria-label="Stop" onClick={p.onStop}><Square fill="currentColor" /></button>
-            : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button>
-            : <span className="send-placeholder" aria-hidden="true" />}
+        <span className={"send-slot" + (p.streaming ? " two" : "")}>
+          {p.streaming ? (
+            <>
+              {canQueue && <button className="send ghost" aria-label="Steer now" title="Steer now (⌘⏎)" onClick={steerNow}><Navigation /></button>}
+              {canQueue ? <button className="send" aria-label="Queue message" title="Queue — sends after this reply (⏎)" onClick={queueIt}><ArrowDownToLine /></button>
+                : p.queue?.length ? <button className="send" aria-label="Steer queued message" title="Steer the queued message now (⏎)" onClick={() => p.onSteerQueued?.(p.queue![p.queue!.length - 1].id)}><Zap /></button>
+                : <span className="send-placeholder" aria-hidden="true" />}
+            </>
+          ) : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button>
+          : <span className="send-placeholder" aria-hidden="true" />}
         </span>
       </div>
     </div>

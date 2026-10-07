@@ -88,7 +88,8 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | Component | Purpose |
 |---|---|
 | `App.tsx` | Root client component: layout, panels, chat state, keyboard shortcuts |
-| `Composer.tsx` | Message input box: slash commands, `@`-mentions, file attachments |
+| `Composer.tsx` | Message input box: queue & steer while streaming, slash commands, `@`-mentions, attachments, the process strip |
+| `palette.tsx` | The omnibox the input bar expands into: commands, chats, workspace browser, sources, settings, processes, skills |
 | `Message.tsx` | Renders a single message (user or assistant) with tool calls, sources, branches |
 | `Panels.tsx` | Left panel (Chats and separate General history), right panel (workspace file browser) |
 | `Canvas.tsx` | Floating canvas overlay for expanded Blocks/generative-UI |
@@ -208,11 +209,29 @@ Plain chat stays cheap: a short system prompt, core tools only, no plans or chec
 - **Dev pack** (`proc_*`, `browser`, `check`):
   - Loads when a skill declaring `tools: dev` opens (build, debug, design, host), or always on large context windows (Settings → Tools).
   - Servers run as managed processes, so the agent waits for a port instead of sleeping, and restarts instead of re-spawning.
+  - The full process suite: `proc_start` detaches at once, `proc_logs` reads or blocks (`wait_for` port/pattern/exit), `proc_wait` pauses until a condition with a timeout, `proc_write` answers prompts and feeds repls through stdin, `proc_signal` sends SIGHUP/SIGUSR-style signals, `proc_stop` kills the tree, `proc_restart` re-runs the same command. Every process the agent starts appears on the input bar; clicking one opens its output in a terminal window.
 - **Planning.** `todo` shows a checklist in the chat, and the current step is recited after each tool result. `ask_user` shows option buttons and ends the turn.
 - **Presentation.** Blocks are the native medium, not decoration: `<ui>` first, prose for what a block cannot say. The loop checks each finished answer and gives one round to convert a markdown table (6+ rows), five or more number-carrying bullets, a spec sheet of lines, or a chart linked from `run_python` into blocks (`x-table`, `x-chart`, `x-graph`, `x-stat`, `x-kv`). The reference lives in `system/skills/blocks/SKILL.md`; the rule and examples live in `SYSTEM.md`.
 - **Quality guard.** HTML/CSS/JSX the agent writes is linted for generic AI styling (novelty fonts, neon, purple gradients, glass, emoji headings, marketing copy, helper text). With `fix`, the agent gets one repair round.
 - **Skills (11 shipped, one job each):** blocks (the UI language), canvas, documents (PDF/Office/CSV + sandbox Python), research (search craft, deep research, literature, critique), build (web, React, Electron, Go, Rust, Java, Android, iOS, Flutter), debug, design, memory (remember + context hygiene), extensions (MCP, credentials, skill authoring), terminal (sandbox vs host, home files, sudo), learn. Type `/name` in the composer to force one. The agent can author a skill (`skill_create`) or install one from GitHub (`skill_install`) in chat; Settings → Skills does the same by hand.
   A skill file the user edited is never overwritten; a shipped skill that no longer ships is moved to `.trash/template-updates` when the workspace syncs.
+
+## Queue & Steer
+
+The input bar works while the AI responds — nothing is ever locked:
+
+- **`Enter` queues.** Your message sits above the input with a number; when the turn ends it sends automatically, in order. Queues survive reloads and chat switches.
+- **`Enter` again steers.** Pressing `Enter` on the empty composer (or the ⚡ on a queued card, or `⌘/Ctrl+Enter` as you type) sends that message straight into the running turn. The server saves it, chains it into the conversation (user → steer → reply), and hands it to the agent with a wrapper: *keep the work done so far, fold this direction in, adjust course with minimal churn.* If the run ended a beat earlier, it simply sends normally.
+- **`↑` edits.** Pulls the newest queued message back into the input; `Enter` puts it back in its place. Click any card to edit it, ✕ to drop it.
+- **Stop parks the queue.** Nothing auto-sends after an explicit stop.
+
+## Terminals
+
+The `/processes` palette (or a process pill on the input bar) opens a terminal window in the canvas:
+
+- **Sandbox terminal** (default): an interactive `bash` in the agent's sandbox — workspace `cwd`, app secrets stripped, bubblewrap namespace when installed.
+- **Host terminal** (Settings → Access → Host terminal): your real `$SHELL` in your home directory, profile and toolchains included; `sudo` prompts work because the session is a genuine pseudo-tty.
+- Sessions stream over NDJSON and outlive the window; keystrokes, tab completion, shell history and password prompts behave exactly like a local terminal. A process's window shows its live output with Stop and Restart.
 
 ## Extensions
 
@@ -311,11 +330,15 @@ npm start
 |---|---|
 | Type anywhere | Focus composer |
 | `Backspace` on empty composer | Release / unfocus |
-| `/` | Slash commands |
+| `/` | Expand the input bar into the command list |
+| `/chats` `/workspace` `/settings` `/processes` `/sources` `/artifacts` `/skills` | The input bar becomes that surface (↑↓ navigate, `→` drill in, `←` back, `Esc` collapses) |
 | `@` | Mention workspace files |
 | `Enter` | Send message |
 | `Shift+Enter` | Newline |
-| `⌘K` / `Ctrl+K` | Search chats |
+| `Enter` while responding | Queue the message |
+| `Enter` again on empty / `⌘Enter` | Steer the running turn now |
+| `↑` on empty while responding | Edit the newest queued message |
+| `⌘K` / `Ctrl+K` | The omnibox (commands) |
 | `⌘B` / `Ctrl+B` | Toggle chat panel |
 | `⌘.` / `Ctrl+.` | Toggle workspace panel |
 | `⌘⇧O` / `Ctrl+Shift+O` | New chat |

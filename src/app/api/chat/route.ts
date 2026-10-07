@@ -4,12 +4,18 @@ import { db } from "@/db";
 import { conversations, messages, Attachment } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { runAgent } from "@/lib/agent";
-import { activeIds, activeRun, anyRun, attach, startRun, stopRun } from "@/lib/runs";
+import { activeIds, activeRun, anyRun, attach, injectSteer, startRun, stopRun } from "@/lib/runs";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-type Body = { conversationId?: string; parentId: string | null; threadOf?: string | null; user?: { content: string; attachments?: Attachment[]; quote?: string | null }; stop?: boolean; mode?: string };
+type Body = {
+  conversationId?: string; parentId: string | null; threadOf?: string | null;
+  user?: { content: string; attachments?: Attachment[]; quote?: string | null };
+  /** mid-run steering: a user message pushed into the running turn */
+  steer?: { content: string; attachments?: Attachment[] };
+  stop?: boolean; mode?: string;
+};
 const NDJSON = { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" };
 
 /** GET ?conversationId= re-attaches to a running (or just finished) run; without it, lists running conversation ids. */
@@ -24,6 +30,18 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const b = (await req.json()) as Body;
   if (b.stop) return Response.json({ stopped: b.conversationId ? stopRun(b.conversationId) : false });
+  // --- steering an active run: save the message now, hand it to the agent loop
+  if (b.steer) {
+    const convId = b.conversationId;
+    const run = convId ? activeRun(convId) : undefined;
+    if (!run) return Response.json({ error: "not_running" }, { status: 409 });
+    const content = String(b.steer.content || "").trim();
+    if (!content) return Response.json({ error: "Empty message" }, { status: 400 });
+    const id = nanoid(12);
+    await db.insert(messages).values({ id, conversationId: convId!, parentId: run.tailId, threadOf: null, role: "user", content, attachments: b.steer.attachments || [], quote: null });
+    injectSteer(convId!, id, { content, attachments: b.steer.attachments || [] });
+    return Response.json({ ok: true, id, parentId: run.tailId, conversationId: convId });
+  }
   let convId = b.conversationId;
   if (convId && activeRun(convId)) return Response.json({ error: "This chat is still responding" }, { status: 409 });
   let conv = convId ? (await db.select().from(conversations).where(eq(conversations.id, convId)))[0] : undefined;
@@ -41,7 +59,7 @@ export async function POST(req: NextRequest) {
   }
   const assistantId = nanoid(12);
   const c = conv;
-  const { run, emit, finish, signal } = startRun(c.id, assistantId);
+  const { run, emit, finish, signal } = startRun(c.id, assistantId, parentId || "");
   emit({ t: "meta", conversationId: c.id, userId, assistantId, parentId, threadOf: b.threadOf || null, title: c.title, startedAt: run.startedAt });
   // the run is not tied to this request: it survives the viewer leaving
   (async () => {

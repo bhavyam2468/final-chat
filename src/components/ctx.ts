@@ -6,6 +6,10 @@ export type Part =
   | { type: "reasoning"; id?: string; text: string; ms?: number; startedAt?: number }
   | { type: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; ok?: boolean; meta?: unknown; compact?: string; startedAt?: number; status?: string; live?: string };
 export type Attachment = { path: string; name: string; mime: string; size: number };
+/** A message waiting in the input bar while the AI responds; it sends when the turn ends. */
+export type QueueItem = { id: string; content: string; attachments: Attachment[]; createdAt: number };
+/** An agent-started background process, as shown on the input bar. */
+export type ProcInfo = { name: string; running: boolean; exit: number | null; ports: number[]; host: boolean; command: string; cwd?: string; started: number; pid: number; tail: string };
 export type Msg = {
   id: string; conversationId: string; parentId: string | null; threadOf: string | null; role: "user" | "assistant";
   content: string; parts: Part[]; attachments: Attachment[]; quote: string | null; createdAt: string; pending?: boolean; compact?: string | null; streamStartedAt?: number;
@@ -18,12 +22,16 @@ export type CanvasSpec =
   | { kind: "youtube"; title: string; id: string }
   | { kind: "md"; title: string; body: string }
   | { kind: "web"; title: string; url: string }
-  | { kind: "chat"; title: string; id: string };
+  | { kind: "chat"; title: string; id: string }
+  /** live terminal in a window: a fresh session, an existing one, or an agent process's log */
+  | { kind: "term"; title: string; id?: string; host?: boolean; proc?: string };
 export type OpenOpts = { dock?: boolean };
 
 export type AppApi = {
   openFile: (path: string) => void;
   openCanvas: (c: CanvasSpec, o?: OpenOpts) => void;
+  /** open a terminal window: a fresh sandbox/host session or the log of an agent-started process */
+  openTerm: (o?: { id?: string; host?: boolean; proc?: string; title?: string }) => void;
   sendUiEvent: (data: unknown, opts?: { label?: string; prompt?: string }) => void;
   sendText: (text: string) => void;
   /** Approve / deny a command the harness held back (tool meta.approval). */

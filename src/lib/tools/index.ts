@@ -14,7 +14,7 @@ import { youtubeId, chatDir } from "../shared";
 import { firecrawlScrape, firecrawlSearch, firecrawlExtract } from "../web";
 import { applyEdits, insertLines, snippet, hasPlaceholder, Edit } from "./edit";
 import { syntaxError } from "./syntax";
-import { procStart, procLogs, procStop, procRestart } from "../procs";
+import { procStart, procLogs, procWait, procWrite, procSignal, procStop, procRestart } from "../procs";
 import { browse, Step } from "../browser";
 import { runChecks, lintFiles } from "../harness/check";
 import { findSkill, skillMeta, skillFiles, installFromGitHub } from "../skills";
@@ -93,10 +93,13 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("adb_shell", "One command on the device shell, not the computer. No installers, no rm -rf", { command: s() }, ["command"]),
   ] : [];
   const dev: ToolDef[] = [
-    T("proc_start", "Start a long-running process (dev server, watcher) in the background", { name: s(), command: s(), cwd: s(), wait: n("seconds to wait for a port, default 4"), ...hostArg }, ["name", "command"]),
-    T("proc_logs", "Process output/status. No name = list. wait_for blocks until port/pattern/exit", { name: s(), tail: n(), grep: s(), wait_for: { type: "string", enum: ["port", "pattern", "exit"] }, pattern: s(), timeout: n() }),
+    T("proc_start", "Start a long-running process (dev server, watcher, build) in the background and return at once — you are detached from it. Check on it later with proc_logs", { name: s("short handle you will use later, e.g. web, api, worker"), command: s(), cwd: s(), wait: n("seconds to wait for a port before returning, default 4; 0 = return immediately"), env: arr({ type: "object" }, "extra env vars, e.g. {\"PORT\": \"3001\"}"), ...hostArg }, ["name", "command"]),
+    T("proc_logs", "Process output/status. No name = list all. wait_for blocks until port/pattern/exit (use to read a detached process later)", { name: s(), tail: n(), grep: s(), wait_for: { type: "string", enum: ["port", "pattern", "exit"] }, pattern: s(), timeout: n() }),
+    T("proc_wait", "Pause until a process exits, opens a port or prints a pattern — bounded by timeout. Use instead of sleep before deciding a process is ready", { name: s(), until: { type: "string", enum: ["exit", "port", "pattern"] }, pattern: s("regex, for until=pattern"), timeout: n("seconds, default 30") }, ["name"]),
+    T("proc_write", "Write to a running process's stdin: answer a prompt, feed a repl, type into an interactive shell. Read proc_logs afterwards to see the effect", { name: s(), input: s(), newline: b("append \\n, default true") }, ["name", "input"]),
+    T("proc_signal", "Send a signal: SIGHUP to reload config, SIGUSR1/2 for debug dumps, SIGSTOP/SIGCONT to pause and resume (SIGTERM/SIGKILL belong to proc_stop)", { name: s(), signal: s("SIGNAME") }, ["name", "signal"]),
     T("proc_restart", "Restart a process with the same command", { name: s(), wait: n() }, ["name"]),
-    T("proc_stop", "Stop a process", { name: s() }, ["name"]),
+    T("proc_stop", "Stop a process (its whole process tree)", { name: s() }, ["name"]),
     T("browser", "Open URL or workspace page (.html/.ui/dir) headless; returns screenshot + console errors + text", { target: s(), steps: arr({ type: "object", properties: { click: s(), type: s(), text: s(), press: s(), wait: { type: ["number", "string"] }, eval: s(), scroll: n(), hover: s(), select: s(), value: s() } }, "actions in order"), width: n(), height: n(), full: b("full page"), theme: { type: "string", enum: ["light", "dark"] } }, ["target"]),
     T("check", "Verify work: project dir → types/lint/tests/build; UI file or dir → design lint + screenshot", { path: s(), run: { type: "string", enum: ["all", "types", "lint", "test", "build", "ui"] }, ...hostArg }, ["path"]),
   ];
@@ -225,7 +228,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       check: "Running checks", quality_check: "Reviewing design", adb_devices: "Checking connected devices",
       adb_install: "Installing app on device", adb_launch: "Opening app on device", adb_shot: "Capturing device screen",
       adb_tap: "Sending touch input", adb_logcat: "Reading device logs", adb_shell: "Running device command",
-      proc_start: "Starting process", proc_logs: "Reading process output", proc_restart: "Restarting process", proc_stop: "Stopping process",
+      proc_start: "Starting process", proc_logs: "Reading process output", proc_wait: "Waiting on process", proc_write: "Writing to process", proc_signal: "Signalling process", proc_restart: "Restarting process", proc_stop: "Stopping process",
     };
     ctx.progress?.(activity[name] || "Working on integration");
     switch (name) {
@@ -245,7 +248,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
         let extra = "";
         const packs = (meta.tools || "").split(/[\s,]+/).filter((p): p is Pack => p === "dev");
         const add = packs.filter((p) => !(ctx.state.packs || []).includes(p));
-        if (add.length) { await ctx.setState({ ...ctx.state, packs: [...(ctx.state.packs || []), ...add] }); extra += `\n\n(Enabled tools: proc_start proc_logs proc_restart proc_stop browser check)`; }
+        if (add.length) { await ctx.setState({ ...ctx.state, packs: [...(ctx.state.packs || []), ...add] }); extra += `\n\n(Enabled tools: proc_start proc_logs proc_wait proc_write proc_signal proc_restart proc_stop browser check)`; }
         const files = await skillFiles(sk.dir);
         if (files.length) extra += `\n\nReference files (skill_open name="${sk.name}" file=…): ${files.join(", ")}`;
         return { ok: true, result: sk.text.replace(/^---[\s\S]*?---\n/, "") + extra };
@@ -599,8 +602,11 @@ They can also press Connect in Settings → MCP.` : "";
         return { ok: true, stop: true, result: "Shown to the user. Stop here; the answer arrives as the next message.", meta: { question: String(a.question || ""), options, multi: !!a.multi } };
       }
       case "ui_search": return { ok: true, result: searchCatalog(a.query) };
-      case "proc_start": return await procStart(st, { name: String(a.name || "app"), command: String(a.command || ""), cwd: a.cwd, host: !!a.host, wait: Number(a.wait) || undefined });
+      case "proc_start": return await procStart(st, { name: String(a.name || "app"), command: String(a.command || ""), cwd: a.cwd, host: !!a.host, wait: a.wait !== undefined ? Number(a.wait) : undefined, env: (a.env && typeof a.env === "object" ? Object.fromEntries(Object.entries(a.env as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : undefined) });
       case "proc_logs": return await procLogs({ name: a.name, tail: Number(a.tail) || undefined, grep: a.grep, wait_for: a.wait_for, pattern: a.pattern, timeout: Number(a.timeout) || undefined });
+      case "proc_wait": return await procWait({ name: String(a.name || ""), until: a.until, pattern: a.pattern, timeout: Number(a.timeout) || undefined });
+      case "proc_write": return procWrite({ name: String(a.name || ""), input: String(a.input ?? ""), newline: a.newline !== false });
+      case "proc_signal": return procSignal({ name: String(a.name || ""), signal: String(a.signal || "") });
       case "proc_stop": return await procStop(String(a.name));
       case "proc_restart": return await procRestart(st, String(a.name), Number(a.wait) || undefined);
       case "browser": {

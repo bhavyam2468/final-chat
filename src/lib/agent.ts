@@ -23,8 +23,20 @@ import { memoryPrompt } from "./memory";
 import { projectSlug, projectText } from "./projects";
 import { unseenCommandFlags } from "./harness/shell-preflight";
 import { needsBlocks, renderedToFile } from "./harness/present";
+import { drainSteers, runTail } from "./runs";
 
 export type Emit = (e: Record<string, unknown>) => void;
+
+/**
+ * A mid-run steer arrives while the model is mid-turn. It is a user message, but not a reply to
+ * what the model just wrote: it redirects work in flight. The wrapper tells the model how to treat it.
+ */
+const steerWrap = (t: string) =>
+  `[Steering message from the user, sent while you were still working — not a reply to your last words. ` +
+  `Keep everything you have already done: do not restart, undo or contradict it unless this message asks. ` +
+  `Fold the new direction into the work from here: if it changes the goal, quietly re-plan and continue; ` +
+  `if it adds information or files, use them; if it corrects you, adjust course with minimal churn. ` +
+  `Finish your current step cleanly, then follow this direction for the rest of the turn.]\n\n${t}`;
 
 function envText(st: Settings) {
   const sb = execMode(st, false), host = execMode(st, true);
@@ -308,8 +320,19 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
     if (!lt.text) parts.splice(parts.indexOf(lt), 1);
     emit({ t: "retext", text: lt.text });
   };
+  /** Take buffered steers into the loop context; returns how many arrived. */
+  const takeSteers = () => {
+    const got = drainSteers(conv.id);
+    if (got.length) {
+      sep = true; // the model's next visible text follows an interruption: start a new paragraph
+      for (const s of got) loopMsgs.push({ role: "user", content: steerWrap(s.content) });
+    }
+    return got.length;
+  };
   try {
     for (let step = 0; step < maxSteps(); step++) {
+      // Steers buffered while the last request was in flight ride along with the next one.
+      takeSteers();
       tools = allTools(st, packsFor(st, state), mcp);
       toolDefTok = est(JSON.stringify(tools));
       const res = await fetch(endpoint(st), {
@@ -463,6 +486,8 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
             continue;
           }
         }
+        // A steer landing while the closing text streamed still deserves a response, not a dangling message.
+        if (!signal.aborted && takeSteers()) continue;
         break;
       }
       loopMsgs.push({ role: "assistant", content: text || null, tool_calls: valid });
@@ -562,7 +587,8 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
   // stopped mid-call: no spinner forever on reload; the partial answer itself is kept as-is
   if (signal.aborted) for (const p of parts) if (p.type === "tool" && p.result === undefined) Object.assign(p, { result: "(stopped by the user)", ok: false });
   const content = parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("");
-  await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId, threadOf, role: "assistant", content, parts });
+  // the reply is saved under the newest mid-run steer (if any), so the chain reads user → steer → assistant
+  await db.insert(messages).values({ id: assistantId, conversationId: conv.id, parentId: runTail(conv.id, parentId), threadOf, role: "assistant", content, parts });
   await db.update(conversations).set({ updatedAt: new Date() }).where(eq(conversations.id, conv.id));
 
   // persist canvases as artifacts (same title = update in place)
