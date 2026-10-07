@@ -174,9 +174,10 @@ The server clamps these values on every read and write (sudo can never be on wit
 
 ## Canvas, Viewers & Context
 
-- `<canvas title="…">…</canvas>` in a reply (or the `canvas_open` tool) opens a window; add `dock` to place it beside the chat. Only one window is docked at a time; opening another parks the previous one in the tray at the top.
+- `<canvas title="…">…</canvas>` in a reply (or the `canvas_open` tool) opens in the free sidebar; if it is occupied, the new canvas floats instead of replacing the current one. Add `dock` to request the sidebar explicitly, or `dock="false"` to keep a canvas floating. Reopening a canvas focuses/restores its existing window.
+- Floating canvases resize from every edge and corner, can be dragged to a screen edge to park as a small tab, and minimize to a persistent left-edge shelf. Shelf items restore on click and have a separate close control.
 - File viewers, each with its own bottom-bar actions:
-  - **PDF**: pages, zoom, pen annotations, notes.
+  - **PDF**: smooth page navigation, zoom, selectable text with source-aware quotes, pen annotations, notes.
   - **Word**: rendered document, word count. Uses mammoth, or LibreOffice for `.doc`/`.odt`.
   - **Excel/CSV**: grid with sheet tabs, filter, copy as CSV.
   - **PowerPoint**: rendered slides, grid, speaker notes, present mode, outline. Uses python-pptx, or LibreOffice for page-accurate output.

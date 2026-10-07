@@ -293,14 +293,16 @@ function ActivityGroup({ children, active, count }: { children: React.ReactNode;
 function CanvasCard({ title, body, done, attrs }: { title: string; body: string; done: boolean; attrs: Record<string, string> }) {
   const app = useApp();
   const liveAtMount = useRef(!done);
-  const dock = attrs.dock !== undefined && attrs.dock !== "false";
+  // The manager applies the free-sidebar default; preserve an explicit dock attribute only.
+  const dock = attrs.dock === undefined ? undefined : attrs.dock !== "false";
   const open = useCallback(() => {
     const t = body.trim();
     const yt = youtubeId(t);
     const onlyUi = /^<ui[\s>]/.test(t) && /<\/ui>$/.test(t) && t.indexOf("<ui", 1) < 0;
-    if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, { dock });
-    else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, { dock });
-    else app.openCanvas({ kind: "md", title, body }, { dock });
+    const opts = dock === undefined ? undefined : { dock };
+    if (yt && /^\S+$/.test(t)) app.openCanvas({ kind: "youtube", title, id: yt }, opts);
+    else if (onlyUi) app.openCanvas({ kind: "ui", title, source: t.replace(/^<ui[^>]*>/, "").replace(/<\/ui>$/, "") }, opts);
+    else app.openCanvas({ kind: "md", title, body }, opts);
   }, [app, title, body, dock]);
   useEffect(() => { if (done && liveAtMount.current) { liveAtMount.current = false; open(); } }, [done, open]);
   return <div className="canvas-card" onClick={done ? open : undefined} role="button"><AppWindow /><span className="t">{title}</span><small>{done ? "Open" : "Building…"}</small></div>;

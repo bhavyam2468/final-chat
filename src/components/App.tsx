@@ -7,6 +7,7 @@ import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Compos
 import { chatDir } from "@/lib/shared";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win, contentRatio } from "./Canvas";
+import { shouldDockCanvas } from "@/lib/canvas-layout";
 import { Settings } from "./Settings";
 
 const rid = () => "tmp" + Math.random().toString(36).slice(2, 10);
@@ -86,9 +87,17 @@ export default function App() {
   /* eslint-enable react-hooks/set-state-in-effect */
   const [dockW, setDockWS] = useState(560);
   const [ctxRev, setCtxRev] = useState(0);
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference, read after hydration
-  useEffect(() => { const v = Number(localStorage.getItem("dockW")); setDockWS(v >= 320 ? Math.min(v, innerWidth - 380) : Math.round(Math.min(720, Math.max(380, innerWidth * 0.42)))); }, []);
-  const setDockW = useCallback((w: number) => { setDockWS(w); localStorage.setItem("dockW", String(w)); }, []);
+  /* eslint-disable react-hooks/set-state-in-effect -- client-only preference, read after hydration */
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("dockW"));
+    const preferred = saved >= 320 ? saved : Math.max(380, innerWidth * 0.42);
+    setDockWS(Math.round(Math.max(320, Math.min(720, preferred, Math.max(320, innerWidth - 380)))));
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
+  const setDockW = useCallback((w: number) => {
+    const width = Math.round(Math.max(320, Math.min(w, Math.max(320, innerWidth - 300))));
+    setDockWS(width); localStorage.setItem("dockW", String(width));
+  }, []);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [theme, setThemeS] = useState("dark");
   const [settings, setSettings] = useState(false);
@@ -352,27 +361,42 @@ export default function App() {
     };
     void contentRatio(spec).then((ratio) => {
       remember();
+      const prior = winsRef.current.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
+      const sidebarOccupied = winsRef.current.some((w) => w.id !== prior?.id && w.dock && !w.min && !w.peek && !w.dockPeek);
+      if (prior && (prior.peekFromDock || prior.dockPeek) && !sidebarOccupied && innerWidth >= 760 && prior.prevDockW) setDockW(prior.prevDockW);
       setWins((ws) => {
-        const dock = !!o?.dock && innerWidth >= 760;
         const exists = ws.find((w) => JSON.stringify(w.spec) === JSON.stringify(spec));
+        const occupied = ws.some((w) => w.id !== exists?.id && w.dock && !w.min && !w.peek && !w.dockPeek);
+        // New canvases prefer the free sidebar. Reopening an existing one preserves its
+        // floating/docked intent, then restores its last saved rectangle if it was parked.
+        const wantsDock = exists
+          ? o?.dock === undefined ? (!!exists.dock || !!exists.peekFromDock || !!exists.dockPeek) : o.dock
+          : o?.dock;
+        const dock = innerWidth >= 760 && shouldDockCanvas(wantsDock, occupied);
         const z = Math.max(0, ...ws.map((w) => w.z)) + 1;
-        const undock = (w: Win) => (dock && w.dock ? { ...w, dock: false, min: true } : w); // the replaced docked window parks in the tray
-        if (exists) return ws.map((w) => (w === exists ? { ...w, z, min: false, dock: dock || w.dock, peek: null } : undock(w)));
-        const floating = ws.filter((w) => !w.dock).length;
+        if (exists) return ws.map((w) => w.id === exists.id ? {
+          ...w, ...(w.peek || {}), z, min: false, dock,
+          peek: null, peekSide: null, peekFromDock: false, dockPeek: false,
+        } : w);
+
+        // Keep a useful floating geometry even for a docked window. If the sidebar is
+        // occupied, this canvas opens as a floating window rather than replacing it.
+        const floating = ws.filter((w) => !w.dock && !w.min && !w.peek).length;
         let w = Math.min(600, Math.round(innerWidth * 0.46)), h = Math.round(innerHeight * 0.72);
         let x = innerWidth - w - 24 - floating * 24, y = 56 + floating * 24;
         if (ratio) {
-          const pad = 24; // a little breathing room around the content
+          const pad = 24;
           const maxW = Math.min(innerWidth - 48, 1280), maxH = innerHeight - 64;
           w = Math.round(Math.max(340, Math.min(maxW, ratio.pw ? ratio.pw + pad : maxW * 0.66)));
           h = Math.round(w / ratio.ratio);
           if (h > maxH) { h = maxH; w = Math.round(h * ratio.ratio); }
-          x = Math.round((innerWidth - w) / 2); y = Math.max(20, Math.round((innerHeight - h) / 2));
+          x = Math.max(8, Math.min(innerWidth - w - 8, Math.round((innerWidth - w) / 2 + floating * 24)));
+          y = Math.max(20, Math.min(innerHeight - h - 20, Math.round((innerHeight - h) / 2 + floating * 24)));
         }
-        return [...ws.map(undock), { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock }];
+        return [...ws, { id: rid(), spec, x, y, w, h, z, min: false, pinned: false, dock, peek: null }];
       });
     });
-  }, []);
+  }, [setDockW]);
   const openCanvasRef = useRef(openCanvas); openCanvasRef.current = openCanvas;
   // while something runs in the background, keep the Chats dots current
   useEffect(() => { if (!serverRunning.length) return; const t = setInterval(refreshConvs, 4000); return () => clearInterval(t); }, [serverRunning.length, refreshConvs]);
@@ -421,12 +445,40 @@ export default function App() {
     const up = () => setTimeout(() => {
       const s = window.getSelection(); const t = s?.toString().trim();
       if (!s || !t || !s.rangeCount) { setQpop(null); return; }
-      const node = s.anchorNode?.parentElement;
+      const anchor = s.anchorNode;
+      const node = anchor instanceof Element ? anchor : anchor?.parentElement;
       // quote works on chat text, PDF text layers and rendered docs alike
       if (!node?.closest(".ai-content, .txtlayer, .docview, .reader")) { setQpop(null); return; }
       if (node.closest(".thread")) active.current = "thread"; else active.current = "main";
+      let quote = t;
+      const layer = node.closest<HTMLElement>(".txtlayer");
+      const pdfPage = layer?.closest<HTMLElement>("[data-pdf-page]");
+      const canvas = layer?.closest<HTMLElement>(".win");
+      const source = canvas?.dataset.source;
+      if (layer && pdfPage && source) {
+        const spans = [...layer.querySelectorAll("span")];
+        const spanText = spans.map((span) => span.textContent || "");
+        const pageText = spanText.join(" ").replace(/\s+/g, " ").trim();
+        const selected = t.replace(/\s+/g, " ").trim();
+        let index = pageText.toLocaleLowerCase().indexOf(selected.toLocaleLowerCase());
+        if (index < 0) {
+          // PDF text runs can insert line breaks inside a selection; anchor the fallback nearby.
+          const anchorSpan = node.closest("span");
+          const anchorIndex = anchorSpan ? spans.indexOf(anchorSpan) : -1;
+          if (anchorIndex >= 0) {
+            const prefix = spanText.slice(0, anchorIndex).join(" ");
+            const offset = anchor?.nodeType === Node.TEXT_NODE ? window.getSelection()?.anchorOffset || 0 : 0;
+            index = Math.min(pageText.length, prefix.length + (prefix ? 1 : 0) + offset);
+          }
+        }
+        const start = index >= 0 ? Math.max(0, index - 220) : 0;
+        const end = index >= 0 ? Math.min(pageText.length, index + selected.length + 220) : Math.min(pageText.length, 440);
+        const context = `${start ? "…" : ""}${pageText.slice(start, end)}${end < pageText.length ? "…" : ""}`;
+        const title = canvas?.dataset.title || source;
+        quote = `Source: ${title} (${source}), page ${pdfPage.dataset.pdfPage}\nSelected text: ${t}\nNearby context: ${context}`;
+      }
       const r = s.getRangeAt(0).getBoundingClientRect();
-      setQpop({ x: r.left + r.width / 2, y: r.top - 8, text: t });
+      setQpop({ x: Math.max(36, Math.min(innerWidth - 36, r.left + r.width / 2)), y: Math.max(44, r.top - 8), text: quote });
     }, 0);
     document.addEventListener("mouseup", up);
     return () => document.removeEventListener("mouseup", up);
@@ -542,7 +594,7 @@ export default function App() {
   const tog = (k: keyof typeof panels) => setPanels((p) => ({ ...p, [k]: !p[k] }));
   const hasOpenPanel = panels.chats || panels.ws || panels.art || panels.src || settings || !!thread;
   const chromeIdle = idle && !hasOpenPanel;
-  const docked = wins.some((w) => w.dock);
+  const docked = wins.some((w) => w.dock && !w.min && !w.peek && !w.dockPeek);
   const leaf = (thread ? threadPath : mainPath).filter((m) => !m.id.startsWith("tmp")).slice(-1)[0];
   const ctxRef: CtxRef | null = useMemo(() => (conv ? { convId: conv.id, leafId: leaf?.id || null, thread, rev: ctxRev + (streamId ? 0 : 1000), reload: () => { const c = convRef.current; if (c) loadConv(c.id, leaf?.id); } } : null), [conv, leaf?.id, thread, ctxRev, streamId, loadConv]);
 

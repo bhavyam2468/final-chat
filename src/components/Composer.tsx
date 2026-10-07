@@ -54,8 +54,31 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
     else localStorage.setItem("draft:" + k, JSON.stringify({ text, chips: done }));
   }, [text, chips]);
 
-  const autosize = useCallback(() => { const t = ta.current; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * 0.4) + "px"; }, []);
+  const autosize = useCallback(() => {
+    const t = ta.current; if (!t) return;
+    const max = Math.max(32, window.innerHeight * 0.4);
+    const current = Number.parseFloat(t.style.height) || 0;
+    t.style.height = "auto";
+    const contentHeight = t.scrollHeight;
+    const next = Math.max(32, Math.min(contentHeight, max));
+    // Only the final measured height can paint; equal single-line keystrokes keep the same box.
+    if (Math.abs(current - next) > 0.5 || !current) t.style.height = `${next}px`;
+    else t.style.height = `${current}px`;
+    t.style.overflowY = contentHeight > max ? "auto" : "hidden";
+  }, []);
   useLayoutEffect(autosize, [text, autosize]);
+  useEffect(() => {
+    const row = ta.current?.parentElement;
+    if (!row) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      if (timer) clearTimeout(timer);
+      // Width expansion is intentional; measure after its spring settles, not on every frame.
+      timer = setTimeout(autosize, 120);
+    });
+    observer.observe(row);
+    return () => { observer.disconnect(); if (timer) clearTimeout(timer); };
+  }, [autosize]);
 
   const addFiles = useCallback(async (list: FileList | File[]) => {
     const files = [...list]; if (!files.length) return;
@@ -166,8 +189,11 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
           onKeyDown={onKeyDown} onFocus={() => { setFocused(true); p.onFocus?.(); }} onBlur={() => setFocused(false)}
           onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }} />
-        {p.streaming ? <button className="send" aria-label="Stop" onClick={p.onStop}><Square fill="currentColor" /></button>
-          : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button> : null}
+        <span className="send-slot">
+          {p.streaming ? <button className="send" aria-label="Stop" onClick={p.onStop}><Square fill="currentColor" /></button>
+            : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button>
+            : <span className="send-placeholder" aria-hidden="true" />}
+        </span>
       </div>
     </div>
   );

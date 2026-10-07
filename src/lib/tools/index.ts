@@ -80,7 +80,7 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("forget", "Delete a remembered note by the id shown in Memory", { id: s() }, ["id"]),
     T("project_open", "Create or link a project. Its PROJECT.md is loaded in every later turn of this chat. Pass the project name", { name: s() }, ["name"]),
     T("diff_since", "Files changed in this chat's folder (and the linked project) in the last N hours", { hours: n("default 24") }),
-    T("canvas_open", "Show a workspace file, web page or YouTube URL in a canvas window", { target: s("path or URL"), title: s(), dock: b("dock beside chat") }, ["target"]),
+    T("canvas_open", "Open a file, web page or YouTube URL in a canvas. It uses the free sidebar automatically and floats if occupied; set dock=false to force floating or dock=true to request the sidebar.", { target: s("path or URL"), title: s(), dock: b("request sidebar; defaults to automatic") }, ["target"]),
     T("ui_search", "Find BlocksUI components. Do not invent a tag; if it is not in the system prompt, search here", { query: s() }, ["query"]),
   ];
   const phone: ToolDef[] = st.phone ? [
@@ -514,7 +514,7 @@ They can also press Connect in Settings → MCP.` : "";
         if (yt) spec = { kind: "youtube", id: yt, title: title || "YouTube" };
         else if (/^https?:\/\//.test(t)) spec = { kind: "web", url: t, title: title || new URL(t).hostname };
         else { const abs = P(t); await fs.access(abs); spec = { kind: "file", path: rel(abs), title: title || path.basename(abs) }; }
-        ctx.emit({ t: "canvas", spec, dock: !!a.dock });
+        ctx.emit({ t: "canvas", spec, ...(typeof a.dock === "boolean" ? { dock: a.dock } : {}) });
         return { ok: true, result: `Opened ${spec.kind === "file" ? spec.path : t} in canvas` + (spec.kind === "file" ? ` (${mimeOf(t)})` : "") };
       }
       case "web_search": {

@@ -150,7 +150,7 @@ input, textarea, select { font: inherit; color: inherit; }
 /* ============ Composer ============ */
 .dock { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 24px 20px; z-index: 20; pointer-events: none; display: flex; justify-content: center; }
 .dock::before { content: ""; position: absolute; inset: -40px 0 0; background: linear-gradient(to bottom, transparent, var(--bg) 60%); pointer-events: none; }
-.composer { position: relative; pointer-events: auto; width: 100%; min-width: 0; max-width: min(480px, 100%); background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); transition: max-width .35s var(--ease), border-color .2s; }
+.composer { position: relative; pointer-events: auto; width: 100%; min-width: 0; max-width: min(480px, 100%); background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); transition: max-width .34s cubic-bezier(.18,.82,.24,1), border-color .2s; }
 .composer.open { max-width: min(820px, 100%); }
 @media (min-width: 1024px) {
   .composer.open { max-width: min(960px, 100%); }
@@ -180,8 +180,10 @@ input, textarea, select { font: inherit; color: inherit; }
 .composer.inline { max-width: none; box-shadow: none; }
 .composer.drag { border-color: var(--accent); }
 .composer .row { display: flex; align-items: flex-end; gap: 4px; padding: 6px; }
-.composer textarea { flex: 1; min-height: 32px; max-height: 40vh; padding: 5px 6px; background: none; border: 0; outline: none; resize: none; line-height: 1.5; }
-.composer .send { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r); background: var(--fg); color: var(--bg); animation: pop .2s var(--ease); flex: none; }
+.composer textarea { flex: 1; min-width: 0; min-height: 32px; max-height: 40vh; padding: 5px 6px; background: none; border: 0; outline: none; resize: none; line-height: 1.5; overflow-y: hidden; transition: height .12s ease-out; }
+.composer .send-slot { position: relative; display: block; flex: none; width: 32px; height: 32px; }
+.composer .send { position: absolute; inset: 0; width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r); background: var(--fg); color: var(--bg); animation: pop .2s var(--ease); }
+.composer .send-placeholder { position: absolute; inset: 0; }
 .composer .send svg { width: 16px; height: 16px; }
 @keyframes pop { from { transform: scale(.6); opacity: 0; } }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 8px 0; }
@@ -232,25 +234,29 @@ input, textarea, select { font: inherit; color: inherit; }
    The content IS the window. Unpinned bars float over it and hide (immersive fullscreen content);
    hovering the top/bottom edge slides a bar in over the content; pinning makes the bars real layout
    (header above the content, footer below). The footer scrolls inline instead of overflowing. */
-.win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; animation: winIn .28s var(--ease); min-width: 240px; min-height: 120px; }
-@keyframes winIn { from { opacity: 0; transform: scale(.96); } }
-.win-bar { position: absolute; left: 0; right: 0; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 5px 6px; background: color-mix(in srgb, var(--float) 88%, transparent); backdrop-filter: blur(10px); transition: opacity .25s, transform .25s var(--ease); font-size: 12.5px; }
-.win-bar.top { top: 0; cursor: grab; }
+.win { position: fixed; z-index: 40; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; animation: winIn .38s cubic-bezier(.18,.82,.24,1) both; min-width: 240px; min-height: 120px; transition: left .34s cubic-bezier(.18,.82,.24,1), top .34s cubic-bezier(.18,.82,.24,1), width .34s cubic-bezier(.18,.82,.24,1), height .34s cubic-bezier(.18,.82,.24,1), transform .28s cubic-bezier(.18,.82,.24,1), box-shadow .24s ease; }
+@keyframes winIn { 0% { opacity: 0; transform: translateY(8px) scale(.975); } 76% { opacity: 1; transform: translateY(-1px) scale(1.004); } 100% { opacity: 1; transform: none; } }
+body.dragging .win { transition: none !important; animation: none !important; }
+.win.minimized { visibility: hidden; pointer-events: none; transition: none !important; animation: none !important; }
+.win-bar { position: absolute; left: 0; right: 0; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 5px 6px; background: color-mix(in srgb, var(--float) 88%, transparent); backdrop-filter: blur(10px); transition: opacity .2s ease, transform .24s cubic-bezier(.18,.82,.24,1); font-size: 12.5px; }
+.win-bar.top { top: 0; cursor: grab; touch-action: none; }
+.win-bar.top:active { cursor: grabbing; }
 .win-bar.bot { bottom: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .win-bar.bot > * { flex: none; }
 .win-bar .sp { flex: 1 1 0px !important; min-width: 0; }
 .bar-sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; flex: none; }
 .win-bar .title { flex: 1; padding-left: 8px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* unpinned: bars are overlays, hidden by default (the canvas opens immersive) */
+/* Unpinned bars stay immersive, but remain revealed for the whole time the pointer/focus is on them. */
 .win:not(.pinned) .win-bar { opacity: 0; pointer-events: none; }
-.win:not(.pinned) .win-bar.top { transform: translateY(-100%); }
-.win:not(.pinned) .win-bar.bot { transform: translateY(100%); }
-.win:not(.pinned).show-t .win-bar.top, .win:not(.pinned).show-b .win-bar.bot { opacity: 1; transform: none; pointer-events: auto; }
+.win:not(.pinned) .win-bar.top { transform: translateY(-105%); }
+.win:not(.pinned) .win-bar.bot { transform: translateY(105%); }
+.win:not(.pinned).show-t .win-bar.top, .win:not(.pinned).show-b .win-bar.bot,
+.win:not(.pinned):focus-within .win-bar { opacity: 1; transform: none; pointer-events: auto; }
 /* a faint hint that the bars exist while the pointer is in the window */
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::before,
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::after { content: ""; position: absolute; left: 0; right: 0; height: 22px; z-index: 2; pointer-events: none; opacity: .55; }
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::before { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
-.win:not(.pinned):not(.min):not(.peek):not(.dockpeek):hover::after { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
+.win:not(.pinned):not(.peek):not(.dockpeek):hover::before,
+.win:not(.pinned):not(.peek):not(.dockpeek):hover::after { content: ""; position: absolute; left: 0; right: 0; height: 22px; z-index: 2; pointer-events: none; opacity: .55; }
+.win:not(.pinned):not(.peek):not(.dockpeek):hover::before { top: 0; background: linear-gradient(to bottom, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
+.win:not(.pinned):not(.peek):not(.dockpeek):hover::after { bottom: 0; background: linear-gradient(to top, color-mix(in srgb, var(--float) 75%, transparent), transparent); }
 /* pinned: bars join the layout — content sits between them, never under them */
 .win.pinned .win-bar { position: relative; opacity: 1; transform: none; pointer-events: auto; }
 .win.pinned .win-bar.top { border-bottom: 1px solid var(--line); }
@@ -258,22 +264,36 @@ input, textarea, select { font: inherit; color: inherit; }
 .win-body { flex: 1; min-height: 0; overflow: auto; position: relative; }
 .win-body.k-ui { display: flex; flex-direction: column; overflow: hidden; padding-left: 0; padding-right: 0; }
 .win-body.k-ui .blk-frame.fill { flex: 1 1 auto; height: auto; min-height: 0; width: 100%; }
-.win.min { height: 36px !important; min-height: 0; min-width: 0; transition: left .2s var(--ease), top .2s var(--ease); }
-.win.min .win-bar.top { height: 36px; cursor: pointer; position: relative; opacity: 1; transform: none; pointer-events: auto; }
-.win.min .win-body, .win.min .win-bar.bot { display: none; }
-.win-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 4; }
-/* parked at the screen edge: a sliver that peeks on hover and restores on click */
-.win.peek { cursor: pointer; box-shadow: none; transition: left .25s var(--ease), top .25s var(--ease), width .25s var(--ease), height .25s var(--ease), transform .2s var(--ease); }
-.win.peek .win-bar, .win.peek .win-body, .win.peek .win-resize { display: none; }
-.win.peek::before { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 50%, transparent), transparent); }
-.win.peek-r:hover { transform: translateX(-10px); }
-.win.peek-l:hover { transform: translateX(10px); }
-.win.dockpeek { cursor: pointer; transition: width .2s var(--ease); }
-.win.dockpeek:hover { width: 26px; } /* peek out on hover; click or dwell restores the full dock */
-body.dragging .win.docked { transition: none; }
+.win-resize-handles { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.win-resize-handle { position: absolute; display: block; pointer-events: auto; touch-action: none; }
+.win-resize-handle.edge-n, .win-resize-handle.edge-s { left: 14px; right: 14px; height: 8px; cursor: ns-resize; }
+.win-resize-handle.edge-n { top: -4px; } .win-resize-handle.edge-s { bottom: -4px; }
+.win-resize-handle.edge-e, .win-resize-handle.edge-w { top: 14px; bottom: 14px; width: 8px; cursor: ew-resize; }
+.win-resize-handle.edge-e { right: -4px; } .win-resize-handle.edge-w { left: -4px; }
+.win-resize-handle.edge-ne, .win-resize-handle.edge-nw, .win-resize-handle.edge-se, .win-resize-handle.edge-sw { width: 18px; height: 18px; z-index: 1; }
+.win-resize-handle.edge-ne { top: -4px; right: -4px; cursor: nesw-resize; }
+.win-resize-handle.edge-nw { top: -4px; left: -4px; cursor: nwse-resize; }
+.win-resize-handle.edge-se { bottom: -4px; right: -4px; cursor: nwse-resize; }
+.win-resize-handle.edge-sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+.win-resize-handle:hover::after, .win-resize-handle:focus-visible::after { content: ""; position: absolute; inset: 2px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 22%, transparent); opacity: .25; }
+/* Edge parking is a quiet, neutral tab. Hover slides it into view; click restores its saved state. */
+.win.peek { min-width: 0; min-height: 0; cursor: pointer; background: var(--float); border-color: color-mix(in srgb, var(--fg) 18%, transparent); box-shadow: 0 4px 20px color-mix(in srgb, var(--fg) 12%, transparent); }
+.win.peek:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.win.peek .win-bar, .win.peek .win-body, .win.peek .win-resize-handles { display: none; }
+.win.peek-left { border-left: 0; border-radius: 0 10px 10px 0; }
+.win.peek-right { border-right: 0; border-radius: 10px 0 0 10px; }
+.win.peek-top { border-top: 0; border-radius: 0 0 10px 10px; }
+.win.peek-bottom { border-bottom: 0; border-radius: 10px 10px 0 0; }
+.win.peek-left:hover { transform: translateX(12px); }
+.win.peek-right:hover { transform: translateX(-12px); }
+.win.peek-top:hover { transform: translateY(12px); }
+.win.peek-bottom:hover { transform: translateY(-12px); }
+.peek-tab-handle { position: absolute; left: 50%; top: 50%; width: 4px; height: 34px; border-radius: 4px; background: var(--muted); opacity: .58; transform: translate(-50%,-50%); transition: opacity .2s, width .2s, height .2s; }
+.win.peek-top .peek-tab-handle, .win.peek-bottom .peek-tab-handle { width: 34px; height: 4px; }
+.win.peek:hover .peek-tab-handle { opacity: .9; }
+.win.dockpeek { cursor: pointer; }
 .win.dockpeek .win-bar, .win.dockpeek .win-body, .win.dockpeek .win-dockresize { display: none; }
-.win.dockpeek::before { content: ""; position: absolute; inset: 4px 5px; border-radius: 6px; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent); }
-.win.dockpeek:hover::after { content: ""; position: absolute; left: -6px; top: 0; bottom: 0; width: 6px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
 .seg { display: inline-flex; padding: 2px; border-radius: var(--r); background: var(--surface); }
 /* inline-flex + nowrap: Tailwind preflight makes svg display:block, which broke "Preview" onto two lines */
 .seg button { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; padding: 3px 10px; border-radius: calc(var(--r) - 3px); color: var(--muted); font-size: 12px; }
@@ -287,12 +307,14 @@ body.dragging .win.docked { transition: none; }
 .ink { position: absolute; inset: 0; z-index: 2; touch-action: none; }
 .ink.on { cursor: crosshair; }
 .ink:not(.on) { pointer-events: none; }
-.pdfwrap { padding: 0 8px; }
-.pdf-page { position: relative; margin: 8px auto; box-shadow: 0 1px 8px rgba(0,0,0,.12); border-radius: 4px; overflow: hidden; background: white; container-type: size; }
-.pdf-page canvas { display: block; }
-/* invisible but selectable text over each page: select it and Quote, like chat text */
-.txtlayer { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
-.txtlayer span { position: absolute; white-space: pre; color: transparent; cursor: text; line-height: 1.15; }
+.pdfwrap { min-width: 0; padding: 0 16px 24px; scroll-behavior: smooth; }
+.win-body.k-pdf { scroll-behavior: smooth; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.pdf-loading { min-height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+.pdf-page { position: relative; margin: 10px auto; box-shadow: 0 1px 8px rgba(0,0,0,.12); border-radius: 4px; overflow: hidden; background: #fff; container-type: size; }
+.pdf-page canvas { display: block; width: 100%; height: 100%; }
+/* Geometry follows PDF.js viewport coordinates so selection remains aligned through rotation/zoom. */
+.txtlayer { position: absolute; inset: 0; z-index: 1; overflow: hidden; user-select: text; }
+.txtlayer span { position: absolute; display: block; overflow: hidden; white-space: pre; color: transparent; cursor: text; line-height: 1; transform-origin: left top; user-select: text; }
 .txtlayer span::selection { background: var(--mark); }
 /* snip: drag a region, it lands in the input bar */
 .snip { position: absolute; inset: 0; z-index: 6; cursor: crosshair; touch-action: none; background: color-mix(in srgb, var(--bg) 25%, transparent); }
@@ -311,19 +333,53 @@ body.dragging .win.docked { transition: none; }
 .blk-frame.fill { height: 100%; margin: 0; }
 
 /* ============ Canvas: integrated (docked) mode ============ */
-body.dragging iframe { pointer-events: none; } body.dragging { user-select: none; cursor: ew-resize; }
-.scroll, .dock, .chrome.r, .rstack { transition: margin-right .32s var(--ease), right .32s var(--ease), padding-right .32s var(--ease); }
+body.dragging iframe { pointer-events: none; }
+body.dragging { user-select: none; }
+body.dragging-cursor-move, body.dragging-cursor-move * { cursor: grabbing !important; }
+body.dragging-cursor-dock, body.dragging-cursor-dock * { cursor: col-resize !important; }
+body.dragging-cursor-n, body.dragging-cursor-n *, body.dragging-cursor-s, body.dragging-cursor-s * { cursor: ns-resize !important; }
+body.dragging-cursor-e, body.dragging-cursor-e *, body.dragging-cursor-w, body.dragging-cursor-w * { cursor: ew-resize !important; }
+body.dragging-cursor-ne, body.dragging-cursor-ne *, body.dragging-cursor-sw, body.dragging-cursor-sw * { cursor: nesw-resize !important; }
+body.dragging-cursor-nw, body.dragging-cursor-nw *, body.dragging-cursor-se, body.dragging-cursor-se * { cursor: nwse-resize !important; }
+.scroll, .dock, .chrome.r, .rstack { transition: margin-right .36s cubic-bezier(.18,.82,.24,1), right .36s cubic-bezier(.18,.82,.24,1), padding-right .36s cubic-bezier(.18,.82,.24,1); }
 body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.dragging .rstack { transition: none; }
 .shell.has-dock .scroll { margin-right: calc(var(--dockw) + 16px); }
 .shell.has-dock .dock { right: calc(var(--dockw) + 16px); }
 .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: calc(var(--dockw) + 24px); }
-.win.docked { top: 8px; right: 8px; bottom: 8px; left: auto; width: var(--dockw); height: auto; animation: dockIn .32s var(--ease); min-width: 0; }
-@keyframes dockIn { from { opacity: 0; transform: translateX(24px); } }
-.win.docked .win-bar.top { cursor: default; }
-.win-dockresize { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 5; }
-.win-dockresize::after { content: ""; position: absolute; left: 2px; top: 50%; height: 36px; width: 3px; margin-top: -18px; border-radius: 3px; background: var(--line); transition: background .15s, height .15s; }
+.win.docked { right: auto; bottom: auto; min-width: 0; min-height: 0; border-radius: var(--r); }
+.win.docked .win-bar.top { cursor: grab; }
+.win-dockresize { position: absolute; left: 0; top: 0; bottom: 0; width: 10px; cursor: ew-resize; z-index: 5; touch-action: none; }
+.win-dockresize::after { content: ""; position: absolute; left: 3px; top: 50%; height: 36px; width: 3px; margin-top: -18px; border-radius: 3px; background: var(--line); transition: background .15s, height .2s, margin .2s; }
 .win-dockresize:hover::after { background: var(--muted); height: 56px; margin-top: -28px; }
-@media (max-width: 759px) { .win.docked { left: 8px; width: auto; } .shell.has-dock .scroll { margin-right: 0; } .shell.has-dock .dock, .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: 0; } }
+.dock-resize-preview { position: fixed; z-index: 31; top: 8px; right: 8px; bottom: 8px; border: 1px solid color-mix(in srgb, var(--fg) 22%, transparent); border-left: 2px solid var(--muted); border-radius: var(--r); background: color-mix(in srgb, var(--float) 18%, transparent); pointer-events: none; }
+.canvas-ghost { position: fixed; z-index: 200; pointer-events: none; border: 1px dashed color-mix(in srgb, var(--fg) 34%, transparent); border-radius: var(--r); background: color-mix(in srgb, var(--float) 18%, transparent); box-shadow: 0 8px 28px color-mix(in srgb, var(--fg) 9%, transparent); }
+.canvas-ghost.undock { display: flex; align-items: flex-start; padding: 8px 12px; color: var(--muted); backdrop-filter: blur(3px); }
+.canvas-ghost.undock span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.canvas-shelf { position: fixed; z-index: 58; left: 8px; top: 50%; display: flex; flex-direction: column; gap: 5px; max-height: calc(100vh - 24px); overflow-y: auto; overflow-x: hidden; padding: 6px; border: 1px solid var(--line); border-radius: 18px; background: color-mix(in srgb, var(--float) 94%, transparent); backdrop-filter: blur(12px); box-shadow: var(--shadow); transform: translateY(-50%); animation: shelfIn .24s cubic-bezier(.18,.82,.24,1) both; }
+@keyframes shelfIn { from { opacity: 0; transform: translate(-8px,-50%) scale(.96); } to { opacity: 1; transform: translate(0,-50%) scale(1); } }
+.canvas-shelf-item { position: relative; flex: none; width: 38px; height: 38px; }
+.canvas-shelf-restore { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 12px; color: var(--muted); transition: background .16s, border-color .16s, color .16s, transform .2s; }
+.canvas-shelf-restore:hover, .canvas-shelf-restore:focus-visible { background: var(--surface); border-color: var(--line); color: var(--fg); transform: scale(1.03); }
+.canvas-shelf-restore svg { width: 17px; height: 17px; }
+.canvas-shelf-close { position: absolute; z-index: 2; top: 1px; right: 1px; width: 16px; height: 16px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: var(--float); color: var(--muted); opacity: 0; pointer-events: none; transform: scale(.85); transition: opacity .14s, transform .14s, color .14s; }
+.canvas-shelf-close svg { width: 10px; height: 10px; }
+.canvas-shelf-item:hover .canvas-shelf-close, .canvas-shelf-item:focus-within .canvas-shelf-close { opacity: 1; pointer-events: auto; transform: scale(1); }
+.canvas-shelf-close:hover { color: var(--danger); }
+@media (hover: none) { .canvas-shelf-close { opacity: 1; pointer-events: auto; transform: none; } }
+@media (max-width: 759px) {
+  .win.docked { left: 8px !important; right: 8px !important; top: 8px !important; bottom: 8px !important; width: auto !important; height: auto !important; }
+  .win.docked .win-dockresize { display: none; }
+  .win:not(.pinned) .win-bar { opacity: .96; transform: none; pointer-events: auto; }
+  .shell.has-dock .scroll { margin-right: 0; }
+  .shell.has-dock .dock, .shell.has-dock .chrome.r, .shell.has-dock .rstack { right: 0; }
+  .canvas-shelf { left: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .win, .win-bar, .canvas-shelf, .composer, .composer textarea, .composer .send, .canvas-shelf-restore, .canvas-shelf-close {
+    animation: none !important; transition: none !important;
+  }
+  .scroll, .dock, .chrome.r, .rstack, .pdfwrap, .win-body.k-pdf { scroll-behavior: auto !important; transition: none !important; }
+}
 
 /* ============ Canvas viewers ============ */
 .win-bar .sp { flex: 1; }
