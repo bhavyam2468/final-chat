@@ -354,13 +354,13 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
           onKeyDown={onKeyDown} onFocus={() => { setFocused(true); p.onFocus?.(); }} onBlur={() => setFocused(false)}
           onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }} />
-        <span className={"send-slot" + (p.streaming ? " two" : "")}>
+        <span className={"send-slot" + (p.streaming ? " stream" : "")}>
           {p.streaming ? (
             <>
-              {canQueue && <button className="send ghost" aria-label="Steer now" onClick={steerNow}><Navigation /></button>}
-              {canQueue ? <button className="send" aria-label="Queue message" onClick={queueIt}><ArrowDownToLine /></button>
-                : p.queue?.length ? <button className="send" aria-label="Steer queued message" onClick={() => p.onSteerQueued?.(p.queue![p.queue!.length - 1].id)}><Zap /></button>
-                : <span className="send-placeholder" aria-hidden="true" />}
+              {canQueue && <button className="send ghost" aria-label="Steer now" title="Send this to the model now, interrupting it" onClick={steerNow}><Navigation /></button>}
+              {canQueue && <button className="send ghost" aria-label="Queue message" title="Send this when the answer finishes" onClick={queueIt}><ArrowDownToLine /></button>}
+              {!canQueue && p.queue?.length ? <button className="send ghost" aria-label="Steer queued message" title="Send the queued message now" onClick={() => p.onSteerQueued?.(p.queue![p.queue!.length - 1].id)}><Zap /></button> : null}
+              <button className="send" aria-label="Stop" title="Stop this run, keeping what was written" onClick={() => p.onStop?.()}><Square /></button>
             </>
           ) : canSend ? <button className="send" aria-label="Send" onClick={send}><ArrowUp /></button>
           : <span className="send-placeholder" aria-hidden="true" />}

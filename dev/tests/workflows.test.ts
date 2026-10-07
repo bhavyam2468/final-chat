@@ -143,4 +143,48 @@ t("the draft never leaves the server", () => {
   assert.equal(publicRun(r).id, "r1");
 });
 
+// ---- the small kindnesses that keep a file from failing at eight in the morning
+t("a quoted option is one value, spaces and all", () => {
+  const def = parseWorkflow('---\nname: q\nsteps:\n  - search query="css anchor positioning safari" limit=3 | Find\n  - agent | Write\n---\nb', "/tmp/x");
+  assert.equal(def.steps[0].opts.query, "css anchor positioning safari");
+  assert.equal(def.steps[0].opts.limit, "3");
+});
+
+t("an input is optional wherever the word is written", () => {
+  const a = parseWorkflow("---\nname: q\ninputs:\n  - topic | What to brief on (optional)\nsteps:\n  - agent | Write\n---\nb", "/tmp/x");
+  const b = parseWorkflow("---\nname: q\ninputs:\n  - topic | What to brief on | optional\nsteps:\n  - agent | Write\n---\nb", "/tmp/x");
+  const c = parseWorkflow("---\nname: q\ninputs:\n  - topic | What to brief on\nsteps:\n  - agent | Write\n---\nb", "/tmp/x");
+  assert.equal(a.inputs[0].required, false);
+  assert.equal(b.inputs[0].required, false);
+  assert.equal(c.inputs[0].required, true);
+});
+
+// ---- what ships with the app
+t("every shipped workflow parses, and none of them need the model to run the app's steps", () => {
+  const root = path.join(process.cwd(), "workspace-template/workflows");
+  const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  assert.ok(dirs.length >= 3, `expected the shipped workflows, found ${dirs.join(", ")}`);
+  for (const d of dirs) {
+    const file = path.join(root, d, "workflow.md");
+    const def = parseWorkflow(fs.readFileSync(file, "utf8"), path.dirname(file));
+    assert.equal(def.name, d, `${d}: the folder name is the workflow's name`);
+    assert.ok(def.description.length > 20, `${d}: the description says what it is for`);
+    const kinds = def.steps.map((x) => x.kind);
+    assert.equal(kinds.filter((k) => k === "agent").length, 1, `${d}: exactly one thinking step`);
+    assert.equal(kinds[kinds.length - 1], "agent", `${d}: the thinking step is last`);
+    assert.ok(kinds.includes("search") && kinds.includes("read"), `${d}: the app does the gathering`);
+  }
+});
+
+t("a workflow that brings its own face keeps it live", () => {
+  const root = path.join(process.cwd(), "workspace-template/workflows");
+  for (const d of fs.readdirSync(root)) {
+    const ui = path.join(root, d, "ui.html");
+    if (!fs.existsSync(ui)) continue;
+    const src = fs.readFileSync(ui, "utf8");
+    assert.match(src, /Blocks\.on\("run"/, `${d}: ui.html subscribes to the run instead of showing a snapshot`);
+    assert.match(src, /<ui>[\s\S]*<\/ui>/, `${d}: ui.html is a Blocks document`);
+  }
+});
+
 console.log(`\n${n} passed`);

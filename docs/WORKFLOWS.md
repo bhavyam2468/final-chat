@@ -115,9 +115,13 @@ every workflow in every workspace, including the ones the agent writes.
 
 `WorkflowView` (`src/components/Workflow.tsx`) is the block-side: a header (title, the question, the progress
 bar, the status line), tabs for Process and Report, the steps with per-step detail, the sources with what was
-read, and the log. It polls the record while the run is live and stops when it settles. A finished run with its
-own `ui.html` renders that instead — the run arrives as a `<script type="data" name="run">` tag, so the document
-is a pure function of the record, and the bar with the tabs and the report stays on top either way.
+read, and the log. It polls the record while the run is live and stops when it settles.
+
+A workflow with its own `ui.html` renders that instead of the process view. The run arrives twice: once as a
+`<script type="data" name="run">` tag (so the document is a pure function of the record, and can be opened on
+its own), and then again on every change as a host event, which a one-line subscription turns into a live
+window: `Blocks.on("run", (r) => { S.run = r })`. The bar with the tabs and the report stays on top either way,
+and Process is one tab away — the workflow's own face is never the only way to see what happened.
 
 `CanvasSpec {kind:"workflow", run}` is what opens it, from the card, from `/workflows` → recent runs, or from the
 `open-workflow` event.

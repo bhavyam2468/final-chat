@@ -38,6 +38,22 @@ export type WorkflowSpec = {
 
 export const KINDS = ["search", "read", "agent"];
 
+/**
+ * The options on a step line, space-separated — except that `"a whole query in quotes"` is one option, because
+ * a search for the words that matter is the normal case and nobody should have to know a query must be one word.
+ */
+function splitOpts(text: string): string[] {
+  const out: string[] = [];
+  let cur = "", quoted = false;
+  for (const ch of text) {
+    if (ch === '"') { quoted = !quoted; cur += ch; continue; }
+    if (!quoted && /\s/.test(ch)) { if (cur) out.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 export function parseWorkflow(text: string, dir: string): WorkflowDef {
   const label = `workflows/${path.basename(dir)}/workflow.md`;
   const fail = (why: string): never => { throw new Error(`${label}: ${why}`); };
@@ -53,20 +69,23 @@ export function parseWorkflow(text: string, dir: string): WorkflowDef {
       if (!list) fail(`"${line}" is a list item outside a list — put it under inputs: or steps:`);
       if (list === "steps") {
         const [left, right] = item[1].split("|");
-        const words = left.trim().split(/\s+/).filter(Boolean);
+        const words = splitOpts(left.trim());
         const kind = words.shift() || "";
         if (!KINDS.includes(kind)) fail(`"${kind || line}" is not a step kind (known: ${KINDS.join(", ")})`);
         const opts: Record<string, string> = {};
         for (const w of words) {
           const i = w.indexOf("=");
           if (i < 1) fail(`"${w}" is not an option — write key=value (e.g. limit=6)`);
-          opts[w.slice(0, i)] = w.slice(i + 1);
+          opts[w.slice(0, i)] = w.slice(i + 1).replace(/^"([\s\S]*)"$/, "$1");   // "a query in quotes" is one value
         }
         def.steps.push({ kind, title: (right || "").trim() || kind[0].toUpperCase() + kind.slice(1), opts });
       } else {
         const [name, label2, flag] = item[1].split("|").map((s) => s.trim());
         if (!/^[\w-]+$/.test(name || "")) fail(`an input name must be a single word (got "${name || item[1]}")`);
-        def.inputs.push({ name, label: label2 || name, required: (flag || "").toLowerCase() !== "optional" });
+        // "optional" counts wherever it is written: as the third part, or in the label (which is how people write
+        // it by hand). A question with an optional answer must never block the run that asks it.
+        const optional = [flag, label2].some((t) => /\boptional\b/i.test(t || ""));
+        def.inputs.push({ name, label: label2 || name, required: !optional });
       }
       continue;
     }
@@ -110,7 +129,7 @@ export function workflowText(spec: WorkflowSpec): string {
 }
 
 // ---------------------------------------------------------------- the run record
-export type RunStep = { id: string; title: string; kind: string; status: "pending" | "active" | "done" | "failed" | "skipped"; note: string; detail: string; weight: number; count: number; target: number };
+export type RunStep = { id: string; title: string; kind: string; status: "pending" | "active" | "done" | "failed" | "skipped" | "stopped"; note: string; detail: string; weight: number; count: number; target: number };
 export type RunSource = { url: string; title: string; snippet: string; read: boolean; words?: number; file?: string };
 export type RunLog = { at: number; text: string; kind: "step" | "tool" | "note" | "error" };
 export type WorkflowRun = {
@@ -137,7 +156,7 @@ export function progressOf(run: WorkflowRun) {
   const part = (s: RunStep) => {
     if (s.status === "done" || s.status === "skipped") return 1;
     if (s.status === "failed") return 0.5;
-    if (s.status !== "active") return 0;
+    if (s.status !== "active") return 0;   // pending and stopped are honestly unfinished
     return s.target > 0 ? Math.min(0.95, s.count / s.target) : 0.1;
   };
   return Math.max(0, Math.min(1, run.steps.reduce((a, s) => a + s.weight * part(s), 0) / total));

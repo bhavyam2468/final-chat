@@ -1,0 +1,18 @@
+<ui>
+<x-section title="{{run.title}}" subtitle="{{run.activity}}">
+  <x-progress :value="run.progress" max="1" />
+  <x-row>
+    <x-stat :value="count(run.steps, s => s.status === 'done')" label="steps done" />
+    <x-stat :value="count(run.sources, s => s.read)" label="pages read" />
+    <x-stat :value="round(run.progress * 100)" label="percent" />
+  </x-row>
+</x-section>
+<x-list markers="number" each="s in run.steps">
+{{s.title}} | {{s.status}} {{s.detail}}
+</x-list>
+<x-table :data="sources || run.sources" cols="title,url,read" dense height="240" caption="Sources" />
+<script>
+  // the app pushes the run in as it changes, so the numbers and the tables stay live
+  Blocks.on("run", (r) => { S.run = r; S.sources = r && r.sources ? r.sources : []; });
+</script>
+</ui>

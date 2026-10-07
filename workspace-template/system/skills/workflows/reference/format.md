@@ -56,7 +56,9 @@ see the chat — anything the report needs must be in the body or in that materi
 
 The report is saved to `chats/<chat>/artifacts/<slug>.md` and put into the chat as the message that carried the
 card. `.workflows/<id>.json` is the full record (steps, sources, log, report) and the window polls it; when a
-workflow ships `ui.html`, the window renders that instead, with the run as its data.
+workflow ships `ui.html`, the window renders that instead, with the run as its data — and pushes every update,
+so `Blocks.on("run", (r) => { S.run = r })` in that file keeps it live for the whole run (`S.run = r` shadows
+the initial data tag, and every `{{run.…}}` binding follows).
 
 ## Worth stealing
 

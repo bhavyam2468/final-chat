@@ -16,4 +16,9 @@
     <ul><li each="l in run.log">{{l.text}}</li></ul>
   </x-callout>
 </x-card>
+<script>
+  // The host pushes the run again on every change, so this document is written once and stays live while
+  // the work happens — no polling, no reload, and the same file is what you see once it is done.
+  Blocks.on("run", (r) => { S.run = r; });
+</script>
 </ui>

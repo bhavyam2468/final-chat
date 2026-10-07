@@ -48,6 +48,12 @@ export function useWorkflowRun(id: string | null | undefined, interval = 900) {
   return { run, error, reload: load };
 }
 
+/** Hand the run to a workflow's own Blocks UI: data scripts go inside <ui>, where the runtime reads them. */
+function withRunData(source: string, run: WorkflowRun) {
+  const script = `<script type="data" name="run">${JSON.stringify(run).replace(/</g, "\\u003c")}</script>`;
+  return /<\/ui>\s*$/.test(source) ? source.replace(/<\/ui>\s*$/, `${script}\n</ui>`) : `${source}\n${script}`;
+}
+
 const secs = (ms: number) => (ms < 60_000 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`);
 
 /** The card that sits in the chat: what ran, how far it got, and a way into the window. */
@@ -136,11 +142,11 @@ export function WorkflowView({ id, setBar }: { id: string; setBar: (n: React.Rea
     </div>
   );
 
-  // A workflow can bring its own face: its ui.html is a Blocks document, and the run arrives as its data.
-  // It renders a snapshot, so it is used once the run has settled — while it runs, the live view below is
-  // the honest one. The bar (progress, tabs, the report) stays either way.
-  const own = ui && run.status !== "running";
-  const source = own ? `${(ui as { source: string }).source}\n<script type="data" name="run">${JSON.stringify(run).replace(/</g, "\\u003c")}</script>` : "";
+  // A workflow can bring its own face: its ui.html is a Blocks document, and the run arrives as its data —
+  // pushed again on every update, so the document is written once and stays live while the run happens.
+  // The bar (progress, tabs, the report) stays either way, and the process view is one tab away.
+  const own = !!ui;
+  const source = ui ? withRunData(ui.source, run) : "";
 
   return (
     <div className="wf-view">
@@ -153,13 +159,16 @@ export function WorkflowView({ id, setBar }: { id: string; setBar: (n: React.Rea
               </div>
             : <div className="wf-empty">No report yet.</div>
         ) : own ? (
-          <div className="wf-own"><Block source={source} done /></div>
+          <div className="wf-own">
+            <Block done source={source} event={{ name: "run", data: run }}
+              onEvent={(name) => { if (name === "start" || name === "retry") void fetch("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: run.name, input: run.input, conversationId: run.chat }) }); }} />
+          </div>
         ) : (
           <>
             <ol className="wf-steps">
               {run.steps.map((s) => (
                 <li key={s.id} className={"wf-step " + s.status}>
-                  <span className="wf-dot">{s.status === "done" ? <Check size={10} /> : s.status === "failed" ? <AlertTriangle size={10} /> : s.status === "active" ? <span className="spin" /> : <Play size={9} />}</span>
+                  <span className="wf-dot">{s.status === "done" ? <Check size={10} /> : s.status === "failed" ? <AlertTriangle size={10} /> : s.status === "active" ? <span className="spin" /> : s.status === "stopped" ? <Square size={9} /> : <Play size={9} />}</span>
                   <span className="wf-steptitle">{s.title}</span>
                   <span className="wf-stepmeta">{s.detail || s.note || (s.status === "pending" ? "" : s.status)}</span>
                 </li>

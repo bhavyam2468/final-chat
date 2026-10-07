@@ -535,9 +535,15 @@ export default function App() {
     if (convRef.current?.id === id) newChat();
     refreshConvs();
   }, [newChat, refreshConvs]);
-  // while something runs in the background, keep the Chats dots current
-  useEffect(() => { if (!serverRunning.length) return; const t = setInterval(refreshConvs, 4000); return () => clearInterval(t); }, [serverRunning.length, refreshConvs]);
   const runningIds = useMemo(() => [...new Set([...serverRunning, ...Object.keys(running)])], [serverRunning, running]);
+  // while anything runs — here or in another tab — keep the Chats dots and the list current. The list is
+  // what tells a second window that a chat is answering, so it has to be polled, not fetched once.
+  const anyLive = runningIds.length > 0;
+  useEffect(() => {
+    if (!anyLive) return;
+    const t = setInterval(refreshConvs, 4000);
+    return () => clearInterval(t);
+  }, [anyLive, refreshConvs]);
   const openFile = useCallback((p: string) => {
     if (isExternal(p)) { window.open(p, "_blank"); return; }
     const clean = p.replace(/^\/?files\//, "").replace(/^\.\//, "");
@@ -687,11 +693,15 @@ export default function App() {
     await fetch(`/api/conversations/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: j.id }) });
     setConv({ ...c, state: { ...(c.state || {}), project: j.id } });
   }, [setMode, setView]);
+  /**
+   * The morning nudge runs the brief workflow, rather than writing a prompt and hoping: the searching and the
+   * opening happen in the run (with its own window and progress), and the chat receives the brief.
+   */
   const runBrief = useCallback(() => {
     localStorage.setItem("briefDay", new Date().toISOString().slice(0, 10));
     setOfferBrief(false);
-    chipNew("general", "Morning brief. Search what matters today: the date, a few cited headlines, and anything in system/brief.md if it exists. Short. No filler.\n\n");
-  }, [chipNew]);
+    startWfRef.current("morning-brief", "");
+  }, []);
   /**
    * The mode lens of this chat. Persisted on the conversation, so the server applies it to every turn.
    * A chat that does not exist yet (you typed /mode before saying anything) keeps it in `pending`, and the
@@ -765,7 +775,9 @@ export default function App() {
   }, [openCanvas, refreshWf, sendMain, mainLeafId, setMsgsFor, setSel]);
 
   const refreshWfRef = useRef(refreshWf); refreshWfRef.current = refreshWf;
+  const startWfRef = useRef<(name: string, input: string) => void>(() => {});   // runBrief is declared above startWorkflow
   const loadConvRef = useRef(loadConv); loadConvRef.current = loadConv;
+  startWfRef.current = (name, input) => { void startWorkflow(name, input); };
 
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },

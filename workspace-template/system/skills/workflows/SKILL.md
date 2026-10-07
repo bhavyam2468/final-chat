@@ -15,6 +15,17 @@ the notes from the changelog", "compare the price of Y across these shops", "sum
 Monday". Do the work in the chat when it is a one-off — a workflow for a single question is slower and leaves a
 file behind that nobody will run again.
 
+## Its own window
+`ui.html` beside `workflow.md` is a Blocks document that the window renders instead of the process view — write
+one when the run's shape has a better face than a list of steps (a table of what was found, a digest, a chart).
+The run starts as data (`{{run.status}}`, `{{run.progress}}`, `each="s in run.steps"`) and every update is
+pushed, so two lines keep it live for the whole run:
+
+    <script>Blocks.on("run", (r) => { S.run = r; });</script>
+
+Do not poll for the run yourself, and do not write a spinner: the bar above the document already shows the
+progress, the status and the way to the report.
+
 ## Running one
 `start_workflow(name, input)` returns immediately. Say in one line that it is running; do not wait, do not
 re-search what it is searching, and do not restate what it will produce — the card and its window are already in

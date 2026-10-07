@@ -57,7 +57,7 @@ check("the window shows the steps while it runs", await until(6000, async () => 
 check("the window shows a progress bar", await until(6000, async () => !!(await pg.$(".wf-progress"))));
 await pg.screenshot({ path: "/tmp/wf-running.png" });
 // "done" is also a step's own word for itself, so the run's own badge and the bar's value are what count
-const done = await until(30000, async () => (await badge()) === "done" && (await pct()) === 100);
+const done = await until(30000, async () => (await badge()).toLowerCase() === "done" && (await pct()) === 100);
 check("progress reaches the end", done, `${await badge()} / ${await pct()}% :: ` + (await winText()).replace(/\n/g, " | ").slice(0, 140));
 check("the finished run shows its own UI or the default process view", !!(await pg.$(".wf-own, .wf-sources")));
 const frames = pg.frames().filter((f) => f !== pg.mainFrame());

@@ -270,6 +270,11 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
 .pbar-row .s { flex: 1; text-align: right; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* the send slot hosts two actions while streaming: steer (outline) + queue (solid) */
+/* while a run is going: steer / queue (only when there is something to send) and the way to stop it */
+.composer .send-slot.stream { display: flex; flex: none; align-items: center; gap: 10px; width: auto; }
+.composer .send-slot.stream .send { position: static; inset: auto; }
+.composer .send-slot.stream .send.ghost { background: var(--surface); color: var(--muted); border: 1px solid var(--line); animation: palIn .2s var(--ease); }
+.composer .send-slot.stream .send.ghost:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .send-slot.two { width: 74px; }
 .send-slot.two .send { right: 0; left: auto; }
 .send-slot.two .send.ghost { right: 42px; left: auto; background: var(--surface); color: var(--muted); border: 1px solid var(--line); animation: palIn .2s var(--ease); }

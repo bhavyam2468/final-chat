@@ -94,6 +94,14 @@ const writeRun = async (run: WorkflowRun) => {
 let writeSeq = 0;
 
 // ---------------------------------------------------------------- steps the app performs itself
+/**
+ * Runs the user has stopped. In-memory on purpose: a stop only matters while the work is still in this
+ * process, so the steps check it between units of work (a page in a batch, a step boundary) and give up
+ * quickly without leaving half a file behind.
+ */
+const cancelled = new Set<string>();
+const assertRunning = (id: string) => { if (cancelled.has(id)) throw new Error("stopped by the user"); };
+
 type Ctx = {
   run: WorkflowRun; def: WorkflowDef; st: Settings; emit: Emit;
   index: number;
@@ -142,6 +150,7 @@ const RUNNERS: Record<string, (step: WorkflowStep, ctx: Ctx) => Promise<void>> =
     await fs.mkdir(dir, { recursive: true });
     let done = 0;
     for (let i = 0; i < todo.length; i += batch) {
+      assertRunning(ctx.run.id);
       await Promise.all(todo.slice(i, i + batch).map(async (s, k) => {
         const n = i + k + 1;
         try {
@@ -214,13 +223,20 @@ export async function startWorkflow(opts: StartOpts): Promise<WorkflowRun> {
   const emit = opts.emit || (() => {});
   const ctx: Ctx = {
     run, def, st, emit, index: 0,
-    save: async () => { run.progress = progressOf(run); await writeRun(run); emit({ t: "workflow", run: publicRun(run) }); },
+    save: async () => {
+      // once a run has an end, nothing may move it again: a straggler's late save would revive it
+      if (run.status !== "running") return;
+      run.progress = progressOf(run);
+      try { await writeRun(run); } catch { /* a failed write is not a failed run */ }
+      emit({ t: "workflow", run: publicRun(run) });
+    },
     log: (text, kind = "note") => { run.log.push({ at: Date.now(), text: text.slice(0, 300), kind }); if (run.log.length > 400) run.log.splice(0, run.log.length - 400); },
   };
 
   void (async () => {
     try {
       for (let i = 0; i < def.steps.length; i++) {
+        assertRunning(run.id);
         const step = def.steps[i];
         ctx.index = i;
         const rs = run.steps[i];
@@ -239,11 +255,20 @@ export async function startWorkflow(opts: StartOpts): Promise<WorkflowRun> {
       }
       await finish(run, def, opts, "done");
     } catch (e) {
-      const rs = run.steps[ctx.index];
-      if (rs && rs.status === "active") { rs.status = "failed"; rs.note = String((e as Error).message).slice(0, 200); }
-      run.error = String((e as Error).message).slice(0, 500);
-      ctx.log(`failed: ${run.error}`, "error");
-      await finish(run, def, opts, "failed");
+      const message = String((e as Error).message);
+      if (cancelled.has(run.id)) {
+        // the work was stopped, not broken: the record keeps whatever was really achieved
+        const rs = run.steps[ctx.index];
+        if (rs && rs.status === "active") { rs.status = "stopped"; rs.note = "stopped"; }
+        ctx.log("stopped by the user", "note");
+        await finish(run, def, opts, "stopped");
+      } else {
+        const rs = run.steps[ctx.index];
+        if (rs && rs.status === "active") { rs.status = "failed"; rs.note = message.slice(0, 200); }
+        run.error = message.slice(0, 500);
+        ctx.log(`failed: ${run.error}`, "error");
+        await finish(run, def, opts, "failed");
+      }
     }
   })();
 
@@ -321,7 +346,8 @@ async function finish(run: WorkflowRun, def: WorkflowDef, opts: StartOpts, statu
   const report = (run.report || run.draft || "").trim();
   run.report = report;
   delete run.draft;
-  const rel = opts.output || (run.chat ? `${chatDir(run.chat)}/artifacts/${canvasSlug(`${def.title} ${run.input.question || Object.values(run.input)[0] || ""}`) || "report"}.md` : "");
+  const slug = canvasSlug(`${def.title} ${run.input.question || Object.values(run.input)[0] || ""}`) || "report";
+  const rel = opts.output || (run.chat ? `${chatDir(run.chat)}/artifacts/${slug}.md` : `artifacts/${slug}.md`);
   if (report && rel && !rel.includes("..")) {
     try {
       const abs = path.join(WS, rel);
@@ -330,7 +356,7 @@ async function finish(run: WorkflowRun, def: WorkflowDef, opts: StartOpts, statu
       if (!run.artifacts.includes(rel)) run.artifacts.push(rel);
     } catch { /* the report is still in the chat and in the window */ }
   }
-  run.progress = 1;
+  run.progress = status === "done" ? 1 : progressOf(run);
   run.activity = status === "done" ? "Done" : status === "failed" ? "Failed" : "Stopped";
   await writeRun(run);
   if (run.chat && run.messageId) {
@@ -346,8 +372,11 @@ async function finish(run: WorkflowRun, def: WorkflowDef, opts: StartOpts, statu
 export async function stopWorkflow(id: string) {
   const run = await readRun(id);
   if (!run || run.status !== "running") return false;
+  cancelled.add(run.id);
   run.status = "stopped";
-  await finish(run, await findWorkflow(run.name) || ({ title: run.title } as WorkflowDef), { name: run.name }, "stopped");
+  run.progress = progressOf(run);   // what was really done, not a rounded-up 100%
+  await writeRun(run);
+  // whoever is still in the loop will not write again: the record already has its ending
   return true;
 }
 

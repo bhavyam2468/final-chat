@@ -27,7 +27,13 @@ async function toWorkspace(path: string, text: string) {
   return r.ok;
 }
 
-export const Block = memo(function Block({ source, done, fill = false }: { source: string; done: boolean; fill?: boolean }) {
+/**
+ * `event` is the host→block channel: the block's own `<script>` subscribes with `Blocks.on(name, fn)`, and the
+ * value is pushed again whenever it changes — that is how a window whose document is written once stays live
+ * (the runtime freezes a block after its first complete feed, by design: chat blocks never change afterwards).
+ * `onEvent` is the other direction: a block can `Blocks.emit(name, data)` and the app decides what that means.
+ */
+export const Block = memo(function Block({ source, done, fill = false, event, onEvent }: { source: string; done: boolean; fill?: boolean; event?: { name: string; data: unknown }; onEvent?: (name: string, data: unknown) => void }) {
   const app = useApp();
   const ref = useRef<HTMLIFrameElement>(null);
   const [h, setH] = useState(fill ? 0 : 64);
@@ -36,6 +42,14 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
   const [doc] = useState(() => (typeof window === "undefined" ? "" : blocksShell(id, fill)));
   const st = useRef({ ready: false, sent: "", sentDone: false, timer: 0 as unknown as ReturnType<typeof setTimeout> | 0, source, done });
   st.current.source = source; st.current.done = done;
+
+  const lastEvent = useRef<{ type: "host-event"; name: string; data: unknown } | null>(null);
+  const evName = event?.name, evData = event?.data;
+  useEffect(() => {
+    if (!evName) return;
+    lastEvent.current = { type: "host-event", name: evName, data: evData };
+    if (st.current.ready) post(lastEvent.current);
+  }, [evName, evData]);
 
   const post = (m: unknown) => ref.current?.contentWindow?.postMessage(m, "*");
   const flush = () => {
@@ -64,7 +78,10 @@ export const Block = memo(function Block({ source, done, fill = false }: { sourc
         case "ready":
           st.current.ready = true;
           post({ type: "theme", vars: themeVars(), theme: document.documentElement.dataset.theme });
-          flush(); break;
+          flush();
+          if (lastEvent.current) setTimeout(() => post(lastEvent.current), 30); // after the source has mounted
+          break;
+        case "event": onEvent?.(String(m.name || ""), m.data); break;
         case "height": if (!fill) setH(Math.min(2400, Math.max(24, m.h))); break;
         case "lm": app.sendUiEvent(m.data, m.opts); break;
         case "save": { const ok = await toWorkspace(String(m.path), String(m.text)); app.refreshTree(); reply(ok); break; }
