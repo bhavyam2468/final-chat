@@ -74,6 +74,14 @@ Native `h1–h4 p small ul ol table details code a` are styled. Also:
 | `x-heatmap data x-labels y-labels` | Matrix |
 | `x-timeline` | `date | title | detail` lines |
 
+### Structure
+| Tag | Notes |
+|---|---|
+| `x-flow dir height title caption active fit panzoom grid labels` | Flowchart, drawn as themed SVG — no diagram library, no CDN. Body = one statement per line: node `id[shape,tone]: label` (shapes `rect round start end decision data db note pill circle`), edge `a -> b: label`, `a => b` strong, `a -.-> b` dashed, chains `a -> b -> c`; an endpoint never declared becomes a node labelled with its id. Layered layout (longest-path ranking + barycentre ordering), back edges routed around. Pans (drag) and zooms (wheel, toolbar, double-click to fit); `.fit() .zoomBy(k) .center(id)` are chainable; `.value = {nodes,edges}`; `nodeclick {id,label}`; parse problems are reported through `Blocks.issue`. |
+| `x-steps` | `Title | detail | state` per line; states `done now todo warn fail`, shorthand `+ - > ! x`, or `[x]` / `[ ]`. `ordered`, `plain`. `.value .done .total`, `stepclick {index,title,detail,state}` |
+| `x-tree open=N collapsed marks=tree|bullet` | Indented outline, two spaces per level (tab = two), optional `- ` mark, `Title | note`. Collapsible; `.value` is a nested array; `nodeclick {label}` |
+| `x-list ordered dense` | `primary | secondary | trailing` rows; a leading `+` `!` `?` `*` sets the tone, optional `- ` bullet. `.value = [{title,detail,right,tone}]` |
+
 ### Science
 | Tag | Notes |
 |---|---|
@@ -237,4 +245,9 @@ Components are registered with `Blocks.define(tag, class extends Blocks.Base { i
 - `static owns = true` means the element consumes its body text as source (`this._src`), like `x-draw` or `x-choice`.
 - Dispatch `change` for value changes so bindings update.
 
-Add a catalog entry in `src/lib/blocks/catalog.ts`, and add one line to the skill only if the component is fundamental.
+Add a catalog entry in `src/lib/blocks/catalog.ts`, and add one line to the skill only if the component is fundamental. Two traps:
+
+- **`static owns` and `container: true` are mutually exclusive.** A container is streamed in empty (`importNode(node, false)`) and connected before its body exists, so `Base` captures `_src === ""` and the element never renders. A self-consuming component is registered plain: the runtime mounts a `.b-skel` placeholder while the tag is open and mounts the element complete once it closes.
+- Standalone engines live in their own file next to `runtime.js` (`flow.js` is the model) and export a pure core under `Blocks.<name>` — `parse`, `layout`, `size` are testable in Node (`dev/blocks-dom.mjs` runs `runtime.js`, `elements.js` and `flow.js` inside happy-dom and drives them through `Blocks.feed`).
+
+Validation lives in `src/lib/ui-check.ts` (the `X` set is the allowed tag list); add a rule there only for a mistake a model actually makes.

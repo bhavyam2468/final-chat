@@ -42,7 +42,7 @@
     n(n, d) { return num(this.getAttribute(n), d); }
     get tone() { return this.getAttribute("tone"); }
   }
-  B.Base = Base; B.define = define;
+  B.Base = Base; B.define = define; B.drawIn = drawIn;
 
   // skeleton shapes for elements still streaming
   const VIZ = /chart|graph|plot|draw|smiles|mol|mermaid|map|heatmap|sketch|image|video|youtube|embed|clock|ring|gauge|table|timeline|md|code/;
@@ -813,6 +813,125 @@
     }
     get value() { return this._v; }
   }, { void: true });
+
+  // ================================================================ structure: sequences, trees, lists
+  // x-steps — a numbered sequence (plan, procedure, progress). Lines: "Title | detail | state".
+  // state = done | now | todo | warn | fail; shorthand prefixes: "+ " done, "> " now, "- " todo, "! " warn, "x " fail.
+  define("x-steps", class extends Base {
+    static owns = true;
+    states() { return ["done", "now", "todo", "warn", "fail"]; }
+    parseSteps() {
+      const SHORTHAND = { "+": "done", "-": "todo", ">": "now", "!": "warn", "x": "fail", "*": "todo" };
+      const CHECKBOX = { x: "done", " ": "todo", ">": "now", "!": "warn" };
+      return lines(this._src).map((l) => {
+        const pre = l.match(/^([+>!x*-])\s+/);
+        const box = pre ? null : l.match(/^\[([ xX>!])\]\s*/);
+        const mark = (pre ? pre[1] : box ? box[1] : "").toLowerCase();
+        const rest = pre ? l.slice(pre[0].length) : box ? l.slice(box[0].length) : l;
+        const cols = rest.split("|").map((s) => s.trim());
+        const word = (cols[2] || "").toLowerCase();
+        const state = pre ? SHORTHAND[mark] || "todo" : box ? CHECKBOX[mark] || "todo" : this.states().includes(word) ? word : "todo";
+        return { title: cols[0] || "", detail: cols[1] || "", state };
+      }).filter((s) => s.title);
+    }
+    get value() { return this._items ? this._items.map((i) => ({ ...i })) : this.parseSteps(); }
+    get done() { return this.value.filter((s) => s.state === "done").length; }
+    get total() { return this.value.length; }
+    render() {
+      this._items = this.parseSteps();
+      const n = this._items.length;
+      const icon = { done: "✓", now: "▸", warn: "!", fail: "×", todo: "" };
+      this.innerHTML = this._items.map((s, i) => {
+        const idx = i + 1;
+        const mark = s.state === "done" ? icon.done : s.state === "todo" ? String(idx) : icon[s.state];
+        return `<div class="xst ${s.state}" data-i="${i}" style="--i:${i}" tabindex="0">` +
+          `<span class="xst-b" aria-hidden="true">${this.hasAttribute("ordered") || s.state === "todo" ? mark : icon[s.state] || idx}</span>` +
+          `<div class="xst-t"><b>${esc(s.title)}</b>${s.detail ? `<p>${esc(s.detail)}</p>` : ""}</div>` +
+          `<span class="xst-s">${s.state === "todo" ? "" : esc(s.state)}</span></div>`;
+      }).join("");
+      this.classList.toggle("plain-marks", this.hasAttribute("plain"));
+      this.querySelectorAll(".xst").forEach((r) => {
+        const go = () => this.dispatchEvent(new CustomEvent("stepclick", { detail: { index: +r.dataset.i, ...this._items[+r.dataset.i] }, bubbles: true }));
+        r.addEventListener("click", go); r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+      });
+      B.typeset && B.typeset(this);
+    }
+  });
+
+  // x-tree — an indented outline (folders, taxonomies, syllabi, decision trees).
+  // Indent with 2 spaces (tabs count as 2); an optional "- " mark; "Title | note" adds a note.
+  define("x-tree", class extends Base {
+    static owns = true;
+    build() {
+      const flat = [];
+      for (const raw of String(this._src || "").split("\n")) {
+        if (!raw.trim()) continue;
+        const ws = (raw.match(/^[\s]*/)[0] || "").replace(/\t/g, "  ").length;
+        const depth = Math.floor(ws / 2);
+        const body = raw.trim().replace(/^[-*+]\s+/, "");
+        const cols = body.split("|").map((s) => s.trim());
+        flat.push({ depth, title: cols[0], note: cols[1] || "" });
+      }
+      const root = { depth: -1, children: [] }, stack = [root];
+      for (const it of flat) {
+        const node = { ...it, children: [] };
+        while (stack.length > 1 && stack[stack.length - 1].depth >= it.depth) stack.pop();
+        stack[stack.length - 1].children.push(node); stack.push(node);
+      }
+      return root.children;
+    }
+    get value() { return this._tree || this.build(); }
+    render() {
+      this._tree = this.build();
+      const openTo = this.hasAttribute("collapsed") ? 0 : this.hasAttribute("open") ? Math.max(0, Number(this.a("open", "99")) || 0) : 99;
+      const walk = (nodes, depth) => `<ul class="xtr-d" style="--d:${depth}">` + nodes.map((n) => {
+        const kids = n.children.length ? walk(n.children, depth + 1) : "";
+        const fold = n.children.length > 0 && depth + 1 >= openTo;
+        return `<li class="${n.children.length ? "has-kids" : ""}">` +
+          `<div class="xtr-row" tabindex="0">${n.children.length ? `<button type="button" class="xtr-t" aria-label="Toggle">${fold ? "+" : "−"}</button>` : `<span class="xtr-b"></span>`}` +
+          `<span class="xtr-n">${esc(n.title)}</span>${n.note ? `<span class="xtr-note">${esc(n.note)}</span>` : ""}</div>` +
+          `<div class="xtr-k"${fold ? " hidden" : ""}>${kids}</div></li>`;
+      }).join("") + "</ul>";
+      this.innerHTML = walk(this._tree, 0);
+      const marks = this.a("marks", "tree") === "bullet" ? "bullet" : "tree";
+      this.classList.toggle("bullet", marks === "bullet");
+      this.querySelectorAll(".xtr-t").forEach((b) => b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const k = b.closest("li").querySelector(":scope > .xtr-k");
+        k.hidden = !k.hidden; b.textContent = k.hidden ? "+" : "−";
+        this.dispatchEvent(new CustomEvent("change", { bubbles: true }));
+      }));
+      this.querySelectorAll(".xtr-row").forEach((r) => {
+        const n = r.querySelector(".xtr-n");
+        r.addEventListener("click", () => this.dispatchEvent(new CustomEvent("nodeclick", { detail: { label: n ? n.textContent : "" }, bubbles: true })));
+      });
+    }
+  });
+
+  // x-list — rows of "primary | secondary | trailing"; a leading mark sets tone: "+" good, "!" bad, "?" warn, "*" emphasis.
+  define("x-list", class extends Base {
+    static owns = true;
+    parseList() {
+      return lines(this._src).map((l) => {
+        const m = l.match(/^([+!?*])\s+/) || [];
+        const body = m[1] ? l.slice(m[0].length) : l;
+        const tone = { "+": "success", "!": "danger", "?": "warning", "*": "accent" }[m[1]] || "";
+        const clean = body.replace(/^[-–—•]\s+/, "");
+        const parts = clean.split("|").map((s) => s.trim());
+        return { title: parts[0] || "", detail: parts[1] || "", right: parts[2] || "", tone };
+      }).filter((r) => r.title);
+    }
+    get value() { return this.parseList(); }
+    render() {
+      const rows = this.parseList();
+      const ordered = this.hasAttribute("ordered");
+      const tag = ordered ? "ol" : "ul";
+      this.innerHTML = `<${tag} class="xls${this.hasAttribute("dense") ? " dense" : ""}">` + rows.map((r, i) =>
+        `<li class="${r.tone ? "tone-" + r.tone : ""}" style="--i:${i}"><span class="xls-m">${ordered ? i + 1 : ""}</span>` +
+        `<div class="xls-t"><b>${esc(r.title)}</b>${r.detail ? `<p>${esc(r.detail)}</p>` : ""}</div>${r.right ? `<span class="xls-r">${esc(r.right)}</span>` : ""}</li>`).join("") + `</${tag}>`;
+      B.typeset && B.typeset(this);
+    }
+  });
 
   // ================================================================ media
   define("x-image", class extends Base {

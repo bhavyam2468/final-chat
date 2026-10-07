@@ -19,7 +19,7 @@ export function blocksShell(id: string, fill: boolean, inline?: string) {
   const theme = document.documentElement.dataset.theme || "dark";
   const vars = Object.entries(themeVars()).map(([k, v]) => `${k}:${v}`).join(";");
   const tpl = inline !== undefined ? `<template data-blocks>${inline.replace(/<\/template/gi, "<\\/template")}</template>` : "";
-  return `<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="${o}/blocks/runtime.css"><style>:root{${vars}}</style></head><body class="${fill ? "fill" : ""}" data-theme="${theme}"><div id="root"></div>${tpl}<script>window.name=${JSON.stringify(id)};window.BLOCKS_ORIGIN=${JSON.stringify(o)}</script><script src="${o}/blocks/runtime.js"></script><script src="${o}/blocks/elements.js"></script><script>Blocks.connect()</script></body></html>`;
+  return `<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="${o}/blocks/runtime.css"><style>:root{${vars}}</style></head><body class="${fill ? "fill" : ""}" data-theme="${theme}"><div id="root"></div>${tpl}<script>window.name=${JSON.stringify(id)};window.BLOCKS_ORIGIN=${JSON.stringify(o)}</script><script src="${o}/blocks/runtime.js"></script><script src="${o}/blocks/elements.js"></script><script src="${o}/blocks/flow.js"></script><script>Blocks.connect()</script></body></html>`;
 }
 
 async function toWorkspace(path: string, text: string) {

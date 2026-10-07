@@ -7,6 +7,7 @@ const X = new Set([
   "x-chart", "x-sparkline", "x-table", "x-heatmap", "x-timeline", "x-math", "x-graph", "x-plot",
   "x-smiles", "x-mol3d", "x-draw", "x-tikz", "x-mermaid", "x-todo", "x-timer", "x-stopwatch", "x-clock",
   "x-choice", "x-segmented", "x-toggle", "x-rating", "x-sortable", "x-sketch", "x-upload",
+  "x-flow", "x-steps", "x-tree", "x-list",
   "x-image", "x-video", "x-audio", "x-youtube", "x-embed", "x-map", "x-state",
 ]);
 
@@ -32,6 +33,22 @@ export function uiIssues(text: string): string[] {
     if (/querySelector\(\s*['"]x-timer|x-timer['"]\s*\)|\.left\b/.test(b) && !/<x-timer\b/.test(b)) issues.push("the script reads a timer, but there is no <x-timer>. Add <x-timer id=\"t\" seconds=\"…\"> and call t.toggle() / t.reset().");
     if (/https?:\/\/(?:cdn\.|unpkg\.|jsdelivr|cdnjs)/i.test(b)) issues.push("the block loads a CDN script. Built-in components run offline; don't fetch a library.");
     if (/\bmatplotlib\b/.test(b)) issues.push("matplotlib does not render in a block. Use <x-chart> or <x-graph>.");
+    const inner = (tag: string) => (b.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`)) || [])[1] || "";
+    const ARROW = /(=>|-\.->|-->|==>|->)/;
+    const flow = inner("x-flow");
+    if (flow) {
+      // one statement per line: node "id[shape,tone]: label" (label and shape optional) or edge "a -> b: label"
+      for (const line of flow.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#") && !l.startsWith("//"))) {
+        const edge = ARROW.test(line);
+        const node = /^[\w.$-]+$/.test(line) || /^[\w.$-]+\s*\[[^\]]*\]\s*$/.test(line) || /^[\w.$-]+\s*(\[[^\]]*\])?\s*:/.test(line);
+        if (!edge && !node) issues.push(`x-flow line "${line.slice(0, 40)}" is neither an edge (a -> b: label) nor a node (id[shape]: label).`);
+      }
+      if (!ARROW.test(flow) && flow.split("\n").filter((l) => l.trim()).length > 1) issues.push("x-flow has nodes but no edges: connect them with \"a -> b\" lines.");
+    }
+    const steps = inner("x-steps");
+    if (steps !== "" && !steps.trim()) issues.push("x-steps is empty: one line per step, \"Title | detail | state\" (state done|now|todo|warn|fail).");
+    const tree = inner("x-tree");
+    if (tree !== "" && !tree.trim()) issues.push("x-tree is empty: one line per node, indent two spaces per level.");
   }
   return [...new Set(issues)].slice(0, 6);
 }

@@ -142,6 +142,63 @@ export const cases = [
     src: `<p>Score: {{ scroe }}</p><x-state score="1"></x-state>`,
     expect: () => (window.__issues || []).some((i) => /scroe/.test(i)) || JSON.stringify(window.__issues || null),
   },
+  {
+    name: "flow chart renders, pans, zooms and reports clicks",
+    src: `<x-flow title="Sign-in" height="360">start[round]: Open the app
+check[decision]: Signed in?
+ok: Dashboard
+no: Create account
+start -> check
+check -> ok: yes
+check -> no: no
+check -.-> check: retry
+</x-flow><script>
+document.querySelector("x-flow").addEventListener("nodeclick", (e) => { window.__picked = e.detail });
+</script>`,
+    wait: 700,
+    steps: [{ eval: '(() => { const f = document.querySelector("x-flow"); f.zoomBy(1.3).center("check").fit(); f.querySelector(".xf-node").dispatchEvent(new MouseEvent("click", { bubbles: true })); return window.__picked && window.__picked.id; })()' }],
+    expect: () => {
+      const f = document.querySelector("x-flow");
+      if (!f || !f.querySelector(".xf-stage .xf-pan svg .xf-node")) return "flow did not render: " + (f ? f.innerHTML.slice(0, 200) : "missing");
+      const nat = f.querySelector("svg");
+      const w = parseFloat(nat.getAttribute("width")) || 0, h = parseFloat(nat.getAttribute("height")) || 0;
+      const box = f.querySelector(".xf-stage").getBoundingClientRect();
+      return (f.value.nodes.length === 4 && f.value.edges.length === 4 && w > 60 && h > 60 && box.width > 100 && window.__picked && window.__picked.id === "start" && window.__picked.label === "Open the app" && !(window.__issues || []).length) ||
+        `nodes=${f.value.nodes.length} edges=${f.value.edges.length} svg=${w}x${h} stage=${Math.round(box.width)}x${Math.round(box.height)} picked=${JSON.stringify(window.__picked)} issues=${JSON.stringify(window.__issues || [])}`;
+    },
+  },
+  {
+    name: "steps, tree and list render their states",
+    src: `<x-steps>Gather | 5 papers | done
+Draft | sections | now
+Write | | todo
+! Check | unverified | warn
+x Publish | blocked | fail</x-steps><x-tree open="1">Report
+  Intro | hook
+  Method</x-tree><x-list ordered>First law | inertia | 1687
+! Second law | force | 1687</x-list>`,
+    expect: () => {
+      const st = document.querySelector("x-steps"), tr = document.querySelector("x-tree"), ls = document.querySelector("x-list");
+      if (!st || !tr || !ls) return "missing component";
+      const states = st.value.map((s) => s.state).join(",");
+      return (states === "done,now,todo,warn,fail" && st.querySelectorAll(".xst").length === 5 && st.done === 1 && st.total === 5 &&
+        tr.value[0].children.length === 2 && tr.querySelectorAll(".xtr-k[hidden]").length === 1 &&
+        ls.value.length === 2 && ls.value[1].tone === "danger" && ls.querySelectorAll("ol.xls li").length === 2) ||
+        `steps=${states} tree=${JSON.stringify(tr.value).slice(0, 120)} list=${JSON.stringify(ls.value)}`;
+    },
+  },
+  {
+    name: "a broken flow line is reported as an issue, not a crash",
+    src: `<x-flow>start -> ok
+this line makes no sense at all
+</x-flow>`,
+    wait: 1200,
+    expect: () => {
+      const f = document.querySelector("x-flow");
+      return (!!f && !!f.querySelector(".xf-stage svg") && (window.__issues || []).some((i) => /cannot read/.test(i))) ||
+        `rendered=${!!f && !!f.querySelector("svg")} issues=${JSON.stringify(window.__issues || [])}`;
+    },
+  },
 ];
 
 // The examples the system prompt teaches must render cleanly: they are read from SYSTEM.md itself.
@@ -151,6 +208,6 @@ const SYS = fs.readFileSync(new URL("../workspace-template/system/SYSTEM.md", im
   const tag = m[1].match(/<(x-[\w-]+)/)?.[1] || "html";
   cases.push({
     name: `system prompt example ${i + 1} ${tag}`, wait: 1200, src: m[1],
-    expect: () => { const r = document.getElementById("root"); const el = r.querySelector("x-chart svg, x-graph canvas, x-graph svg, x-choice .opt, x-tikz svg, x-timer"); return (!!el && !(window.__issues || []).length) || "missing render or issues: " + JSON.stringify(window.__issues || []) + " " + r.innerHTML.slice(0, 200); },
+    expect: () => { const r = document.getElementById("root"); const el = r.querySelector("x-chart svg, x-graph canvas, x-graph svg, x-choice .opt, x-tikz svg, x-timer, x-flow svg, x-steps .xst, x-tree .xtr-row, x-list li"); return (!!el && !(window.__issues || []).length) || "missing render or issues: " + JSON.stringify(window.__issues || []) + " " + r.innerHTML.slice(0, 200); },
   });
 });

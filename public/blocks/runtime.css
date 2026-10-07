@@ -284,3 +284,96 @@ x-choice label.opt.other input{font-size:1em}
 /* forms: fields stretch, buttons keep their size, steady spacing */
 form{display:flex;flex-direction:column;gap:var(--gap);align-items:stretch;margin:0}
 form>:is(button,a.btn){align-self:flex-start}
+
+/* ---------------------------------------------------------------- flow */
+x-flow{display:block}
+.xf-wrap{position:relative;display:flex;flex-direction:column;gap:6px;min-width:0}
+.xf-stage{position:relative;height:var(--xf-h,300px);min-height:130px;overflow:hidden;border:1px solid var(--line);border-radius:var(--r);
+  background:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--fg) 8%,transparent) 1px,transparent 0) 0 0/16px 16px,var(--surface);
+  touch-action:none;cursor:grab;transition:border-color .15s}
+.xf-wrap.no-grid .xf-stage{background:var(--surface)}
+.xf-wrap.is-fill .xf-stage{height:var(--xf-h,100%)}
+.xf-stage.grab{cursor:grabbing}
+.xf-pan{transform-origin:0 0;will-change:transform}
+.xf-svg{display:block;overflow:visible}
+.xf-edge{fill:none;stroke:color-mix(in srgb,var(--fg) 34%,transparent);stroke-width:1.5;stroke-linecap:round}
+.xf-edge.strong{stroke:var(--fg);stroke-width:2.1}
+.xf-edge.dashed{stroke-dasharray:5 4;stroke:color-mix(in srgb,var(--muted) 75%,transparent)}
+.xf-arrowhead{fill:color-mix(in srgb,var(--fg) 42%,transparent)}
+.xf-edge-l{font-size:11px;fill:var(--muted);paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
+.xf-node{cursor:pointer;outline:none}
+.xf-shape{fill:var(--bg);stroke:color-mix(in srgb,var(--fg) 26%,transparent);stroke-width:1.4;transition:fill .18s,stroke .18s}
+.xf-node:hover .xf-shape{stroke:color-mix(in srgb,var(--fg) 55%,transparent)}
+.xf-node.on .xf-shape{stroke:var(--accent);stroke-width:2;fill:color-mix(in srgb,var(--accent) 8%,var(--bg))}
+.xf-node:focus-visible .xf-shape{stroke:var(--accent);stroke-width:2}
+.xf-start .xf-shape{fill:color-mix(in srgb,var(--accent) 12%,var(--bg));stroke:color-mix(in srgb,var(--accent) 52%,transparent)}
+.xf-end .xf-shape{fill:color-mix(in srgb,var(--fg) 9%,var(--bg))}
+.xf-decision .xf-shape{fill:color-mix(in srgb,var(--warning) 8%,var(--bg))}
+.xf-db .xf-shape,.xf-data .xf-shape{fill:color-mix(in srgb,var(--info) 7%,var(--bg))}
+.xf-note .xf-shape{stroke-dasharray:4 3;fill:color-mix(in srgb,var(--fg) 4%,var(--bg))}
+.xf-node.tone-success .xf-shape{stroke:color-mix(in srgb,var(--success) 58%,transparent);fill:color-mix(in srgb,var(--success) 9%,var(--bg))}
+.xf-node.tone-danger .xf-shape{stroke:color-mix(in srgb,var(--danger) 58%,transparent);fill:color-mix(in srgb,var(--danger) 9%,var(--bg))}
+.xf-node.tone-warning .xf-shape{stroke:color-mix(in srgb,var(--warning) 58%,transparent);fill:color-mix(in srgb,var(--warning) 9%,var(--bg))}
+.xf-node.tone-info .xf-shape{stroke:color-mix(in srgb,var(--info) 58%,transparent);fill:color-mix(in srgb,var(--info) 9%,var(--bg))}
+.xf-node.tone-accent .xf-shape{stroke:color-mix(in srgb,var(--accent) 58%,transparent);fill:color-mix(in srgb,var(--accent) 9%,var(--bg))}
+.xf-label{font-size:12.5px;fill:var(--fg);font-weight:500}
+.xf-wrap.no-labels .xf-node text{display:none}
+.xf-bar{position:absolute;right:8px;bottom:8px;display:flex;gap:2px;opacity:0;transition:opacity .18s}
+.xf-wrap:hover .xf-bar,.xf-bar:focus-within{opacity:1}
+.xf-bar button{width:26px;height:26px;padding:0;border-radius:8px;font-size:12px;line-height:1;background:var(--bg)}
+.xf-bar button[data-act=fit]{width:auto;padding:0 9px}
+.xf-cap{font-size:.8em;color:var(--muted);text-align:center}
+@keyframes xf-draw{from{stroke-dashoffset:var(--len,600)}}
+.xf-edge.draw{stroke-dasharray:var(--len,600);animation:xf-draw .5s var(--ease) both}
+
+/* ---------------------------------------------------------------- steps */
+x-steps{display:flex;flex-direction:column;gap:0}
+.xst{display:grid;grid-template-columns:auto 1fr auto;gap:12px;padding:9px 2px;align-items:start;position:relative}
+.xst-b{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:600;background:var(--surface);border:1px solid var(--line);color:var(--muted);font-variant-numeric:tabular-nums;margin-top:1px}
+.xst:not(:last-child)::after{content:"";position:absolute;left:13.5px;top:34px;bottom:-4px;width:1px;background:var(--line)}
+.xst.done .xst-b{background:color-mix(in srgb,var(--success) 16%,transparent);border-color:transparent;color:var(--success)}
+.xst.done .xst-t b{color:var(--muted)}
+.xst.now .xst-b{background:var(--fg);border-color:transparent;color:var(--bg)}
+.xst.warn .xst-b{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 45%,transparent)}
+.xst.fail .xst-b{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,transparent)}
+.xst-t b{font-weight:500;font-size:.96em}
+.xst-t p{color:var(--muted);font-size:.88em;margin-top:1px}
+.xst-s{font-size:.7em;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);opacity:0;padding-top:4px}
+.xst.now .xst-s,.xst.fail .xst-s,.xst.warn .xst-s{opacity:1}
+.xst.todo{opacity:.78}
+.xst[tabindex]:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:2px;border-radius:8px}
+
+/* ---------------------------------------------------------------- tree */
+x-tree{display:block;font-size:.95em}
+.xtr-d{list-style:none;margin:0;padding-left:calc(var(--d,0) * 0px)}
+x-tree ul{padding-left:0}
+.xtr-d .xtr-d{padding-left:18px;border-left:1px solid var(--line);margin-left:11px}
+.xtr-row{display:flex;align-items:center;gap:6px;padding:3px 2px;border-radius:8px;cursor:default}
+.xtr-row:hover{background:color-mix(in srgb,var(--fg) 5%,transparent)}
+.xtr-t,.xtr-b{width:16px;height:16px;flex:0 0 16px;display:grid;place-items:center;padding:0;min-height:0;border:0;background:none;box-shadow:none;color:var(--muted);font-size:12px;line-height:1;border-radius:5px}
+.xtr-t:hover{background:color-mix(in srgb,var(--fg) 10%,transparent);color:var(--fg)}
+.xtr-b::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--faint)}
+x-tree.bullet .xtr-b::before{background:var(--accent)}
+.xtr-n{font-weight:450}
+.xtr-note{color:var(--muted);font-size:.86em;margin-left:auto;padding-left:10px}
+.xtr-k[hidden]{display:none}
+
+/* ---------------------------------------------------------------- list */
+x-list{display:block}
+.xls{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.xls li{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:baseline;padding:7px 2px;border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent)}
+.xls li:last-child{border-bottom:0}
+.xls.dense li{padding:3px 2px}
+.xls-m{color:var(--muted);font-size:.8em;font-variant-numeric:tabular-nums;min-width:0}
+.xls-t b{font-weight:500;font-size:.96em}
+.xls-t p{color:var(--muted);font-size:.88em;margin-top:1px}
+.xls-r{color:var(--muted);font-size:.86em;font-variant-numeric:tabular-nums;padding-left:14px}
+.xls li.tone-success b{color:var(--success)}
+.xls li.tone-danger b{color:var(--danger)}
+.xls li.tone-warning b{color:var(--warning)}
+.xls li.tone-accent b{color:var(--accent)}
+@keyframes xls-in{from{opacity:0;transform:translateY(3px)}}
+.xls li{animation:xls-in .3s var(--ease) both;animation-delay:calc(var(--i,0) * 24ms)}
+@keyframes xst-in{from{opacity:0;transform:translateY(3px)}}
+.xst{animation:xst-in .3s var(--ease) both;animation-delay:calc(var(--i,0) * 32ms)}
+@media (prefers-reduced-motion:reduce){.xls li,.xst,.xf-edge.draw{animation:none!important}}

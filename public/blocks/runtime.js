@@ -53,6 +53,8 @@
 
   // ---------------------------------------------------------------- host bridge
   const post = (type, data) => { try { parent.postMessage({ src: "blocks", frame: FRAME, type, ...data }, "*"); } catch {} };
+  /** A component reporting something a person would see as broken (shown to the user, offered to the model as a fix). */
+  B.issue = (text) => post("issues", { issues: [String(text).slice(0, 160)] });
   let reqId = 0; const pending = {}; const streams = {};
   const call = (type, data) => new Promise((res) => { const id = ++reqId; pending[id] = res; post(type, { id, ...data }); });
   const backendPayload = (kind, input) => {
