@@ -15,6 +15,7 @@ A quiet, minimal AI operating surface — chat, sandboxed workspace, tools, gene
 | **Workflows** | A named procedure the app performs: `workflows/<name>/workflow.md` declares steps the app runs itself (search, open the pages) and one thinking step, with real progress in a window and only the report in the chat. Ships deep research; the agent can save new ones (`workflow_save`) or run them (`start_workflow`). Spec: [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) |
 | **AI Agent Tools** | The AI can read/write files, run bash commands, run Python, search the web, scrape pages, extract structured data |
 | **Workspace** | Sandboxed file tree the agent operates in. Home folder, entire disk, host terminal and sudo are separate switches (Settings → Access), all off by default |
+| **Templates** | A verified library of circuits, block shells and document shapes: `templates/<name>/template.md` (kind, vars, body), two shelves (bundled + your own), `template_search` → `template_get` → `check.ok` means it really renders. Spec: [`docs/TEMPLATES.md`](docs/TEMPLATES.md) |
 | **BlocksUI** | Generative UI language for `<ui>`: ~60 components (layout, paging decks, quizzes, timers, charts, Desmos-style graphs, LaTeX, SMILES/3D molecules, diagrams, native flowcharts/trees/outlines, maps…), reactive bindings, JS/Python logic and a relational layout language. Spec: [`docs/BLOCKS.md`](docs/BLOCKS.md) |
 | **Canvas** | Floating windows or **docked** beside the chat (drag the left edge to resize). Anything chat can show can go in a canvas; native viewers for PDF, Word, Excel/CSV, PowerPoint, zip/tar (browse without extracting), images, audio/video, code |
 | **Context status** | Live token meter in the workspace panel, per-section breakdown, and scoped compaction: fold tool output, fold web results, summarise history, or compact selected turns. Everything is restorable |
@@ -304,6 +305,10 @@ __dev.disable()
 - The desktop layer: a global hotkey opens a small *Ask* window (`minimalist-chat summon`, a Chrome/Chromium app window — no tabs, no URL bar), `minimalist-chat ask "…"` streams an answer into a terminal, and the model can notify you with `os_notify`. Every piece calls the app's HTTP APIs — the desktop never drives the UI. See [docs/DESKTOP.md](docs/DESKTOP.md).
 
 ---
+
+## Ideas and what comes next
+
+The brainstorming guide — what to build after the features that are in, with costs, risks, triggers and the ideas that were deliberately rejected: [`docs/IDEAS.md`](docs/IDEAS.md).
 
 ## Quick Start (Fresh Machine)
 
