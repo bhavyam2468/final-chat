@@ -195,7 +195,7 @@ if [ "$MODE" = local ] && [ $SERVICE -eq 1 ]; then
   sed -e "s|@APP@|$APP|g" -e "s|@PORT@|$PORT|g" scripts/minimalist-chat > "$HOME/.local/bin/minimalist-chat"; chmod +x "$HOME/.local/bin/minimalist-chat"
   ln -sf "$APP/scripts/chatsync.mjs" "$HOME/.local/bin/chatsync"
   ln -sf "$APP/scripts/chatsync.mjs" "$HOME/.local/bin/chat-sync"
-  ok "launcher: minimalist-chat [open|start|stop|restart|status|logs|sync|rollback]"
+  ok "launcher: minimalist-chat [open|summon|ask \"…\"|hotkey|start|stop|restart|status|logs|sync|rollback]"
   ok "sync & rollback tool: chatsync (or chat-sync)"
   if [ "$OS" = Linux ] && has systemctl && systemctl --user show-environment >/dev/null 2>&1; then
     PRE=""
@@ -208,6 +208,11 @@ if [ "$MODE" = local ] && [ $SERVICE -eq 1 ]; then
     cp scripts/minimalist-chat.svg "$HOME/.local/share/icons/minimalist-chat.svg"
     sed -e "s|@BIN@|$HOME/.local/bin/minimalist-chat|g" -e "s|@ICON@|$HOME/.local/share/icons/minimalist-chat.svg|g" scripts/minimalist-chat.desktop > "$HOME/.local/share/applications/minimalist-chat.desktop"
     ok "app launcher entry"
+    # the summon window is what makes this a desktop app rather than a tab: bind it once
+    if [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then
+      HK="$("$HOME/.local/bin/minimalist-chat" hotkey 2>/dev/null | head -4 | tail -1)"
+      [ -n "$HK" ] && ok "hotkey: bind \`minimalist-chat summon\` — run \"minimalist-chat hotkey --write\" to do it now"
+    fi
   elif [ "$OS" = Darwin ]; then
     PL="$HOME/Library/LaunchAgents/com.minimalist-chat.plist"; mkdir -p "$(dirname "$PL")"
     cat > "$PL" <<EOF

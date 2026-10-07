@@ -100,8 +100,16 @@ A `.desktop` file is installed at:
 
 - Appears in the Niri/app launcher as **"Minimalist AI Workspace"**
 - Opens `http://localhost:3000` in a **new Zen Browser window**
-- Right-click actions: Open, Start Service, Stop Service, Restart Service
+- Right-click actions: Ask the assistant, Open, Start Service, Stop Service, Restart Service
 - Icon: `~/.local/share/icons/minimalist-chat.svg`
+
+The desktop layer (hotkey, summon window, CLI asks) is documented in [docs/DESKTOP.md](docs/DESKTOP.md):
+```bash
+minimalist-chat summon         # focus the Ask window, or open one
+minimalist-chat ask "…"        # ask from a terminal; --notify pings you when the answer lands
+minimalist-chat hotkey         # the snippet for this desktop; --write writes it (niri/Hyprland/sway)
+minimalist-chat desktop        # what this machine can do: notify-send, browser, session
+```
 
 ---
 

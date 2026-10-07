@@ -7,6 +7,13 @@ URL="http://localhost:$PORT"
 BROWSER_BIN="${CHAT_BROWSER:-$(grep -s '^CHAT_BROWSER=' "$APP/.env" | cut -d= -f2-)}"
 svc() { if [ "$(uname -s)" = Darwin ]; then case "$1" in start) launchctl load ~/Library/LaunchAgents/com.minimalist-chat.plist ;; stop) launchctl unload ~/Library/LaunchAgents/com.minimalist-chat.plist ;; restart) svc stop; svc start ;; status) launchctl list | grep minimalist-chat ;; esac; else systemctl --user "$1" minimalist-chat ${2:-}; fi; }
 
+# the app must be answering on $URL; start the service and wait if it is not
+up() {
+  curl -fs -o /dev/null "$URL/api/health" || svc start
+  for _ in $(seq 1 40); do curl -fs -o /dev/null "$URL/api/health" && return 0; sleep 0.5; done
+  echo "the workspace did not come up — see: minimalist-chat logs" >&2; return 1
+}
+
 case "${1:-open}" in
   start|stop|restart) svc "$1"; echo "$1: ok" ;;
   status) svc status --no-pager ;;
@@ -22,9 +29,16 @@ case "${1:-open}" in
   sync) exec "$APP/scripts/chatsync.mjs" ;;
   rollback) exec "$APP/scripts/chatsync.mjs" --rollback ;;
   open)
-    curl -fs -o /dev/null "$URL/api/health" || svc start
-    for _ in $(seq 1 40); do curl -fs -o /dev/null "$URL/api/health" && break; sleep 0.5; done
+    up
     if [ -n "$BROWSER_BIN" ] && command -v "$BROWSER_BIN" >/dev/null 2>&1; then exec "$BROWSER_BIN" --new-window "$URL"
     elif command -v xdg-open >/dev/null; then exec xdg-open "$URL"; else exec open "$URL"; fi ;;
-  *) echo "Usage: minimalist-chat [open|start|stop|restart|status|logs|update|sync|rollback]"; exit 1 ;;
+  summon)
+    up && exec node "$APP/scripts/desktop.mjs" summon ;;
+  ask)
+    shift; up && exec node "$APP/scripts/desktop.mjs" ask "$@" ;;
+  hotkey)
+    shift; up && exec node "$APP/scripts/desktop.mjs" hotkey "$@" ;;
+  desktop|tools)
+    up && exec node "$APP/scripts/desktop.mjs" status ;;
+  *) echo "Usage: minimalist-chat [open|summon|ask \"…\"|hotkey [--write]|desktop|start|stop|restart|status|logs|update|sync|rollback]"; exit 1 ;;
 esac

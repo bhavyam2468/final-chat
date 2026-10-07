@@ -3,7 +3,8 @@ import fss from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { WS, resolvePath, rel, tree, Node, mimeOf, isImage, readText } from "../workspace";
-import type { Settings } from "../settings";
+import { hostLocked, type Settings } from "../settings";
+import { notify as notifyDesktop } from "../os-bridge";
 import { searchCatalog } from "../blocks/catalog";
 import { callMcp, readServers, writeServers, dropMcpPool, expandCfg, ServerCfg } from "../mcp";
 import { MCP_CATALOG, registrySearch } from "../market";
@@ -73,6 +74,8 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("pip_install", "Install packages into the same venv run_python uses. Not system pip", { packages: arr({ type: "string" }) }, ["packages"]),
     T("shell", "Run bash in YOUR sandbox. Not for reading or searching files (fs_read, fs_search, fs_list). Quote paths that contain spaces. A missing binary is not retried", { command: s(), timeout: n("seconds, default 120, max 600"), cwd: s() }, ["command"]),
     ...(host ? [T("host_shell", "Run bash on the USER'S machine. Quote paths with spaces. If it fails, read the error; do not guess another binary. sudo prompts the user — never pipe a password. Not for adb (use the phone tools)", { command: s(), timeout: n("seconds, default 120, max 1800"), cwd: s() }, ["command"])] : []),
+    // The desktop bridge (notifications): a hosted install has no session to notify
+    ...(hostLocked() ? [] : [T("os_notify", "Put a notification on the user's desktop. For a long job that finished while they were away, or a thing they asked to be pinged about — never for an ordinary answer", { title: s("short, e.g. 'Deep research finished'"), body: s("one line: what happened and where to look"), urgency: { type: "string", enum: ["low", "normal", "critical"] } }, ["title"])]),
     T("web_search", "Use for current, niche, source-backed, or explicitly requested web research. In General mode do not call automatically for stable questions. SearXNG is tried first; open the useful pages with web_fetch before citing them", { query: s(), limit: n() }, ["query"]),
     T("web_fetch", "Fetch a URL with lightweight HTTP and established readability extraction; use for a page the user provided or a useful search result. Browser/Firecrawl escalation is optional and off by default", { url: s() }, ["url"]),
     ...(st.firecrawlEnabled && st.firecrawlKey ? [T("web_extract", "Extract structured data from a page (explicit Firecrawl AI fallback)", { url: s(), prompt: s("what to extract") }, ["url", "prompt"])] : []),
@@ -229,7 +232,7 @@ export async function execTool(name: string, a: Record<string, any>, ctx: ToolCt
       fs_search: "Searching workspace files", fs_write: "Preparing file write", fs_edit: "Reading current file",
       fs_insert: "Reading current file", fs_delete: "Moving item to trash", fs_move: "Checking destination",
       run_python: "Starting Python", pip_install: "Checking packages", shell: "Preparing sandbox command",
-      host_shell: "Preparing machine command", web_search: "Searching the web", web_fetch: "Opening webpage",
+      host_shell: "Preparing machine command", os_notify: "Notifying you", web_search: "Searching the web", web_fetch: "Opening webpage",
       web_extract: "Extracting page details", view_image: "Loading image", todo: "Updating task list",
       remember: "Saving memory", forget: "Removing memory", project_open: "Opening project", diff_since: "Checking recent changes",
       canvas_open: "Opening preview", ui_search: "Searching UI components", browser: "Opening browser",
@@ -450,6 +453,11 @@ They can also press Connect in Settings → MCP.` : "";
         if (chk?.approve) { const gate = await approvalGate(ctx, `pip install ${pk.join(" ")}`, chk.approve, false); if (gate) return gate; }
         ctx.progress?.("Installing Python packages");
         const r = await pipInstall(pk, { onData: ctx.output, signal: ctx.signal }); return { ok: r.code === 0, result: cut(r.out || "installed", 3000) };
+      }
+      case "os_notify": {
+        if (hostLocked()) return { ok: false, result: "This install runs in a container: there is no desktop to notify." };
+        const r = await notifyDesktop(String(a.title || "Workspace"), a.body ? String(a.body) : "", String(a.urgency || "normal"));
+        return r.ok ? { ok: true, result: `Notification shown: ${String(a.title || "Workspace")}` } : { ok: false, result: `Could not notify the desktop: ${r.error}. Say so and carry on.` };
       }
       case "shell":
       case "host_shell": {

@@ -20,3 +20,5 @@ Rules that keep both safe
 - To use sandbox tools on home files, copy them into the workspace; to deliver, write the result back and say where.
 - GUI apps are invisible to you: verify through logs, build output or a screenshot (adb exec-out screencap, `xcrun simctl io booted screenshot`, `screencapture -x`) plus view_image.
 - git: `git status --short`, `git diff --stat`; commit only when asked.
+- The desktop is part of this machine: `os_notify` notifies them (a long job that finished), `minimalist-chat summon` opens the small ask window, `minimalist-chat ask "…"` asks from a terminal, `minimalist-chat desktop` says what the machine can do. All of it goes through the app's APIs — never drive the UI.
+- Desktop notification only when it is warranted (finished, failed, they asked). Never notify for something they are watching.

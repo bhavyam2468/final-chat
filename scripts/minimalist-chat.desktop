@@ -9,7 +9,11 @@ GenericName=AI Chat & Workspace
 Comment=Local AI workspace
 Categories=Utility;Development;
 StartupNotify=true
-Actions=StartService;StopService;RestartService;
+Actions=Summon;StartService;StopService;RestartService;
+
+[Desktop Action Summon]
+Name=Ask the assistant
+Exec=@BIN@ summon
 
 [Desktop Action StartService]
 Name=Start Service

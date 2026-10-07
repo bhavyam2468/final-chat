@@ -798,11 +798,26 @@ export default function App() {
   const loadConvRef = useRef(loadConv); loadConvRef.current = loadConv;
   startWfRef.current = (name, input) => { void startWorkflow(name, input); };
 
+  // /?chat=<id> opens that conversation: the summon window and the CLI link back into the app this way
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("chat");
+    if (!id) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    void loadConvRef.current(id);
+  }, []);
+  /** Summon: a desktop window (Chrome app window via /api/os), or a plain popup when there is no bridge. */
+  const openSummon = useCallback(async () => {
+    const r = await fetch("/api/os", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "summon" }) }).then((x) => x.json()).catch(() => null);
+    if (!r?.ok) window.open("/summon", "fc-ask", "width=620,height=320");
+    else if (r.error) window.open("/summon", "fc-ask", "width=620,height=320");
+  }, []);
+
   const commands: Command[] = useMemo(() => [
     { name: "new", hint: "New chat", run: newChat },
     { name: "mode", hint: activeMode ? `Mode: ${MODES.find((m) => m.id === activeMode)?.label} — change or leave it` : "Focus this chat on one job", panel: "modes" },
     ...MODES.map((m) => ({ name: "mode " + m.id, hint: m.hint, run: () => { void setChatMode(activeMode === m.id ? null : m.id); } })),
     { name: "templates", hint: "Verified circuits, quiz shells, document shapes — drop one in", panel: "templates" },
+    { name: "summon", hint: "Ask in a small window that stays out of the way", run: () => { void openSummon(); } },
     { name: "workflows", hint: wf.runs.some((r) => r.status === "running") ? "Run a workflow, or watch the one that is running" : "Run a workflow: research, brief, a pipeline of your own", panel: "workflows" },
     ...wf.workflows.filter((w) => w.ok).map((w): Command => ({ name: "run " + w.name, hint: w.description || w.title, run: (arg?: string) => { void startWorkflow(w.name, arg || ""); } })),
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
@@ -823,7 +838,7 @@ export default function App() {
     { name: "settings", hint: "Model, tools, access, secrets, MCP, skills", panel: "settings" },
     { name: "model", hint: "Provider, model, API key, context budget", panel: "settings", seed: "model" },
     { name: "access", hint: "Files, host terminal, sudo, phone", panel: "settings", seed: "access" },
-  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, activeMode, setChatMode, wf, startWorkflow]);
+  ], [newChat, linkProject, chipNew, mainPath, loadConv, setTheme, theme, openTerm, activeMode, setChatMode, wf, startWorkflow, openSummon]);
 
   const renderTurn = (m: Msg, isThread: boolean, last = false) => {
     const sib = sibOf(m);

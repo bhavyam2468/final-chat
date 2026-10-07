@@ -300,7 +300,8 @@ __dev.disable()
 ### 3. Background Service & Desktop App
 - `~/.config/systemd/user/minimalist-chat.service`: runs `npm start` persistently; auto-starts Postgres on boot
 - `~/.local/share/applications/minimalist-chat.desktop`: shows in app launcher as "Minimalist AI Workspace"; opens in Zen Browser
-- `~/.local/bin/minimalist-chat`: CLI control script (`start|stop|restart|status|logs|open`)
+- `~/.local/bin/minimalist-chat`: CLI control script (`open|summon|ask "…"|hotkey|start|stop|restart|status|logs`)
+- The desktop layer: a global hotkey opens a small *Ask* window (`minimalist-chat summon`, a Chrome/Chromium app window — no tabs, no URL bar), `minimalist-chat ask "…"` streams an answer into a terminal, and the model can notify you with `os_notify`. Every piece calls the app's HTTP APIs — the desktop never drives the UI. See [docs/DESKTOP.md](docs/DESKTOP.md).
 
 ---
 

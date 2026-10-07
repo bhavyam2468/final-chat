@@ -212,6 +212,8 @@ function scenario(messages) {
     return { text: `CSS anchor positioning is specified and shipping; the practical changes are in how fallbacks and overflow are handled [1](${list[0]}).\n\n## What changed\n\nThe position-try fallback syntax replaced the older \`position-fallback\` proposal, and \`anchor-scope\` limits which anchors a query can see [2](${list[1] || list[0]}). Browsers that shipped early still accept the older spelling, so feature detection is worth keeping [3](${list[2] || list[0]}).\n\n## Where the sources disagree\n\nOne source calls the fallback ordering deterministic, another describes it as implementation-defined for overlapping candidates; the specification is the tiebreaker [1](${list[0]}), [2](${list[1] || list[0]}).\n\n## Not known\n\nNone of the pages states a date for the last specification change, so the schedule is not settled here.` };
   }
   // the workflows pair: save a definition, then run one — enough to exercise both tools end to end
+  // the summon window and `minimalist-chat ask`: one short, deterministic answer
+  if (/^desk:/.test(q)) return { text: "Quick answer: the bridge is up and this window needs nothing else.", slow: 3 };
   if (/^tmpl:/.test(q)) {
     // The template library through the tool path the model actually uses: search, read (which verifies),
     // then quote the check line back. The chat e2e asserts on that summary.
