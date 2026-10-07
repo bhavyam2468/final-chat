@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname || process.cwd()),
   },
-  serverExternalPackages: ["@electric-sql/pglite", "mammoth", "node-tikzjax"],
+  serverExternalPackages: ["@electric-sql/pglite", "mammoth", "node-tikzjax", "node-pty"],
   allowedDevOrigins: ["*.e2b.app", "*.e2b.dev"],
 };
 

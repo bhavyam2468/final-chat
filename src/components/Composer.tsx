@@ -62,6 +62,7 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
   // omnibox: null = plain input; "commands"/"files" open automatically, panel modes are explicit
   const [mode, setMode] = useState<PaletteMode | null>(null);
   const [editingQ, setEditingQ] = useState<string | null>(null);
+  const [showProcs, setShowProcs] = useState(false);
 
   // drafts: save on every change (cheap), load when the chat changes
   const keyRef = useRef(p.draftKey);
@@ -298,13 +299,22 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer(p, r
           </div>
         ))}
       </div>}
-      {!!p.procs?.length && <div className="pstrip">
-        {p.procs.map((pr) => (
-          <button key={pr.name} className={"ppill" + (pr.running ? " live" : "")} onMouseDown={(e) => e.preventDefault()}
-            onClick={() => p.onOpenProc?.(pr.name)} title={`${pr.command}${pr.running ? " · running" : ` · exited ${pr.exit}`}`}>
-            <i className="pdot" />{pr.name}{pr.ports.length > 0 && <span className="pport">:{pr.ports[0]}</span>}{!pr.running && <span className="pexit">exited</span>}
-          </button>
-        ))}
+      {!!p.procs?.length && <div className="pbar-wrap">
+        {showProcs && <div className="pop-scrim" onClick={() => setShowProcs(false)} />}
+        <button className={"pbar" + (showProcs ? " open" : "")} aria-label={`${p.procs.filter((x) => x.running).length} background ${p.procs.filter((x) => x.running).length === 1 ? "process" : "processes"}`}
+          onClick={() => setShowProcs((v) => !v)}>
+          {p.procs.map((pr) => <i key={pr.name} className={pr.running ? "on" : ""} />)}
+        </button>
+        {showProcs && <div className="pbar-pop" role="menu" aria-label="Background processes">
+          {p.procs.map((pr) => (
+            <button key={pr.name} role="menuitem" className="pbar-row" onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setShowProcs(false); p.onOpenProc?.(pr.name); }}>
+              <i className={pr.running ? "on" : ""} />
+              <span className="n">{pr.name}</span>
+              <span className="s">{pr.running ? `running${pr.ports.length ? ` · :${pr.ports[0]}` : ""}` : `exited ${pr.exit}`}</span>
+            </button>
+          ))}
+        </div>}
       </div>}
       {p.quote && <div className="cquote"><p>{p.quote}</p><button className="ib sm" aria-label="Remove quote" onClick={p.onClearQuote}><X /></button></div>}
       {chips.length > 0 && <div className="chips">{chips.map((c) => {

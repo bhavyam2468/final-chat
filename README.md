@@ -209,7 +209,7 @@ Plain chat stays cheap: a short system prompt, core tools only, no plans or chec
 - **Dev pack** (`proc_*`, `browser`, `check`):
   - Loads when a skill declaring `tools: dev` opens (build, debug, design, host), or always on large context windows (Settings → Tools).
   - Servers run as managed processes, so the agent waits for a port instead of sleeping, and restarts instead of re-spawning.
-  - The full process suite: `proc_start` detaches at once, `proc_logs` reads or blocks (`wait_for` port/pattern/exit), `proc_wait` pauses until a condition with a timeout, `proc_write` answers prompts and feeds repls through stdin, `proc_signal` sends SIGHUP/SIGUSR-style signals, `proc_stop` kills the tree, `proc_restart` re-runs the same command. Every process the agent starts appears on the input bar; clicking one opens its output in a terminal window.
+  - The full process suite: `proc_start` detaches at once, `proc_logs` reads or blocks (`wait_for` port/pattern/exit), `proc_wait` pauses until a condition with a timeout, `proc_write` answers prompts and feeds repls through stdin, `proc_signal` sends SIGHUP/SIGUSR-style signals, `proc_stop` kills the tree, `proc_restart` re-runs the same command. Every process the agent starts leaves a thin strip docked to the input bar's bottom edge; click it to see the list (running and exited) and open any of them in a terminal window.
 - **Planning.** `todo` shows a checklist in the chat, and the current step is recited after each tool result. `ask_user` shows option buttons and ends the turn.
 - **Presentation.** Blocks are the native medium, not decoration: `<ui>` first, prose for what a block cannot say. The loop checks each finished answer and gives one round to convert a markdown table (6+ rows), five or more number-carrying bullets, a spec sheet of lines, or a chart linked from `run_python` into blocks (`x-table`, `x-chart`, `x-graph`, `x-stat`, `x-kv`). The reference lives in `system/skills/blocks/SKILL.md`; the rule and examples live in `SYSTEM.md`.
 - **Quality guard.** HTML/CSS/JSX the agent writes is linted for generic AI styling (novelty fonts, neon, purple gradients, glass, emoji headings, marketing copy, helper text). With `fix`, the agent gets one repair round.
@@ -231,6 +231,7 @@ The `/processes` palette (or a process pill on the input bar) opens a terminal w
 
 - **Sandbox terminal** (default): an interactive `bash` in the agent's sandbox — workspace `cwd`, app secrets stripped, bubblewrap namespace when installed.
 - **Host terminal** (Settings → Access → Host terminal): your real `$SHELL` in your home directory, profile and toolchains included; `sudo` prompts work because the session is a genuine pseudo-tty.
+- Rendered with **xterm.js**: full colors (256 + truecolor), a real caret, mouse selection, copy (`⌘/Ctrl+Shift+C`, or the footer button) and paste (`⌘/Ctrl+Shift+V`, the footer button, or middle-click), `⌘A` selects the scrollback. Windows resize the pty and running programs get `SIGWINCH` (needs the optional `node-pty` native build; without it a fixed-size `script` pty is used).
 - Sessions stream over NDJSON and outlive the window; keystrokes, tab completion, shell history and password prompts behave exactly like a local terminal. A process's window shows its live output with Stop and Restart.
 
 ## Extensions

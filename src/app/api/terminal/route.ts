@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getSettings } from "@/lib/settings";
-import { termCreate, termGet, termKill, termWrite } from "@/lib/terminal";
+import { termCreate, termGet, termKill, termResize, termWrite } from "@/lib/terminal";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const b = (await req.json()) as { action: "create" | "write" | "kill"; id?: string; host?: boolean; cols?: number; rows?: number; cwd?: string; title?: string; data?: string };
+  const b = (await req.json()) as { action: "create" | "write" | "resize" | "kill"; id?: string; host?: boolean; cols?: number; rows?: number; cwd?: string; title?: string; data?: string };
   if (b.action === "create") {
     const st = await getSettings();
     const r = termCreate(st, { host: b.host, cols: b.cols, rows: b.rows, cwd: b.cwd, title: b.title });
@@ -40,6 +40,11 @@ export async function POST(req: NextRequest) {
   if (b.action === "write") {
     if (!b.id || typeof b.data !== "string") return Response.json({ error: "id and data required" }, { status: 400 });
     const r = termWrite(b.id, b.data);
+    return r.ok ? Response.json(r) : Response.json(r, { status: 400 });
+  }
+  if (b.action === "resize") {
+    if (!b.id || !b.cols || !b.rows) return Response.json({ error: "id, cols, rows required" }, { status: 400 });
+    const r = termResize(b.id, b.cols, b.rows);
     return r.ok ? Response.json(r) : Response.json(r, { status: 400 });
   }
   if (b.action === "kill") {

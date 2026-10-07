@@ -750,7 +750,7 @@ export default function App() {
           <Composer ref={mainRef} capture draftKey={view} onSend={sendMain} streaming={!!streamId && !threadPath.some((m) => m.id === streamId)} onStop={stop}
             quote={quotes.main} onClearQuote={() => setQuotes((q) => ({ ...q, main: null }))} commands={commands} onFocus={() => (active.current = "main")}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
-            procs={procs.filter((pr) => pr.running)} onOpenProc={(name) => openTerm({ proc: name })}
+            procs={procs} onOpenProc={(name) => openTerm({ proc: name })}
             palette={{ commands, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
           </div>
         </div>

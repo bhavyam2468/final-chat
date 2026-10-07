@@ -1,110 +1,129 @@
 "use client";
-/* Terminal in a canvas window. Two faces:
-   - a live PTY session (sandboxed bash, or the user's real shell when host access is on): the browser
-     forwards raw keystrokes, the tty echoes everything back, so tab-completion, shell history and
-     password prompts behave exactly like a local terminal;
-   - the output of a process the agent started (proc_start): read-only follow view with Stop/Restart.
-   Output is rendered with a small SGR interpreter tuned to the app's quiet palette. */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Square, RotateCw, Plus } from "lucide-react";
+/* Terminal in a canvas window, rendered with xterm.js — a real VT100-class emulator:
+   colors (256 + truecolor), cursor positioning, the caret, mouse selection, copy/paste,
+   bracketed paste, and full-size tracking (the window resizes the pty, programs get SIGWINCH).
+   Two faces:
+   - a live PTY session (sandboxed bash, or the user's real shell when host access is on): the
+     browser forwards raw keystrokes, the tty echoes everything back — tab-completion, shell
+     history, line editors and password prompts behave exactly like a local terminal;
+   - the output of a process the agent started (proc_start): a read-only follow view. */
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Square, RotateCw, Plus, Copy, Clipboard, Eraser } from "lucide-react";
 import { CanvasSpec, useApp } from "./ctx";
+import type { Terminal as XTerm } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
 
-const TAIL = 48_000; // bytes of scrollback kept for rendering (the server keeps much more)
+/** Resolve any CSS color (oklch, color-mix, hex…) to #rrggbb via the canvas parser. */
+const conv = (() => { try { return document.createElement("canvas").getContext("2d"); } catch { return null; } })();
+function solid(v: string, fb: string): string {
+  if (!conv) return fb;
+  conv.fillStyle = "#000000"; conv.fillStyle = v.trim();
+  const s = conv.fillStyle;
+  return typeof s === "string" && /^#[0-9a-f]{3,8}$/i.test(s) ? s : fb;
+}
+function withAlpha(hex: string, a: number, fb: string): string {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return fb;
+  const n = parseInt(hex.slice(1), 16);
+  return `#${[(n >> 16) & 255, (n >> 8) & 255, n & 255].map((x) => x.toString(16).padStart(2, "0")).join("")}${Math.round(a * 255).toString(16).padStart(2, "0")}`;
+}
+function mix(a: string, b: string, wa: number, fb: string): string {
+  const pa = solid(a, ""), pb = solid(b, "");
+  if (!/^#[0-9a-f]{6}$/i.test(pa) || !/^#[0-9a-f]{6}$/i.test(pb)) return fb;
+  const x = parseInt(pa.slice(1), 16), y = parseInt(pb.slice(1), 16);
+  const ch = (sa: number, sb: number) => Math.round(sa * wa + sb * (1 - wa));
+  const r = ch((x >> 16) & 255, (y >> 16) & 255), g = ch((x >> 8) & 255, (y >> 8) & 255), bl = ch(x & 255, y & 255);
+  return `#${[r, g, bl].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+const FALLBACK = ["#2e2e2e", "#c75646", "#59a564", "#dbd085", "#5d8fd4", "#b066c6", "#57a3a8", "#cccccc"];
+const FALLBACK_BRIGHT = ["#5f5f5f", "#e09690", "#9dcf9e", "#e6d9a3", "#b3c9ef", "#d3a7e0", "#9fd3d8", "#f0f0f0"];
 
-/** \r line-rewrites (progress bars, spinners): keep the last segment of each line. */
-function carriageReturns(s: string) {
-  return s.split("\n").map((l) => { const i = l.lastIndexOf("\r"); return i >= 0 ? l.slice(i + 1) : l; }).join("\n");
+/** The app's own palette, resolved for xterm. Re-read on theme change. */
+function termTheme(): import("@xterm/xterm").ITheme {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n: string, fb: string) => solid(cs.getPropertyValue(n) || "", fb);
+  const bg = mix(v("--bg", "#171613"), v("--fg", "#e8e2d4"), 0.1, "#100f0d");
+  const fg = v("--fg", "#e8e2d4");
+  const cols = Array.from({ length: 8 }, (_, i) => v(`--ans-${i}`, FALLBACK[i]));
+  const bright = Array.from({ length: 8 }, (_, i) => v(`--ans-b${i}`, FALLBACK_BRIGHT[i]));
+  return {
+    background: bg, foreground: fg, cursor: fg, cursorAccent: bg,
+    selectionBackground: withAlpha(fg, 0.28, "#444"),
+    black: cols[0], red: cols[1], green: cols[2], yellow: cols[3], blue: cols[4], magenta: cols[5], cyan: cols[6], white: cols[7],
+    brightBlack: bright[0], brightRed: bright[1], brightGreen: bright[2], brightYellow: bright[3], brightBlue: bright[4], brightMagenta: bright[5], brightCyan: bright[6], brightWhite: bright[7],
+  };
 }
 
-type Style = { fg?: string; bg?: string; bold?: boolean; dim?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean };
-const C256 = (n: number) => {
-  if (n < 8) return `var(--ans-${n})`;
-  if (n < 16) return `var(--ans-b${n - 8})`;
-  if (n < 232) { const v = n - 16; const r = [v >> 6, (v >> 3) & 7, v & 7].map((x) => x * 255 / 7); return `rgb(${r.map(Math.round).join(",")})`; }
-  const g = (n - 232) * 255 / 23; return `rgb(${Array(3).fill(Math.round(g)).join(",")})`;
-};
-
-/** Parse text into styled spans. ESC sequences other than SGR are dropped. */
-function parseAnsi(text: string): { style: Style; text: string }[] {
-  const out: { style: Style; text: string }[] = [];
-  let style: Style = {};
-  let buf = "";
-  const flush = () => { if (buf) { out.push({ style, text: buf }); buf = ""; } };
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c !== "\x1b") { buf += c; continue; }
-    const n = text[i + 1];
-    if (n === "[") {
-      const end = /[a-zA-Z]/.exec(text.slice(i + 2));
-      if (!end) break; // truncated escape at the tail: drop the rest
-      const stop = i + 2 + end.index;
-      const final = text[stop];
-      const params = text.slice(i + 2, stop);
-      i = stop;
-      if (final !== "m") continue; // cursor movement etc: not meaningful in a scrolling log
-      const nums = params === "" ? [0] : params.split(";").map((x) => (x === "" ? 0 : Number(x) || 0));
-      flush();
-      for (let k = 0; k < nums.length; k++) {
-        const v = nums[k];
-        if (v === 0) style = {};
-        else if (v === 1) style = { ...style, bold: true };
-        else if (v === 2) style = { ...style, dim: true };
-        else if (v === 3) style = { ...style, italic: true };
-        else if (v === 4) style = { ...style, underline: true };
-        else if (v === 7) style = { ...style, inverse: true };
-        else if (v === 22) style = { ...style, bold: false, dim: false };
-        else if (v === 23) style = { ...style, italic: false };
-        else if (v === 24) style = { ...style, underline: false };
-        else if (v === 27) style = { ...style, inverse: false };
-        else if (v === 39) style = { ...style, fg: undefined };
-        else if (v === 49) style = { ...style, bg: undefined };
-        else if ((v >= 30 && v <= 37) || (v >= 90 && v <= 97)) style = { ...style, fg: C256(v) };
-        else if ((v >= 40 && v <= 47) || (v >= 100 && v <= 107)) style = { ...style, bg: C256(v) };
-        else if (v === 38 || v === 48) {
-          const mode = nums[k + 1];
-          let col: string | undefined;
-          if (mode === 5) { col = C256(nums[k + 2] || 0); k += 2; }
-          else if (mode === 2) { col = `rgb(${nums[k + 2] || 0},${nums[k + 3] || 0},${nums[k + 4] || 0})`; k += 4; }
-          else break;
-          style = { ...style, ...(v === 38 ? { fg: col } : { bg: col }) };
-        }
-      }
-    } else if (n === "]") { const stop = text.indexOf("\x07", i); if (stop < 0) break; i = stop; }
-    else i++; // two-char escapes: drop the pair
-  }
-  flush();
-  return out;
+/** Mount xterm into `holder`, wire size + theme tracking; returns the Terminal and a disposer. */
+async function mountTerm(holder: HTMLDivElement, opts: { readOnly?: boolean; fontSize?: number } = {}): Promise<{ term: XTerm; fit: { fit: () => void; proposeDimensions: () => { cols: number; rows: number } | undefined } | null; dispose: () => void }> {
+  const { Terminal } = await import("@xterm/xterm");
+  const { FitAddon } = await import("@xterm/addon-fit");
+  const term = new Terminal({
+    fontFamily: 'var(--font-mono), ui-monospace, "JetBrains Mono", Menlo, monospace',
+    fontSize: opts.fontSize ?? 13.5, lineHeight: 1.25,
+    cursorBlink: true, cursorStyle: "bar", cursorWidth: 2,
+    scrollback: 8000, convertEol: false, allowProposedApi: true,
+    disableStdin: !!opts.readOnly,
+    theme: termTheme(),
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(holder);
+  try { fit.fit(); } catch { /* zero-size while the window animates in */ }
+  const ro = new ResizeObserver(() => { if (holder.clientHeight > 40) { try { fit.fit(); } catch { /* not laid out yet */ } } });
+  ro.observe(holder);
+  // keep the palette in step with theme toggles
+  let gone = false;
+  const themeObs = new MutationObserver(() => {
+    if (gone) { themeObs.disconnect(); return; }
+    term.options.theme = termTheme();
+  });
+  themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+  return { term, fit, dispose: () => { gone = true; ro.disconnect(); themeObs.disconnect(); term.dispose(); } };
 }
-
-const Ansi = memo(function Ansi({ text }: { text: string }) {
-  const spans = useMemo(() => parseAnsi(carriageReturns(text)), [text]);
-  return <>{spans.map((s, i) => {
-    const st: React.CSSProperties = {};
-    if (s.style.fg) st.color = s.style.fg;
-    if (s.style.bg) st.background = s.style.bg;
-    if (s.style.bold) st.fontWeight = 600;
-    if (s.style.dim) st.opacity = 0.62;
-    if (s.style.italic) st.fontStyle = "italic";
-    if (s.style.underline) st.textDecoration = "underline";
-    if (s.style.inverse) { const fg = String(st.color || "var(--fg)"); st.color = String(st.background || "var(--bg)"); st.background = fg; }
-    return s.text ? <span key={i} style={st}>{s.text}</span> : null;
-  })}</>;
-});
 
 /** Streams a terminal session; writes keystrokes. Reconnect-safe: the backlog arrives first. */
 function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: React.ReactNode) => void }) {
-  const [log, setLog] = useState("");
+  const holder = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const disposeRef = useRef<(() => void) | null>(null);
   const [exit, setExit] = useState<number | null>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const body = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  const [ready, setReady] = useState(false);
+  const [dims, setDims] = useState<string>("");
+
+  const write = useCallback((data: string) => {
+    fetch("/api/terminal", { method: "POST", body: JSON.stringify({ action: "write", id, data }) }).catch(() => {});
+  }, [id]);
 
   useEffect(() => {
     let stop = false;
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     (async () => {
+      const el = holder.current;
+      if (!el) return;
+      let term: XTerm, dispose: () => void;
+      try { ({ term, dispose } = await mountTerm(el)); } catch { return; }
+      if (stop) { dispose(); return; }
+      disposeRef.current = dispose;
+      termRef.current = term;
+      term.onData((d) => write(d));
+      term.onResize(({ cols, rows }) => {
+        setDims(`${cols}×${rows}`);
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => fetch("/api/terminal", { method: "POST", body: JSON.stringify({ action: "resize", id, cols, rows }) }).catch(() => {}), 180);
+      });
+      // copy / paste / select-all inside the terminal
+      term.attachCustomKeyEventHandler((ev) => {
+        if (ev.type !== "keydown") return true;
+        const mod = ev.metaKey || ev.ctrlKey;
+        if (mod && ev.shiftKey && ev.key.toLowerCase() === "c" && term.hasSelection()) { navigator.clipboard.writeText(term.getSelection()).catch(() => {}); return false; }
+        if (mod && ev.shiftKey && ev.key.toLowerCase() === "v") { navigator.clipboard.readText().then((t) => t && term.paste(t)).catch(() => {}); return false; }
+        if (ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "a") { term.selectAll(); return false; }
+        return true;
+      });
+      // stream the session
       try {
         const res = await fetch(`/api/terminal?id=${encodeURIComponent(id)}`);
-        if (!res.body) return;
+        if (!res.body || stop) { setReady(true); return; }
         const reader = res.body.getReader();
         const dec = new TextDecoder();
         let buf = "";
@@ -117,67 +136,41 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
             if (!line.trim()) continue;
             try {
               const e = JSON.parse(line);
-              if (e.t === "log" || e.t === "data") setLog((l) => (l + (e.chunk || "")).slice(-TAIL));
+              if (e.t === "log" || e.t === "data") term.write(e.chunk || "");
               else if (e.t === "exit") { setExit(Number(e.code)); return; }
             } catch {}
           }
         }
       } catch { /* connection dropped; the session itself keeps running on the server */ }
+      setReady(true);
     })();
-    return () => { stop = true; };
-  }, [id]);
+    return () => { stop = true; clearTimeout(resizeTimer); disposeRef.current?.(); disposeRef.current = null; termRef.current = null; };
+  }, [id, write]);
 
   useEffect(() => {
     setBar(<>
       <span className="term-status">{host ? "your machine" : "sandbox"}{exit !== null ? ` · exited ${exit}` : " · live"}</span>
       <span className="sp" />
-      {exit === null && <button className="ib sm" aria-label="Kill session" title="Kill session" onClick={() => fetch("/api/terminal", { method: "POST", body: JSON.stringify({ action: "kill", id }) })}><Square /></button>}
+      {exit === null && <button className="ib sm" aria-label="Kill session" onClick={() => fetch("/api/terminal", { method: "POST", body: JSON.stringify({ action: "kill", id }) })}><Square /></button>}
     </>);
     return () => setBar(null);
   }, [id, host, exit, setBar]);
 
-  useEffect(() => {
-    const el = body.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [log]);
-  const onScroll = () => { const el = body.current; if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; };
-
-  const write = useCallback((data: string) => {
-    fetch("/api/terminal", { method: "POST", body: JSON.stringify({ action: "write", id, data }) }).catch(() => {});
-  }, [id]);
-
-  const onKey = (e: React.KeyboardEvent) => {
-    const k = e.key;
-    let seq: string | null = null;
-    if (e.ctrlKey && k.length === 1 && /[a-zA-Z]/.test(k)) seq = String.fromCharCode(k.toUpperCase().charCodeAt(0) & 0x1f);
-    else if (e.metaKey || e.ctrlKey || e.altKey) return; // let browser shortcuts through
-    else if (k === "Enter") seq = "\r";
-    else if (k === "Backspace") seq = "\x7f";
-    else if (k === "Tab") seq = "\t";
-    else if (k === "Escape") seq = "\x1b";
-    else if (k === "ArrowUp") seq = "\x1b[A";
-    else if (k === "ArrowDown") seq = "\x1b[B";
-    else if (k === "ArrowRight") seq = "\x1b[C";
-    else if (k === "ArrowLeft") seq = "\x1b[D";
-    else if (k === "Home") seq = "\x1b[H";
-    else if (k === "End") seq = "\x1b[F";
-    else if (k === "PageUp") seq = "\x1b[5~";
-    else if (k === "PageDown") seq = "\x1b[6~";
-    else if (k === "Delete") seq = "\x1b[3~";
-    else if (k.length === 1) seq = k;
-    if (seq === null) return;
-    e.preventDefault();
-    write(seq);
-  };
+  const copySel = () => { const t = termRef.current; const s = t?.getSelection(); if (s) navigator.clipboard.writeText(s).catch(() => {}); };
+  const paste = () => navigator.clipboard.readText().then((t) => t && termRef.current?.paste(t)).catch(() => {});
 
   return (
-    <div className="term" onClick={() => input.current?.focus()}>
-      <div className="term-scroll" ref={body} onScroll={onScroll}>
-        <pre className="term-out"><Ansi text={log} />{exit !== null && <span className="term-exit">— session exited ({exit}) —</span>}</pre>
+    <div className="term">
+      <div className="term-body" ref={holder} aria-label="Terminal" />
+      {!ready && <div className="term-veil"><span className="spin" /> connecting…</div>}
+      <div className="term-foot">
+        <i className={"tdot" + (exit === null ? " live" : "")} />
+        <span>{host ? "your machine" : "sandbox"}{exit !== null ? ` · exited ${exit}` : dims ? ` · ${dims}` : ""}</span>
+        <span className="sp" />
+        <button className="ib sm" aria-label="Copy selection" onClick={copySel}><Copy /></button>
+        <button className="ib sm" aria-label="Paste" onClick={paste}><Clipboard /></button>
+        <button className="ib sm" aria-label="Clear" onClick={() => termRef.current?.clear()}><Eraser /></button>
       </div>
-      {exit === null && <input ref={input} className="term-key" autoFocus aria-label="Terminal input" value=""
-        onChange={() => {}} onKeyDown={onKey}
-        onPaste={(e) => { e.preventDefault(); write(e.clipboardData.getData("text/plain")); }} />}
     </div>
   );
 }
@@ -188,40 +181,72 @@ function NewTerm({ host, onNew }: { host?: boolean; onNew: (id: string) => void 
   const create = useCallback(() => {
     const el = body.current; const r = el?.getBoundingClientRect();
     const cols = Math.max(40, Math.min(300, Math.floor((r?.width || 640) / 7.45)));
-    const rows = Math.max(10, Math.min(160, Math.floor((r?.height || 400) / 18.5)));
+    const rows = Math.max(10, Math.min(160, Math.floor((r?.height || 400) / 17.5)));
     fetch("/api/terminal", { method: "POST", body: JSON.stringify({ action: "create", host, cols, rows }) })
       .then(async (x) => { const j = await x.json(); if (j.id) onNew(j.id); else setErr(j.error || "Could not start a terminal."); })
       .catch(() => setErr("Could not reach the terminal service."));
   }, [host, onNew]);
   useEffect(() => { create(); }, [create]);
-  return <div className="term" ref={body}>{err ? <div className="v-msg err">{err}</div> : <div className="v-msg"><span className="spin" /></div>}</div>;
+  return <div className="term" ref={body}>{err ? <div className="term-veil err">{err}</div> : <div className="term-veil"><span className="spin" /> starting {(host ? "your machine's" : "")} shell…</div>}</div>;
 }
 
 /** Read-only follow view of a process the agent started. */
 function ProcLog({ name, setBar }: { name: string; setBar: (n: React.ReactNode) => void }) {
   const app = useApp();
-  const [info, setInfo] = useState<{ log: string; status: string; running: boolean } | null>(null);
-  const body = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const load = useCallback(() => { fetch(`/api/proc?name=${encodeURIComponent(name)}`).then((r) => r.json()).then((j) => j && setInfo({ log: String(j.log || ""), status: String(j.status || ""), running: !!j.running })).catch(() => {}); }, [name]);
-  useEffect(() => { load(); const t = setInterval(load, 1200); return () => clearInterval(t); }, [load]);
-  useEffect(() => { const el = body.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [info?.log]);
-  const onScroll = () => { const el = body.current; if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; };
+  const holder = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const disposeRef = useRef<(() => void) | null>(null);
+  const lastLen = useRef(0);
+  const prevHead = useRef<string>("");
+  const [info, setInfo] = useState<{ status: string; running: boolean } | null>(null);
+
+  useEffect(() => {
+    let stop = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    (async () => {
+      const el = holder.current;
+      if (!el) return;
+      let term: XTerm, dispose: () => void;
+      try { ({ term, dispose } = await mountTerm(el, { readOnly: true })); } catch { return; }
+      if (stop) { dispose(); return; }
+      disposeRef.current = dispose;
+      termRef.current = term;
+      const load = () => {
+        fetch(`/api/proc?name=${encodeURIComponent(name)}`).then((r) => r.json()).then((j) => {
+          if (!j || stop) return;
+          setInfo({ status: String(j.status || ""), running: !!j.running });
+          const log = String(j.log || "");
+          const grew = lastLen.current > 0 && log.length > lastLen.current && log.startsWith(prevHead.current);
+          if (grew) term.write(log.slice(lastLen.current));
+          else if (log.length !== lastLen.current) { term.reset(); term.write(log.slice(-160_000)); }
+          prevHead.current = log.slice(0, Math.min(64, log.length));
+          lastLen.current = log.length;
+        }).catch(() => {});
+      };
+      load();
+      timer = setInterval(load, 1200);
+    })();
+    return () => { stop = true; if (timer) clearInterval(timer); disposeRef.current?.(); disposeRef.current = null; termRef.current = null; };
+  }, [name]);
+
   useEffect(() => {
     setBar(<>
       <span className="term-status">{info?.status || "…"}</span>
       <span className="sp" />
-      {info?.running && <button className="ib sm" aria-label="Restart process" title="Restart" onClick={() => fetch("/api/proc", { method: "POST", body: JSON.stringify({ name, action: "restart" }) })}><RotateCw /></button>}
-      {info?.running && <button className="ib sm" aria-label="Stop process" title="Stop" onClick={() => fetch("/api/proc", { method: "POST", body: JSON.stringify({ name }) })}><Square /></button>}
-      <button className="ib sm" aria-label="Open live terminal" title="Open a live terminal" onClick={() => app.openTerm({})}><Plus /></button>
+      {info?.running && <button className="ib sm" aria-label="Restart process" onClick={() => fetch("/api/proc", { method: "POST", body: JSON.stringify({ name, action: "restart" }) })}><RotateCw /></button>}
+      {info?.running && <button className="ib sm" aria-label="Stop process" onClick={() => fetch("/api/proc", { method: "POST", body: JSON.stringify({ name }) })}><Square /></button>}
+      <button className="ib sm" aria-label="Open live terminal" onClick={() => app.openTerm({})}><Plus /></button>
     </>);
     return () => setBar(null);
   }, [info, name, setBar, app]);
+
   return (
-    <div className="term proc">
-      <div className="term-scroll" ref={body} onScroll={onScroll}>
-        <pre className="term-out">{info ? <Ansi text={info.log.slice(-TAIL)} /> : <span className="spin" />}</pre>
-        {info && !info.running && <span className="term-exit">process is not running</span>}
+    <div className="term">
+      <div className="term-body" ref={holder} aria-label="Process output" />
+      <div className="term-foot">
+        <i className={"tdot" + (info?.running ? " live" : "")} />
+        <span>{name}{info ? ` · ${info.running ? "running" : "exited"}` : ""} · read-only</span>
+        <span className="sp" />
       </div>
     </div>
   );

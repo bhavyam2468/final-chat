@@ -25,7 +25,7 @@
 html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif; font-size: 15.5px; line-height: 1.7;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif; font-size: 16.5px; line-height: 1.7;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; overflow: hidden;
 }
 body::before {
@@ -243,16 +243,21 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
 .qitem .ib.sm svg { width: 12px; height: 12px; }
 .qitem .ib.sm[aria-label="Steer now"]:hover svg { color: var(--accent); }
 
-/* ============ Process strip — what the agent left running ============ */
-.pstrip { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 10px 0; }
-.ppill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); transition: border-color .15s, color .15s; animation: palIn .3s var(--spring); }
-.ppill:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); color: var(--fg); }
-.pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
-.ppill.live { color: var(--fg); }
-.ppill.live .pdot { background: var(--success); animation: breathe 2.2s var(--ease) infinite; }
-@keyframes breathe { 50% { opacity: .45; } }
-.pport { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--faint); }
-.pexit { font-size: 11px; color: var(--faint); }
+/* ============ Process bar — a thin strip docked to the input bar's bottom edge ============ */
+.pbar-wrap { position: absolute; left: 14px; right: 14px; bottom: 0; z-index: 5; }
+.pbar { display: flex; gap: 4px; width: 100%; height: 4px; padding: 0; border: 0; background: none; cursor: pointer; opacity: .55; transition: opacity .18s, transform .18s; border-radius: 0 0 var(--r) var(--r); }
+.pbar-wrap:hover .pbar, .pbar.open { opacity: 1; }
+.pbar i { flex: 1 1 0; min-width: 8px; height: 100%; border-radius: 2px; background: var(--line); }
+.pbar i.on { background: color-mix(in srgb, var(--success) 85%, transparent); }
+.pbar:hover i.on { background: var(--success); }
+.pop-scrim { position: fixed; inset: 0; z-index: 70; background: transparent; }
+.pbar-pop { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 71; background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); padding: 4px; animation: fadeUp .18s var(--ease); }
+.pbar-row { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px 10px; border-radius: calc(var(--r) - 4px); font-size: 13px; text-align: left; }
+.pbar-row:hover { background: var(--surface); }
+.pbar-row i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.pbar-row i.on { background: var(--success); }
+.pbar-row .n { font-weight: 550; }
+.pbar-row .s { flex: 1; text-align: right; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* the send slot hosts two actions while streaming: steer (outline) + queue (solid) */
 .send-slot.two { width: 74px; }
@@ -260,15 +265,20 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
 .send-slot.two .send.ghost { right: 42px; left: auto; background: var(--surface); color: var(--muted); border: 1px solid var(--line); animation: palIn .2s var(--ease); }
 .send-slot.two .send.ghost:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 
-/* ============ Terminal canvas ============ */
-.term { position: relative; height: 100%; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) 92%, var(--fg)); cursor: text; }
-.term-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
-.term-out { margin: 0; font: 12.5px/1.45 var(--font-mono), ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; color: var(--fg); }
-.term-exit { display: block; margin-top: 10px; color: var(--faint); font: 12px/1.4 var(--font-mono), ui-monospace, monospace; }
-.term-key { position: absolute; inset: auto 0 0 0; width: 100%; height: 1px; opacity: 0; border: 0; padding: 0; background: none; }
-.term-status { font-size: 12px; color: var(--muted); }
-.term.proc .term-scroll { padding-bottom: 16px; }
-.win-body.k-term { background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
+/* ============ Terminal canvas (xterm.js) ============ */
+.term { position: relative; height: 100%; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) 90%, var(--fg)); }
+.term-body { flex: 1; min-height: 0; padding: 10px 12px 6px; }
+.term-body .xterm { height: 100%; }
+.term-veil { position: absolute; inset: 0 0 30px; display: grid; place-items: center; gap: 8px; align-content: center; color: var(--muted); font-size: 13px; pointer-events: none; }
+.term-veil.err { color: var(--danger); pointer-events: auto; }
+.term-foot { display: flex; align-items: center; gap: 8px; padding: 4px 10px 5px; border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.term-foot .sp { flex: 1; }
+.term-foot .ib.sm svg { width: 12px; height: 12px; }
+.tdot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.tdot.live { background: var(--success); animation: breathe 2.2s var(--ease) infinite; }
+@keyframes breathe { 50% { opacity: .45; } }
+.term-status { font-size: 11.5px; color: var(--muted); }
+.win-body.k-term { background: color-mix(in srgb, var(--bg) 90%, var(--fg)); }
 
 /* terminal ANSI, tuned to the quiet palette */
 :root, [data-theme="light"] {
@@ -279,8 +289,6 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
   --ans-0: #6f6a62; --ans-1: #d9776b; --ans-2: #8fb08c; --ans-3: #cfae62; --ans-4: #7f9ec4; --ans-5: #b287a6; --ans-6: #7aaaa4; --ans-7: #b3ada2;
   --ans-b0: #8e887e; --ans-b1: #e8907f; --ans-b2: #a5c9a1; --ans-b3: #e0c47e; --ans-b4: #9ab4d6; --ans-b5: #c9a0bd; --ans-b6: #8fc0b9; --ans-b7: #e6e1d8;
 }
-.term-out span { text-shadow: none; }
-
 
 /* ============ Panels ============ */
 .panel { background: var(--float); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 0; overflow: hidden; animation: panelIn .25s var(--ease); }
@@ -304,7 +312,7 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
 .branch { padding-left: 26px; font-size: 13px; color: var(--muted); }
 .snip { color: var(--muted); font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .anchor { margin: 0 14px 8px; font-size: 12.5px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 10px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.thread .panel-body { padding: 4px 14px; font-size: 14.5px; }
+.thread .panel-body { padding: 4px 14px; font-size: 15px; }
 .thread .turn { margin-bottom: 20px; }
 .thread .composer { margin: 8px; width: auto; }
 
@@ -357,7 +365,7 @@ body.dragging .win { transition: none !important; animation: none !important; }
 .win.resize-hover-e, .win.resize-hover-e *, .win.resize-hover-w, .win.resize-hover-w * { cursor: ew-resize !important; }
 .win.resize-hover-ne, .win.resize-hover-ne *, .win.resize-hover-sw, .win.resize-hover-sw * { cursor: nesw-resize !important; }
 .win.resize-hover-nw, .win.resize-hover-nw *, .win.resize-hover-se, .win.resize-hover-se * { cursor: nwse-resize !important; }
-.win-resize-handle:hover::after, .win-resize-handle:focus-visible::after { content: ""; position: absolute; inset: 2px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 22%, transparent); opacity: .25; }
+/* resize zones stay invisible: the cursor alone says "you can pull here" */
 /* Edge parking is a quiet, neutral tab. Hover slides it into view; click restores its saved state. */
 .win.peek { min-width: 0; min-height: 0; cursor: pointer; background: var(--float); border-color: color-mix(in srgb, var(--fg) 18%, transparent); box-shadow: 0 4px 20px color-mix(in srgb, var(--fg) 12%, transparent); }
 .win.peek:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -463,7 +471,7 @@ body.dragging .scroll, body.dragging .dock, body.dragging .chrome.r, body.draggi
   .scroll, .dock, .chrome.r, .rstack, .pdfwrap, .win-body.k-pdf { scroll-behavior: auto !important; transition: none !important; }
   /* the palette opens by animating its grid row 0fr -> 1fr; without motion it must simply be open */
   .pal { grid-template-rows: 1fr !important; animation: none !important; transition: none !important; }
-  .pal-in, .pal-row, .pal-back, .qstrip-head, .qitem, .ppill, .pdot, .pexit,
+  .pal-in, .pal-row, .pal-back, .qstrip-head, .qitem, .pbar, .pbar-pop, .tdot,
   .send-slot.two .send.ghost { animation: none !important; transition: none !important; }
 }
 
