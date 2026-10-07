@@ -5,7 +5,7 @@ const X = new Set([
   "x-tabs", "x-tab", "x-deck", "x-slide", "x-md", "x-code", "x-callout", "x-kv",
   "x-badge", "x-kbd", "x-icon", "x-stat", "x-progress", "x-ring", "x-gauge",
   "x-chart", "x-sparkline", "x-table", "x-heatmap", "x-timeline", "x-math", "x-graph", "x-plot",
-  "x-smiles", "x-mol3d", "x-draw", "x-tikz", "x-mermaid", "x-todo", "x-timer", "x-stopwatch", "x-clock",
+  "x-smiles", "x-mol3d", "x-draw", "x-tikz", "x-mermaid", "x-flow", "x-tree", "x-list", "x-todo", "x-timer", "x-stopwatch", "x-clock",
   "x-choice", "x-segmented", "x-toggle", "x-rating", "x-sortable", "x-sketch", "x-upload",
   "x-image", "x-video", "x-audio", "x-youtube", "x-embed", "x-map", "x-state",
 ]);

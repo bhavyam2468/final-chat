@@ -725,6 +725,7 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
     else if (m.type === "backend-chunk" && streams[m.id]) { try { streams[m.id](String(m.chunk || ""), m); } catch (err) { reportErr(err); } schedule(); }
     else if (m.type === "backend-data" && streams[m.id]) { try { streams[m.id](m.data, m); } catch (err) { reportErr(err); } schedule(); }
     else if (m.type === "theme") { for (const k in m.vars) document.documentElement.style.setProperty(k, m.vars[k]); document.body.dataset.theme = m.theme; root && root.querySelectorAll("[data-themed]").forEach((x) => x.refresh ? x.refresh(true) : x.render && x.render()); }
+    else if (m.type === "host-event") dispatchHost(String(m.name || ""), m.data);
     else if (m.type === "source") feed(m.source, m.done);
   });
   window.addEventListener("error", (e) => reportErr(e.message));
@@ -751,6 +752,21 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   orient();
   const ro = new ResizeObserver(() => post("height", { h: Math.ceil(Math.max(root.scrollHeight + 8, document.body.scrollHeight)) }));
   ro.observe(document.body); ro.observe(root);
+
+  // ---------------------------------------------------------------- host events
+  // The host can push named events into a running block (a workflow's progress, live data): the source is
+  // written once and stays mounted, so nothing flashes while it updates. Blocks can also emit back to the host.
+  const listeners = Object.create(null);
+  B.on = (name, fn) => {
+    (listeners[String(name)] ||= []).push(fn);
+    return () => { listeners[String(name)] = (listeners[String(name)] || []).filter((f) => f !== fn); };
+  };
+  B.off = (name) => { delete listeners[String(name)]; };
+  B.emit = (name, data) => post("event", { name: String(name), data: data === undefined ? null : data });
+  function dispatchHost(name, data) {
+    for (const f of listeners[name] || []) { try { f(data); } catch (e) { reportErr(e); } }
+    schedule();
+  }
 
   B.connect = () => {
     const tpl = document.querySelector("template[data-blocks]");

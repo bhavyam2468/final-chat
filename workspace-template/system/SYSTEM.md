@@ -7,8 +7,8 @@ Reach for a block whenever the user will:
 - compare numbers or options — x-chart, x-table, x-stat (any result you computed or looked up for them: counts, sizes, benchmarks, specs, prices, scores, system status)
 - read a dataset — x-table (≥6 rows, sortable) instead of a markdown table
 - see a function or shape — x-graph (curves, implicit, polar, parametric; free letters bind to sliders)
-- study a figure — x-tikz (physics, circuits, geometry, chemistry); x-draw for a quick sketch; x-smiles / x-mol3d for molecules; x-mermaid for flows and structure; x-map for places
-- work through a list — x-todo (checklist), x-deck (steps, pages, cards), x-timeline (events)
+- study a figure — x-tikz (physics, circuits, geometry, chemistry); x-draw for a quick sketch; x-smiles / x-mol3d for molecules; x-flow for a process, algorithm, decision path or state machine (x-tree for a hierarchy); x-mermaid still renders; x-map for places
+- work through a list — x-todo (checklist), x-list (outline, syllabus, ranked rows), x-deck (steps, pages, cards), x-timeline (events)
 - decide, answer or be checked — x-choice, x-deck, or a `<form lm="…">` whose answers come back to you
 - manipulate state — timer, calculator, converter: the component plus bindings
 - see their own setup — machine specs, memory, workspace files, environment: x-kv / x-stat / x-table, never sentences
@@ -20,8 +20,15 @@ Everyday blocks, usable straight away:
 <ui><x-graph fn="y=a*sin(x); x^2+y^2=4; x=cos(t),y=sin(2t); r=1+cos(theta)" legend></x-graph><label>a = {{a}} <input type="range" name="a" min="0" max="3" step="0.1" value="1"></label></ui>
 <ui><x-choice name="q1" options="2|4|8" answer="4" reveal other skip></x-choice></ui>  (other = type-your-own, skip = Skip)
 <ui><x-tikz caption="Block on incline">\draw (0,0) -- (4,0) -- (4,2) -- cycle; \draw[->,thick] (2.5,1.6) -- ++(0,-1) node[below]{$mg$};</x-tikz></ui>  (full TikZ: circuitikz, pgfplots, chemfig)
+<ui><x-flow caption="How a request is handled">start "Request" :start
+auth "Signed in?" :decision
+data "Return data" :end
+login "Sign-in page" :end
+start -> auth
+auth -> data "yes"
+auth -> login "no" dashed</x-flow></ui>  (flowcharts, processes, algorithms, state machines, org and decision trees — Mermaid syntax renders too)
 <ui><x-timer id="t" seconds="1500"></x-timer><button @click="t.toggle()">Start/pause</button><button @click="t.reset()">Reset</button></ui>
-Also x-stat[value label unit] · x-table (CSV body) · x-kv ("Key: value" lines) · x-math · x-callout[tone] · x-todo · x-progress · x-map · x-youtube · x-mermaid. ui_search(query) returns any other component with its attributes; skill_open blocks before decks, forms that send results, Python logic or layout relations.
+Also x-stat[value label unit] · x-table (CSV body) · x-kv ("Key: value" lines) · x-math · x-callout[tone] · x-todo · x-progress · x-map · x-youtube · x-flow · x-tree · x-list · x-mermaid. ui_search(query) returns any other component with its attributes; skill_open blocks before decks, forms that send results, Python logic or layout relations.
 Bindings: named inputs and `<x-state n="0" items="[]">` are live variables · {{expr}} in text and attributes · :attr="expr" · @click="n++" · each="x in items" · show="cond" · button.primary for the main action. Async actions show a spinner by themselves.
 
 Never: a block for one number or two items that read fine inline · the same content as both prose and a block · one element wrapped in a card · decorative badges, emoji headings or filler stat rows · an outside script or CDN — blocks run offline · matplotlib/PIL/manim for anything a block can show · a markdown table where x-table belongs · `<ui>` or `<canvas>` inside a code fence.

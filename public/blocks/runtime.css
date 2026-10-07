@@ -284,3 +284,56 @@ x-choice label.opt.other input{font-size:1em}
 /* forms: fields stretch, buttons keep their size, steady spacing */
 form{display:flex;flex-direction:column;gap:var(--gap);align-items:stretch;margin:0}
 form>:is(button,a.btn){align-self:flex-start}
+
+/* ---------- structure: flowcharts, trees, outlines ---------- */
+x-flow,x-tree{display:block;width:100%;min-width:0}
+.xgwrap{position:relative;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden;touch-action:none;cursor:grab;min-height:120px}
+.xgwrap.drag{cursor:grabbing}
+.xgsvg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.xghud{position:absolute;right:8px;bottom:8px;display:flex;align-items:center;gap:2px;opacity:.25;transition:opacity .18s var(--ease)}
+.xgwrap:hover .xghud,.xghud:focus-within{opacity:1}
+.xghud button{min-height:26px;padding:2px 9px;font-size:.78em;border-radius:calc(var(--r)*.6);box-shadow:none;background:color-mix(in srgb,var(--bg) 82%,transparent)}
+.xgz{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);padding:0 3px;font-variant-numeric:tabular-nums}
+.xg-edges .xge{fill:none;stroke:var(--muted);stroke-width:1.4;stroke-opacity:.72;transition:opacity .18s,stroke .18s}
+.xg-edges .xge.hot{stroke:var(--fg);stroke-opacity:1;stroke-width:1.8}
+.xgn{animation:b-in .42s var(--ease) both;animation-delay:calc(var(--i,0)*36ms)}
+.xgn.interactive{cursor:pointer}
+.xgn .box{fill:var(--bubble);stroke:var(--line);stroke-width:1;transition:stroke .18s,stroke-width .18s}
+.xgn .box.solid{fill:var(--fg);stroke:none}
+.xgn .box.root{fill:color-mix(in srgb,var(--fg) 10%,var(--bubble));stroke:color-mix(in srgb,var(--fg) 22%,transparent)}
+.xgn .box.io{stroke-dasharray:5 4}
+.xgn-t{fill:var(--fg);font-size:13.5px;font-weight:450}
+.xgn[data-kind=start] .xgn-t,.xgn[data-kind=end] .xgn-t{fill:var(--bg);font-weight:550}
+.xgn-d{fill:var(--muted);font-size:11px}
+.xgn-chev{fill:none;stroke:var(--faint);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.xgn:hover .xgn-chev{stroke:var(--fg)}
+.xgl{fill:var(--muted);font-size:11px;paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
+.xg.focus .xgn:not(.hot){opacity:.42}
+.xg.focus .xge:not(.hot){opacity:.2}
+.xgn.hot .box{stroke:var(--fg);stroke-width:1.6}
+.xgn.on .box{stroke:var(--accent);stroke-width:2}
+.xgn.on .xgn-t{font-weight:600}
+.xgn:focus-visible{outline:none}
+.xgn:focus-visible .box{stroke:var(--accent);stroke-width:2}
+x-list{display:block;outline:none;border-radius:var(--r)}
+x-list:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:4px}
+x-list .xl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px}
+x-list .xl .xl{padding-left:18px;margin-left:11px;border-left:1px solid var(--line)}
+.xl-i{display:block;min-width:0;animation:b-in .34s var(--ease) both;animation-delay:calc(var(--i,0)*26ms)}
+.xl-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:calc(var(--r)*.7);min-width:0;transition:background .15s,box-shadow .15s}
+.xl-row:hover{background:var(--surface)}
+x-list.selectable .xl-row{cursor:pointer}
+.xl-i.cur > .xl-row{box-shadow:inset 2px 0 0 var(--muted)}
+.xl-i.on > .xl-row{background:color-mix(in srgb,var(--accent) 11%,transparent);box-shadow:inset 2px 0 0 var(--accent)}
+.xl-mk{color:var(--muted);font-size:.8em;min-width:1.2em;text-align:right;font-variant-numeric:tabular-nums;flex:none}
+.xl-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;font-size:.94em}
+.xl-tx small{color:var(--muted);font-size:.85em}
+.xl-meta{color:var(--muted);font-size:.82em;font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+.xl-chev{border:0;background:none;color:var(--faint);padding:2px;min-height:0;display:grid;place-items:center;opacity:.45;transition:opacity .15s,color .15s,transform .2s;box-shadow:none}
+.xl-chev:hover{color:var(--fg);opacity:1}
+.xl-chev svg{display:block}
+.xl-chev::after{display:none}
+.xl-i > .xl-row:hover .xl-chev,.xl-i.on > .xl-row .xl-chev{opacity:1}
+.xl-chev.closed{transform:rotate(-90deg)}
+x-list.dense .xl-row{padding:3px 8px;gap:8px}
+x-list.dense .xl-tx{font-size:.9em}

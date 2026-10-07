@@ -138,6 +138,42 @@ export const cases = [
     expect: () => !!document.querySelector("x-tikz svg") || document.querySelector("x-tikz").innerHTML.slice(0, 200),
   },
   {
+    name: "flowchart: our syntax with kinds and a loop",
+    src: `<x-flow>start "Start" :start
+read "Read the PDF"
+q "Understood?" :decision
+quiz "Take the quiz"
+done "Done" :end
+start -> read
+read -> q
+q -> quiz "yes"
+q -> read "no" dashed
+quiz -> done</x-flow>`,
+    wait: 600,
+    expect: () => { const n = document.querySelectorAll("x-flow .xgn").length, e = document.querySelectorAll("x-flow .xge").length, d = document.querySelectorAll("x-flow .xgn[data-kind=decision] polygon").length; return (n === 5 && e === 5 && d === 1) || [n, e, d].join("/"); },
+  },
+  {
+    name: "flowchart: the mermaid habit renders natively",
+    src: `<x-flow>flowchart LR
+A[Start] --> B{Is it valid?}
+B -->|yes| C(Process it)
+B -- no --> D[/Reject/]
+C --> E((Done))</x-flow>`,
+    wait: 600,
+    expect: () => { const l = [...document.querySelectorAll("x-flow .xgn-t")].map((e) => e.textContent); return (l.length === 5 && l.includes("Is it valid?") && l.includes("Reject")) || l.join("|"); },
+  },
+  {
+    name: "tree and outline: hierarchy, detail, selection",
+    src: `<x-tree collapse>Company | 1,200 people
+  Engineering | 400
+    Platform
+  Sales | 90</x-tree><x-list markers="number" select="single">Week 1 | kinematics
+  Read ch. 2 | 40 pages | Mon</x-list>`,
+    steps: [{ eval: "document.querySelectorAll(\"#root x-list .xl-i\")[1].querySelector(\".xl-row\").click()" }],
+    wait: 600,
+    expect: () => { const t = document.querySelectorAll("x-tree .xgn").length, r = document.querySelectorAll("x-list .xl-i").length, on = document.querySelectorAll("x-list .xl-i.on").length; return (t === 4 && r === 2 && on === 1) || [t, r, on].join("/"); },
+  },
+  {
     name: "self-check reports unbound names", wait: 1400,
     src: `<p>Score: {{ scroe }}</p><x-state score="1"></x-state>`,
     expect: () => (window.__issues || []).some((i) => /scroe/.test(i)) || JSON.stringify(window.__issues || null),
@@ -151,6 +187,6 @@ const SYS = fs.readFileSync(new URL("../workspace-template/system/SYSTEM.md", im
   const tag = m[1].match(/<(x-[\w-]+)/)?.[1] || "html";
   cases.push({
     name: `system prompt example ${i + 1} ${tag}`, wait: 1200, src: m[1],
-    expect: () => { const r = document.getElementById("root"); const el = r.querySelector("x-chart svg, x-graph canvas, x-graph svg, x-choice .opt, x-tikz svg, x-timer"); return (!!el && !(window.__issues || []).length) || "missing render or issues: " + JSON.stringify(window.__issues || []) + " " + r.innerHTML.slice(0, 200); },
+    expect: () => { const r = document.getElementById("root"); const el = r.querySelector("x-chart svg, x-graph canvas, x-graph svg, x-choice .opt, x-tikz svg, x-timer, x-flow .xgn, x-tree .xgn, x-list .xl-i"); return (!!el && !(window.__issues || []).length) || "missing render or issues: " + JSON.stringify(window.__issues || []) + " " + r.innerHTML.slice(0, 200); },
   });
 });

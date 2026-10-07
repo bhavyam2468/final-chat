@@ -74,6 +74,15 @@ Native `h1–h4 p small ul ol table details code a` are styled. Also:
 | `x-heatmap data x-labels y-labels` | Matrix |
 | `x-timeline` | `date | title | detail` lines |
 
+### Structure
+| Tag | Notes |
+|---|---|
+| `x-flow dir caption height` | A flowchart that is drawn by the app itself, not by a diagram library. Node lines are `id "Label" :kind` with `start end decision step io note` (`process`/`task`→step, `question`→decision, `data|input|output`→io, `event|terminal`→start; a kind is optional — labels like *Start*/*Done* infer one, and a well-formed graph infers its source and sink). Edges are `a -> b "label"` with an optional `dashed`, and chains (`a -> b -> c`) are allowed. Mermaid spellings — `flowchart LR`, `A[Start]`, `A{Valid?}`, `A((Done))`, `A[/Reject/]`, `A -->|yes| B`, `A -- no --> B` — parse to the same native nodes, so the habit a model slips into still renders correctly. `dir` is `tb lr bt rl` or `auto` (left-to-right on a wide block). Clicking a node sets `:active` and emits `select`. The whole node body may also be bound: `<x-flow text="{{src}}">` |
+| `x-tree collapse` | The same view, hierarchy from indentation (2 spaces or one tab per level). `Label | detail` adds a second line; `collapse` folds a branch when the user clicks it |
+| `x-list name markers select dense` | An outline: indented rows, `Label | detail | meta`, chevrons fold branches. `markers="dot|number|dash|none"`. With `select="single|multi"` a row pick sets `.value`/`.values` and emits `select` |
+
+Flowcharts and trees are not squeezed to fit: a drawing wider than its block keeps its true size and is explored by dragging, with zoom on ⌘/Ctrl+wheel, `+`/`−` and a **Fit** button — a 20-node process stays legible in a narrow chat. Keyboard: ↑/↓ move a list row, Enter picks it. A view the reader has panned or zoomed survives a re-render of the same block (streaming updates never move the diagram under their eyes); the `fit` attribute re-fits on every render instead. Parsing and layout are pure code in `public/blocks/graph.js` (`Blocks.parseFlow`, `Blocks.parseTree`, `Blocks.graphLayout` — layered/Sugiyama placement with barycentre ordering, back edges routed around the drawing), unit-tested in `dev/tests/graph.test.mjs`; `public/blocks/elements.js` only draws it.
+
 ### Science
 | Tag | Notes |
 |---|---|

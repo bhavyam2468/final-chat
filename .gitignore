@@ -15,3 +15,6 @@ Thumbs.db
 
 # Python venv for run_python / previews (setup.sh)
 /.venv
+
+# Browser screenshots from local visual checks (dev/screenshots)
+/dev/screenshots

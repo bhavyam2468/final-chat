@@ -24,12 +24,19 @@ async function launch() {
   const req = (await import("node:module")).createRequire(import.meta.url);
   let puppeteer; try { puppeteer = req("puppeteer-core"); } catch { puppeteer = req("/tmp/shot/node_modules/puppeteer-core"); }
   let exe = process.env.CHROME, args = [];
-  if (!exe) { process.env.AWS_EXECUTION_ENV ||= "AWS_Lambda_nodejs22.x"; const c = (await import("/tmp/shot/node_modules/@sparticuz/chromium/build/esm/index.js")).default; exe = await c.executablePath(); args = c.args; }
+  if (!exe) {
+    process.env.AWS_EXECUTION_ENV ||= "AWS_Lambda_nodejs22.x";
+    // @sparticuz/chromium has moved its entry point between majors: try each known one, and both export shapes
+    const mod = await import("file:///tmp/shot/node_modules/@sparticuz/chromium/build/index.js")
+      .catch(() => import("file:///tmp/shot/node_modules/@sparticuz/chromium/build/esm/index.js"));
+    const C = (mod.default && mod.default.default) || mod.default || mod;
+    exe = await C.executablePath(); args = C.args || args;
+  }
   return puppeteer.launch({ executablePath: exe, args, headless: true, defaultViewport: { width: 900, height: 700 } });
 }
 
 const VARS = "--bg:#1f1e1c;--fg:#e8e4dc;--muted:#9a958c;--faint:#6b675f;--line:rgba(255,255,255,.1);--surface:rgba(255,255,255,.04);--bubble:#2b2a27;--float:#2b2a27;--accent:#d97757;--success:#7c9a6d;--danger:#c0645a;--r:12px";
-const page = (src, fill) => `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="${ORIGIN}/blocks/runtime.css"><style>:root{${VARS}}html{background:var(--bg)}</style></head><body class="${fill ? "fill" : ""}" data-theme="dark"><div id="root"></div><script>window.BLOCKS_ORIGIN=${JSON.stringify(ORIGIN)};window.__errs=[];addEventListener("error",e=>__errs.push(String(e.message)));window.parent.postMessage=function(m){if(m&&m.type==="error")__errs.push(m.text);if(m&&m.type==="lm")window.__lm=m;if(m&&m.type==="issues")window.__issues=m.issues}</script><script src="${ORIGIN}/blocks/runtime.js"></script><script src="${ORIGIN}/blocks/elements.js"></script><script>(function(){const src=${JSON.stringify(src).replace(/</g, "\\u003c")};for(let i=37;i<src.length;i+=37)Blocks.feed(src.slice(0,i),false);Blocks.feed(src,true)})()</script></body></html>`;
+const page = (src, fill) => `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="${ORIGIN}/blocks/runtime.css"><style>:root{${VARS}}html{background:var(--bg)}</style></head><body class="${fill ? "fill" : ""}" data-theme="dark"><div id="root"></div><script>window.BLOCKS_ORIGIN=${JSON.stringify(ORIGIN)};window.__errs=[];addEventListener("error",e=>__errs.push(String(e.message)));window.parent.postMessage=function(m){if(m&&m.type==="error")__errs.push(m.text);if(m&&m.type==="lm")window.__lm=m;if(m&&m.type==="issues")window.__issues=m.issues}</script><script src="${ORIGIN}/blocks/runtime.js"></script><script src="${ORIGIN}/blocks/graph.js"></script><script src="${ORIGIN}/blocks/elements.js"></script><script>(function(){const src=${JSON.stringify(src).replace(/</g, "\\u003c")};for(let i=37;i<src.length;i+=37)Blocks.feed(src.slice(0,i),false);Blocks.feed(src,true)})()</script></body></html>`;
 
 const filter = process.argv[2] || "";
 if (!cases.some((c) => c.name.includes(filter))) { console.log(`No case name contains "${filter}" (plain substring match).`); process.exit(2); }

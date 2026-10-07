@@ -45,8 +45,8 @@
   B.Base = Base; B.define = define;
 
   // skeleton shapes for elements still streaming
-  const VIZ = /chart|graph|plot|draw|smiles|mol|mermaid|map|heatmap|sketch|image|video|youtube|embed|clock|ring|gauge|table|timeline|md|code/;
-  B.skelKind = (t) => (VIZ.test(t) ? "viz" : /choice|sortable|kv|callout/.test(t) ? "list" : /input|select|textarea|segmented|toggle|rating|timer|stat|button|upload/.test(t) ? "line" : "block");
+  const VIZ = /chart|graph|plot|draw|smiles|mol|mermaid|map|heatmap|sketch|image|video|youtube|embed|clock|ring|gauge|table|timeline|md|code|flow|tree/;
+  B.skelKind = (t) => (VIZ.test(t) ? "viz" : /choice|sortable|kv|callout|list/.test(t) ? "list" : /input|select|textarea|segmented|toggle|rating|timer|stat|button|upload/.test(t) ? "line" : "block");
 
   // ================================================================ layout
   define("x-stack", class extends HTMLElement {}, { container: true });
@@ -625,6 +625,516 @@
         }
       });
     }
+  });
+
+  // ================================================================ structure: x-flow · x-tree · x-list
+  // One view (pan, zoom, fit, hover, select, collapse) draws both x-flow and x-tree; the parsing and
+  // the layered layout live in graph.js so they are unit-tested, this file only draws. Both render in the
+  // app's own language — same radius, surfaces and type as every other block — so a diagram belongs to the
+  // interface instead of looking pasted in. A chart wider than the block is explored by panning, never squashed.
+  const XG = { MINZ: 0.4, MAXZ: 2.4, PAD: 12, DASH: 6 };
+  const RAD = () => parseFloat(String(css("--r")).replace("px", "")) || 12;
+  const xgFont = (size, weight) => `${weight || 400} ${size}px ${getComputedStyle(document.body).fontFamily}`;
+  const xgMeasure = (() => { const c = document.createElement("canvas").getContext("2d"); return (t, f) => { c.font = f; return c.measureText(String(t)).width; }; })();
+
+  /** A disclosure chevron drawn as paths (never a glyph: the platform font may not carry ▾). */
+  function xgChev(parent, x, y, folded, cls = "xgn-chev") {
+    const r = 3.6, d = folded ? `M${x - r},${y - r} L${x + r},${y} L${x - r},${y + r}` : `M${x - r},${y - r * 0.75} L${x},${y + r * 0.75} L${x + r},${y - r * 0.75}`;
+    const p = svg("path", { d, class: cls }, parent);
+    return p;
+  }
+
+  /** Node box size from its own text, so nothing overflows and nothing is padded for a width it does not need. */
+  function xgNodeSize(node) {
+    const kind = node.kind || "step";
+    if (kind === "note") { const w = xgMeasure(node.label, xgFont(12.5)); return { w: w + 14, h: node.detail ? 30 : 20 }; }
+    const w = Math.max(xgMeasure(node.label, xgFont(13.5, kind === "start" || kind === "end" ? 550 : 450)), 30);
+    const dw = node.detail ? xgMeasure(node.detail, xgFont(11.5)) : 0;
+    if (kind === "decision") return { w: Math.max(104, w + 66, dw + 46), h: 58 };
+    if (kind === "tree") return { w: Math.max(w, dw * 1.2) + 34, h: node.detail ? 50 : 36 };
+    return { w: Math.max(kind === "start" || kind === "end" ? 96 : 86, w + 36, dw + 26), h: node.detail ? 50 : 40 };
+  }
+
+  /** Orthogonal route between two boxes. Forward edges leave the far side of a and enter the near side of b;
+      a back edge (a loop) is routed around the drawing so it never crosses the nodes it returns past. */
+  function xgRoute(a, b, dir, back) {
+    const LR = dir === "lr" || dir === "rl";
+    const fwd = dir === "lr" || dir === "tb";                       // true: b sits to the right/below a
+    if (LR) {
+      const sy = a.y + a.h / 2, ty = b.y + b.h / 2;
+      const from = fwd ? a.x + a.w : a.x, to = fwd ? b.x : b.x + b.w;
+      if (back) { const x = Math.max(a.x + a.w, b.x + b.w) + 24; return { pts: [[from, sy], [x, sy], [x, ty], [to, ty]], label: [x + 23, (sy + ty) / 2] }; }
+      if (to - from < 26) return { pts: [[from, sy], [to, ty]], label: [(from + to) / 2, (sy + ty) / 2 - 6] };
+      const mx = from + (to - from) / 2;
+      return { pts: [[from, sy], [mx, sy], [mx, ty], [to, ty]], label: [mx, (sy + ty) / 2] };
+    }
+    const sx = a.x + a.w / 2, tx = b.x + b.w / 2;
+    const from = fwd ? a.y + a.h : a.y, to = fwd ? b.y : b.y + b.h;
+    if (back) { const y = Math.max(a.y + a.h, b.y + b.h) + 26; return { pts: [[sx, from], [sx, y], [tx, y], [tx, to]], label: [(sx + tx) / 2, y - 7] }; }
+    if (to - from < 26) return { pts: [[sx, from], [tx, to]], label: [(sx + tx) / 2 - 6, (from + to) / 2] };
+    const my = from + (to - from) / 2;
+    return { pts: [[sx, from], [sx, my], [tx, my], [tx, to]], label: [(sx + tx) / 2, my] };
+  }
+
+  function xgPath(pts, r = 7) {
+    if (pts.length < 3) return `M${pts.map((p) => p.join(",")).join("L")}`;
+    let d = `M${pts[0][0]},${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], [x2, y2] = pts[i + 1];
+      const l1 = Math.hypot(x1 - x0, y1 - y0) || 1, l2 = Math.hypot(x2 - x1, y2 - y1) || 1;
+      const rr = Math.min(r, l1 / 2, l2 / 2);
+      const u1 = [(x1 - x0) / l1, (y1 - y0) / l1], u2 = [(x2 - x1) / l2, (y2 - y1) / l2];
+      d += `L${(x1 - u1[0] * rr).toFixed(1)},${(y1 - u1[1] * rr).toFixed(1)}Q${x1},${y1} ${(x1 + u2[0] * rr).toFixed(1)},${(y1 + u2[1] * rr).toFixed(1)}`;
+    }
+    const e = pts[pts.length - 1];
+    return d + `L${e[0]},${e[1]}`;
+  }
+
+  /** The pan/zoom/fit frame both diagram components share. Everything visual lives in CSS classes. */
+  function xgView(host) {
+    const wrap = document.createElement("div"); wrap.className = "xgwrap";
+    const svgEl = svg("svg", { class: "xgsvg", "aria-hidden": "false" });
+    const defs = svg("defs", {}, svgEl);
+    const mk = svg("marker", { id: "xg-ah", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7.5, markerHeight: 7.5, orient: "auto-start-reverse" }, defs);
+    svg("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--muted)" }, mk);
+    const g = svg("g", { class: "xg" }, svgEl);
+    const hud = document.createElement("div"); hud.className = "xghud";
+    const zed = document.createElement("span"); zed.className = "xgz";
+    const btn = (text, title, fn) => { const b = document.createElement("button"); b.type = "button"; b.textContent = text; b.title = title; b.setAttribute("aria-label", title); b.onclick = (e) => { e.stopPropagation(); e.preventDefault(); fn(); }; hud.appendChild(b); return b; };
+    const state = { z: 1, x: XG.PAD, y: XG.PAD, world: { w: 0, h: 0 }, fit: 1, box: { w: 0, h: 0 }, zoomed: false };
+    const apply = () => g.setAttribute("transform", `translate(${state.x.toFixed(2)} ${state.y.toFixed(2)}) scale(${state.z.toFixed(4)})`);
+    const show = () => { zed.textContent = Math.round(state.z * 100) + "%"; };
+    const setZ = (z, cx, cy) => {
+      const next = Math.max(XG.MINZ, Math.min(XG.MAXZ, z));
+      const k = next / state.z;
+      const px = cx === undefined ? state.box.w / 2 : cx, py = cy === undefined ? state.box.h / 2 : cy;
+      state.x = px - (px - state.x) * k; state.y = py - (py - state.y) * k; state.z = next;
+      if (Math.abs(next - state.fit) > 0.02) state.zoomed = true;
+      apply(); show();
+    };
+    const fit = () => {
+      const { w: W, h: H } = state.world;
+      const bw = wrap.clientWidth || host.clientWidth || 640;
+      const bh = wrap.clientHeight || state.hintH || 0;
+      state.box = { w: bw, h: bh || 1 };
+      if (!W || !H) return;
+      let s = Math.min(1, (bw - XG.PAD * 2) / W);
+      if (bh) s = Math.min(s, (bh - XG.PAD * 2) / H);              // a tall drawing is scaled to be seen whole
+      s = Math.max(XG.MINZ, s);
+      state.fit = s; state.z = s; state.zoomed = false;
+      state.x = W * s + XG.PAD * 2 >= bw ? XG.PAD : Math.round((bw - W * s) / 2);
+      state.y = Math.max(XG.PAD, Math.round((bh - H * s) / 2) || XG.PAD);
+      apply(); show();
+    };
+    btn("−", "Zoom out", () => setZ(state.z / 1.25));
+    btn("+", "Zoom in", () => setZ(state.z * 1.25));
+    btn("Fit", "Fit to width", () => fit());
+    hud.append(zed);
+    wrap.append(svgEl, hud);
+    host.appendChild(wrap);
+
+    let drag = null;
+    wrap.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".xghud")) return;
+      drag = { x: e.clientX, y: e.clientY, ox: state.x, oy: state.y, moved: false };
+      wrap.classList.add("drag");
+      wrap.setPointerCapture?.(e.pointerId);
+    });
+    wrap.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      drag.moved = true;
+      state.x = drag.ox + dx; state.y = drag.oy + dy;
+      if (Math.abs(state.z - state.fit) > 0.02) state.zoomed = true;
+      apply();
+    });
+    const end = () => { drag = null; wrap.classList.remove("drag"); };
+    wrap.addEventListener("pointerup", end);
+    wrap.addEventListener("pointercancel", end);
+    wrap.addEventListener("wheel", (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;                       // plain wheel keeps scrolling the page
+      e.preventDefault();
+      const r = wrap.getBoundingClientRect();
+      setZ(state.z * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
+    return { wrap, g, state, apply, show, setZ, fit, moved: () => !!drag && drag.moved };
+  }
+
+  /** Draw a laid-out graph: edges under nodes, kinds as shapes, one hover/active state. */
+  function xgDraw(view, L, o) {
+    const R = RAD();
+    const g = view.g;
+    g.textContent = "";
+    g.classList.toggle("interactive", !!o.interactive);
+    const layer = (cls) => svg("g", { class: cls }, g);
+    const edges = layer("xg-edges"), nodes = layer("xg-nodes");
+    for (const e of L.edges) {
+      const { pts, label } = xgRoute(e.fromNode, e.toNode, o.dir, e.back);
+      const p = svg("path", { d: xgPath(pts), class: "xge" + (e.dashed ? " dashed" : ""), "marker-end": "url(#xg-ah)", "data-from": e.from, "data-to": e.to }, edges);
+      if (e.dashed) p.setAttribute("stroke-dasharray", `${XG.DASH} ${XG.DASH}`);
+      if (e.label) {
+        const lp = label || pts[Math.floor(pts.length / 2)];
+        const t = svg("text", { x: lp[0], y: lp[1] - 6, class: "xgl", "text-anchor": "middle" }, edges);
+        t.textContent = e.label;
+      }
+    }
+    L.nodes.forEach((n, nodeIndex) => {
+      const kind = n.kind || "step";
+      const grp = svg("g", { class: "xgn" + (kind === "root" ? " root" : ""), "data-id": n.id, "data-kind": kind }, nodes);
+      grp.style.setProperty("--i", String(Math.min(nodeIndex, 16)));
+      if (kind === "note") {
+        const t = svg("text", { x: n.x + n.w / 2, y: n.y + n.h / 2, class: "xgl", "text-anchor": "middle" }, grp);
+        t.textContent = n.label;
+      } else if (kind === "decision") {
+        svg("polygon", { points: `${n.x + n.w / 2},${n.y} ${n.x + n.w},${n.y + n.h / 2} ${n.x + n.w / 2},${n.y + n.h} ${n.x},${n.y + n.h / 2}`, rx: 4, class: "box" }, grp);
+      } else {
+        const cls = kind === "start" || kind === "end" ? "box solid" : kind === "io" ? "box io" : kind === "root" ? "box root" : "box";
+        svg("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: R, class: cls }, grp);
+      }
+      if (kind !== "note") {
+        const t = svg("text", { x: n.x + n.w / 2, y: n.y + (n.detail ? n.h / 2 - 7 : n.h / 2) + 1, class: "xgn-t", "text-anchor": "middle" }, grp);
+        t.textContent = n.label;
+        if (n.detail) {
+          const d = svg("text", { x: n.x + n.w / 2, y: n.y + n.h / 2 + 12, class: "xgn-d", "text-anchor": "middle" }, grp);
+          d.textContent = n.detail;
+        }
+      }
+      if (o.interactive) { grp.setAttribute("tabindex", "0"); grp.setAttribute("role", "button"); }
+      if (o.onToggle && n.children) xgChev(grp, n.x + n.w - 11, n.y + n.h / 2, !!n.folded);
+    });
+    // hovering a node dims what is not connected to it — the question "where does this go?" answered instantly
+    if (!view.wired) {
+      view.wired = true;
+      view.wrap.addEventListener("mouseover", (e) => {
+        const hit = e.target.closest(".xgn");
+        if (!hit) return;
+        const id = hit.dataset.id;
+        g.classList.add("focus");
+        view.wrap.querySelectorAll(".xgn").forEach((x) => x.classList.toggle("hot", x.dataset.id === id));
+        view.wrap.querySelectorAll(".xge").forEach((x) => x.classList.toggle("hot", x.dataset.from === id || x.dataset.to === id));
+      });
+      view.wrap.addEventListener("mouseleave", () => {
+        g.classList.remove("focus");
+        view.wrap.querySelectorAll(".hot").forEach((x) => x.classList.remove("hot"));
+      });
+    }
+  }
+
+  function xgPaint(view, active) {
+    for (const el of view.g.querySelectorAll(".xgn")) el.classList.toggle("on", !!active && el.dataset.id === active);
+    view.g.classList.toggle("has-on", !!active);
+  }
+
+  /** The height a laid-out graph wants: never a postage stamp, never a full screen.
+      A view the reader has zoomed or dragged keeps its viewport across re-renders; an untouched one
+      follows the drawing, and height="…" (or the fit attribute) always wins. */
+  function xgBox(view, L, attrHeight, force) {
+    const first = !view.state.fitted;
+    view.state.world = { w: L.width + XG.PAD * 2, h: L.height + XG.PAD * 2 };
+    const fixed = parseFloat(attrHeight || "");
+    const z = view.state.zoomed ? view.state.z : view.state.fit || 1;
+    // A tall drawing is read by scrolling, the way any long content is — the block grows with it up to
+    // ~940px and only then falls back to scaling down (with a floor), so the text is never shrunk to nothing.
+    const natural = L.height + XG.PAD * 2;
+    const cap = fixed && fixed > 60 ? fixed : natural <= 940 ? natural : 620;
+    const shown = Math.round(Math.max(190, Math.min(cap, L.height * z + XG.PAD * 2)));
+    view.state.hintH = shown;
+    view.wrap.style.height = shown + "px";
+    view.state.box = { w: view.wrap.clientWidth || 640, h: shown };
+    if (first || force || !view.state.zoomed) view.fit();
+    view.state.fitted = true;
+  }
+
+  define("x-flow", class extends Base {
+    static owns = true;
+    init() {
+      this._view = xgView(this);
+      this._view.wrap.addEventListener("click", (e) => {
+        if (this._view.moved()) return;
+        const hit = e.target.closest(".xgn");
+        if (hit) this.select(hit.dataset.id);
+      });
+    }
+    get nodes() { return (this._graph?.nodes || []).map((n) => n.id); }
+    get value() { return this.getAttribute("active") || null; }
+    select(id) {
+      const n = (this._graph?.nodes || []).find((x) => x.id === id);
+      if (!n) return;
+      this.setAttribute("active", id);
+      xgPaint(this._view, id);
+      this.dispatchEvent(new CustomEvent("select", { bubbles: true, detail: { id, label: n.label, kind: n.kind } }));
+      change(this);
+    }
+    dir() {
+      const d = this.a("dir", "auto");
+      if (d !== "auto") return d;
+      const w = this._measure() || 700;
+      return w > 680 ? "lr" : "tb";
+    }
+    _measure() { return this._view.wrap.clientWidth || this.clientWidth || (this.parentElement && this.parentElement.clientWidth) || 0; }
+    render() {
+      const src = this._src || "";
+      const dir = this.dir();
+      this._dirW = this._measure();
+      const sig = [dir, src, this.a("height", ""), this.a("caption", "")].join("\u0001");
+      if (sig === this._sigDone) { xgPaint(this._view, this.a("active", "")); return; }
+      this._sigDone = sig;
+      const parsed = B.parseFlow(src);
+      this._graph = parsed;
+      const L = B.graphLayout(parsed.nodes, parsed.edges, dir, { estimate: (label, kind) => xgNodeSize({ label, kind }) });
+      const cap = this.a("caption", "");
+      this._view.wrap.classList.toggle("hascap", !!cap);
+      xgDraw(this._view, L, { dir, interactive: true });
+      this._view.wrap.setAttribute("role", "img");
+      this._view.wrap.setAttribute("aria-label", cap || `Flowchart with ${L.nodes.length} steps`);
+      xgBox(this._view, L, this.a("height", ""), this.hasAttribute("fit"));
+      xgPaint(this._view, this.a("active", ""));
+      if (!this._ro && typeof ResizeObserver !== "undefined") {
+        this._ro = new ResizeObserver(() => {
+          const w = this._measure();
+          // the first paint has no width yet, so a block that starts narrow lands on tb and flips to lr once measured
+          if (this.a("dir", "auto") === "auto" && w && Math.abs(w - (this._dirW || 0)) > 40) { this._sigDone = null; this.render(); return; }
+          if (!this._view.state.zoomed) { this._view.fit(); xgPaint(this._view, this.a("active", "")); }
+        });
+        this._ro.observe(this._view.wrap);
+      }
+    }
+    fit() { this._view.fitted = false; this._sigDone = null; this.render(); }
+    zoomBy(f) { this._view.setZ(this._view.state.z * (f || 1.25)); }
+  });
+
+  define("x-tree", class extends Base {
+    static owns = true;
+    init() {
+      this._view = xgView(this);
+      this._collapsed = new Set();
+      this._view.wrap.addEventListener("click", (e) => {
+        if (this._view.moved()) return;
+        const hit = e.target.closest(".xgn");
+        if (hit) this.select(hit.dataset.id);
+      });
+    }
+    get value() { return this.getAttribute("active") || null; }
+    select(id) {
+      const n = (this._graph?.nodes || []).find((x) => x.id === id);
+      if (!n) return;
+      if (n.children && this.hasAttribute("collapse")) {
+        if (this._collapsed.has(id)) this._collapsed.delete(id); else this._collapsed.add(id);
+      } else {
+        this.setAttribute("active", id);
+        this.dispatchEvent(new CustomEvent("select", { bubbles: true, detail: { id, label: n.label, detail: n.detail } }));
+        change(this);
+      }
+      this._sigDone = null;
+      this.render();
+    }
+    dir() {
+      const d = this.a("dir", "auto");
+      if (d !== "auto") return d;
+      const w = this._measure() || 700;
+      return w > 600 ? "lr" : "tb";
+    }
+    _measure() { return this._view.wrap.clientWidth || this.clientWidth || (this.parentElement && this.parentElement.clientWidth) || 0; }
+    render() {
+      const src = this._src || "";
+      const dir = this.dir();
+      this._dirW = this._measure();
+      const sig = [dir, src, [...this._collapsed].join(","), this.a("height", ""), this.a("caption", "")].join("\u0001");
+      if (sig === this._sigDone) { xgPaint(this._view, this.a("active", "")); return; }
+      this._sigDone = sig;
+      const parsed = B.parseTree(src);
+      this._graph = parsed;
+      const kids = new Map(), hasParent = new Set();
+      for (const e of parsed.edges) { (kids.get(e.from) || kids.set(e.from, []).get(e.from)).push(e.to); hasParent.add(e.to); }
+      const hidden = new Set();
+      const hide = (id) => { for (const k of kids.get(id) || []) { hidden.add(k); hide(k); } };
+      for (const id of this._collapsed) hide(id);
+      const count = (id) => (kids.get(id) || []).reduce((s, k) => s + 1 + count(k), 0);
+      const nodes = parsed.nodes.filter((n) => !hidden.has(n.id)).map((n) => {
+        const c = (kids.get(n.id) || []).length;
+        return { ...n, kind: hasParent.has(n.id) ? "tree" : "root", children: c, folded: this._collapsed.has(n.id), label: this._collapsed.has(n.id) ? `${n.label}  +${count(n.id)}` : n.label };
+      });
+      const ids = new Set(nodes.map((n) => n.id));
+      const edges = parsed.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+      const L = B.graphLayout(nodes, edges, dir, { order: "preserve", estimate: (label, kind, node) => xgNodeSize({ label, kind, ...node }) });
+      xgDraw(this._view, L, { dir, interactive: true, onToggle: this.hasAttribute("collapse") });
+      xgBox(this._view, L, this.a("height", ""), this.hasAttribute("fit"));
+      xgPaint(this._view, this.a("active", ""));
+      if (!this._ro && typeof ResizeObserver !== "undefined") {
+        this._ro = new ResizeObserver(() => {
+          const w = this._measure();
+          if (this.a("dir", "auto") === "auto" && w && Math.abs(w - (this._dirW || 0)) > 40) { this._sigDone = null; this.render(); return; }
+          if (!this._view.state.zoomed) this._view.fit();
+        });
+        this._ro.observe(this._view.wrap);
+      }
+    }
+    fit() { this._view.fitted = false; this._sigDone = null; this.render(); }
+    zoomBy(f) { this._view.setZ(this._view.state.z * (f || 1.25)); }
+  });
+
+  // ---------------------------------------------------------------- x-list: the outline
+  // Nested, labelled, selectable rows — the structure a markdown list cannot carry (detail, meta,
+  // collapse, selection) built from the same row language as the rest of the app.
+  const xlParse = (src) => {
+    const raw = String(src || "").replace(/\r/g, "").split("\n");
+    const indent = (l) => (l.match(/^[\t ]*/) || [""])[0].replace(/\t/g, "  ").length;
+    const body = raw.filter((l) => l.trim() && !l.trim().startsWith("#"));
+    const base = body.length ? Math.min(...body.map(indent)) : 0;
+    const out = [];
+    for (const line of raw) {
+      if (!line.trim() || line.trim().startsWith("#")) continue;
+      const depth = Math.max(0, Math.floor((indent(line) - base) / 2));
+      const text = line.trim().replace(/^[-*+•]\s+/, "");
+      if (!text) continue;
+      const cell = text.split(/\s*\|\s*/);                       // an empty cell (Label | | Mon) is just an empty column
+      out.push({ depth, label: (cell[0] || "").trim(), detail: (cell[1] || "").trim(), meta: (cell[2] || "").trim(), children: [] });
+    }
+    const roots = [], stack = [];
+    out.forEach((item) => {
+      const parent = item.depth > 0 ? stack[item.depth - 1] : null;
+      if (parent) parent.children.push(item); else roots.push(item);
+      stack[item.depth] = item;
+      stack.length = item.depth + 1;
+    });
+    return roots;
+  };
+
+  define("x-list", class extends Base {
+    static owns = true;
+    init() {
+      this.tabIndex = 0;
+      this.setAttribute("role", "tree");
+      this._collapsed = new Set();
+      this._cursor = 0;
+      this._picked = [];
+      this.addEventListener("click", (e) => {
+        const row = e.target.closest(".xl-i");
+        if (!row) return;
+        const item = this._flat[+row.dataset.i];
+        if (!item) return;
+        this._cursor = +row.dataset.i;
+        if (e.target.closest(".xl-chev")) this.toggle(item);
+        else this.pick(item);
+        this.mark();
+      });
+      this.addEventListener("keydown", (e) => {
+        const item = this._flat[this._cursor];
+        if (!item) return;
+        const rows = this._flat.filter((x) => x.visible);
+        const at = rows.indexOf(item);
+        if (e.key === "ArrowDown") this._cursor = this._flat.indexOf(rows[Math.min(rows.length - 1, at + 1)]);
+        else if (e.key === "ArrowUp") this._cursor = this._flat.indexOf(rows[Math.max(0, at - 1)]);
+        else if (e.key === "Home") this._cursor = this._flat.indexOf(rows[0]);
+        else if (e.key === "End") this._cursor = this._flat.indexOf(rows[rows.length - 1]);
+        else if (e.key === "ArrowRight") { this._collapsed.delete(this._key(item)); }
+        else if (e.key === "ArrowLeft") { if (item.children.length) this._collapsed.add(this._key(item)); }
+        else if (e.key === "Enter" || e.key === " ") this.pick(item);
+        else return;
+        e.preventDefault();
+        this._sigDone = null;
+        this.render();
+        this.mark();
+      });
+    }
+    _key(item) { return this._flat.indexOf(item); }
+    get value() { return this.a("select") === "multi" ? this._picked.slice() : (this._picked[this._picked.length - 1] || null); }
+    get values() { return this._picked.slice(); }
+    pick(item) {
+      if (this.a("select", "none") === "none") return;
+      const label = item.label;
+      if (this.a("select") === "multi") this._picked = this._picked.includes(label) ? this._picked.filter((x) => x !== label) : [...this._picked, label];
+      else this._picked = this._picked[0] === label && this.a("select") === "single" ? [label] : [label];
+      this.dispatchEvent(new CustomEvent("select", { bubbles: true, detail: { value: this.value, label, detail: item.detail } }));
+      change(this);
+    }
+    toggle(item) {
+      const k = this._key(item);
+      if (this._collapsed.has(k)) this._collapsed.delete(k); else this._collapsed.add(k);
+      this._sigDone = null;
+      this.render();
+    }
+    mark() {
+      for (const el of this.querySelectorAll(".xl-i")) {
+        const item = this._flat[+el.dataset.i];
+        el.classList.toggle("on", item && this._picked.includes(item.label));
+        el.classList.toggle("cur", +el.dataset.i === this._cursor && this._hasFocus !== false);
+        if (item) el.setAttribute("aria-selected", String(!!item && this._picked.includes(item.label)));
+      }
+    }
+    render() {
+      const src = this._src || "";
+      const sig = [src, [...this._collapsed].join(","), this._picked.join("\u0001"), this.a("markers", "dot"), this.a("select", "none")].join("\u0002");
+      if (sig === this._sigDone) return;
+      this._sigDone = sig;
+      const roots = xlParse(src);
+      this._flat = [];
+      const walk = (items, depth, parentVisible = true) => items.forEach((item) => {
+        const index = this._flat.length;
+        item.depth = depth;
+        item.visible = parentVisible;
+        this._flat.push(item);
+        if (item.children.length) walk(item.children, depth + 1, parentVisible && !this._collapsed.has(index));
+      });
+      walk(roots, 0);
+      const markers = this.a("markers", "dot");
+      this.textContent = "";
+      const build = (items, index = { n: 0 }, counters = []) => {
+        const ul = document.createElement("ul");
+        ul.className = "xl";
+        items.forEach((item) => {
+          const i = this._flat.indexOf(item);
+          if (!item.visible) return;
+          const li = document.createElement("li");
+          li.className = "xl-i";
+          li.dataset.i = String(i);
+          li.setAttribute("role", "treeitem");
+          if (item.children.length) li.setAttribute("aria-expanded", String(!this._collapsed.has(i)));
+          const row = document.createElement("div");
+          row.className = "xl-row";
+          if (markers !== "none") {
+            const mk = document.createElement("span");
+            mk.className = "xl-mk";
+            if (markers === "number") {
+              counters[item.depth] = (counters[item.depth] || 0) + 1;
+              counters.length = item.depth + 1;
+              mk.textContent = counters.join(".") + (item.depth === 0 ? "." : "");
+            } else mk.textContent = item.children.length && !this._collapsed.has(i) ? "▾" : markers === "dash" ? "–" : "•";
+            row.appendChild(mk);
+          }
+          const tx = document.createElement("span");
+          tx.className = "xl-tx";
+          tx.textContent = item.label;
+          if (item.detail) { const d = document.createElement("small"); d.textContent = item.detail; tx.appendChild(d); }
+          row.appendChild(tx);
+          if (item.meta) { const m = document.createElement("span"); m.className = "xl-meta"; m.textContent = item.meta; row.appendChild(m); }
+          if (item.children.length) {
+            const chev = document.createElement("button");
+            chev.type = "button";
+            chev.className = "xl-chev" + (this._collapsed.has(i) ? " closed" : "");
+            chev.setAttribute("aria-label", this._collapsed.has(i) ? "Expand" : "Collapse");
+            const ic = svg("svg", { viewBox: "0 0 12 12", width: "11", height: "11" });
+            svg("path", { d: "M2.5,4 L6,8 L9.5,4", fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" }, ic);
+            chev.appendChild(ic);
+            row.appendChild(chev);
+          }
+          li.appendChild(row);
+          if (item.children.length && !this._collapsed.has(i)) li.appendChild(build(item.children, index, counters));
+          ul.appendChild(li);
+        });
+        return ul;
+      };
+      this.appendChild(build(roots));
+      this.classList.toggle("selectable", this.a("select", "none") !== "none");
+      this.classList.toggle("dense", this.hasAttribute("dense"));
+      this.addEventListener("focus", () => { this._hasFocus = true; this.mark(); }, { once: true });
+      this.addEventListener("blur", () => { this._hasFocus = false; this.mark(); }, { once: true });
+      this._hasFocus = this.ownerDocument.activeElement === this;
+      this.mark();
+    }
+    expand(id) { this._collapsed.delete(id); this._sigDone = null; this.render(); }
+    collapse(id) { this._collapsed.add(id); this._sigDone = null; this.render(); }
   });
 
   // ================================================================ time
