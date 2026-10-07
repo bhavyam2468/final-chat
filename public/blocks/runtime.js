@@ -22,7 +22,7 @@
   const ORIGIN = window.BLOCKS_ORIGIN || (location.origin !== "null" ? location.origin : "");
 
   // ---------------------------------------------------------------- utils
-  const num = (v, d = 0) => (v === null || v === undefined || v === "" || isNaN(+v) ? d : +v);
+  const num = (v, d = 0) => (v === null || v === undefined || v === "" || !Number.isFinite(+v) ? d : +v);
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const svg = (tag, attrs = {}, parentEl) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parentEl) parentEl.appendChild(e); return e; };
   // bundled libs are served by the app (/vendor/<lib>/…, offline); the CDN is only a fallback
@@ -52,42 +52,56 @@
   Object.assign(B, { num, css, svg, load, esc, fileUrl, fmt, PAL, NS, ORIGIN });
 
   // ---------------------------------------------------------------- host bridge
-  const post = (type, data) => { try { parent.postMessage({ src: "blocks", frame: FRAME, type, ...data }, "*"); } catch {} };
+  const post = (type, data) => { try { parent.postMessage({ ...data, src: "blocks", frame: FRAME, type }, "*"); } catch {} };
+  B.post = post;
   let reqId = 0; const pending = {}; const streams = {};
   const call = (type, data) => new Promise((res) => { const id = ++reqId; pending[id] = res; post(type, { id, ...data }); });
   const backendPayload = (kind, input) => {
     if (input && typeof input === "object" && !Array.isArray(input)) return { ...input };
     return kind === "bash" || kind === "process" ? { command: String(input ?? "") } : { code: String(input ?? "") };
   };
-  const backend = (kind, input, opts) => call("backend", { backend: String(kind), ...backendPayload(String(kind), input), ...(opts || {}) });
-  const backendStream = (kind, input, onChunk, opts) => {
-    const id = ++reqId;
-    const promise = new Promise((res) => { pending[id] = res; streams[id] = typeof onChunk === "function" ? onChunk : () => {}; });
-    post("backend", { id, backend: String(kind), ...backendPayload(String(kind), input), ...(opts || {}) });
-    return promise.finally(() => { delete streams[id]; });
+  const backendRequest = (kind, input, onChunk, opts = {}) => {
+    const id = ++reqId, { signal, ...options } = opts;
+    let resolve;
+    const promise = new Promise((res) => { resolve = res; pending[id] = res; if (onChunk) streams[id] = onChunk; });
+    let settled = false;
+    const cancel = () => { if (settled) return; post("cancel", { id }); delete pending[id]; delete streams[id]; resolve({ ok: false, code: 1, out: "Backend request cancelled" }); };
+    if (signal?.aborted) cancel();
+    else { post("backend", { id, backend: String(kind), ...backendPayload(String(kind), input), ...options }); signal?.addEventListener("abort", cancel, { once: true }); }
+    const result = promise.finally(() => { settled = true; delete streams[id]; delete pending[id]; signal?.removeEventListener("abort", cancel); });
+    result.cancel = cancel;
+    return result;
   };
+  const backend = (kind, input, opts) => backendRequest(kind, input, null, opts);
+  const backendStream = (kind, input, onChunk, opts) => backendRequest(kind, input, typeof onChunk === "function" ? onChunk : null, opts);
   const standalone = window.parent === window;
 
   // ---------------------------------------------------------------- reactive store
   const store = {};
   let root = null;
   const dataVars = {};
-  const inputOf = (k) => (root ? root.querySelectorAll(`[name="${CSS.escape(k)}"]`) : []);
-  function readInput(k) {
-    const els = [...inputOf(k)]; if (!els.length) return undefined;
+  const SCOPE = Symbol("scopeRoot");
+  const OWNER = Symbol("scopeOwner");
+  const inputOf = (k, region = root) => region ? [...region.querySelectorAll(`[name="${CSS.escape(k)}"]`)].filter((el) => {
+    if (region === root && el.__locals?.[OWNER]) return false;
+    const boundary = el.closest("x-block");
+    return !boundary || boundary === region || boundary.contains(region);
+  }) : [];
+  function readInput(k, region = root) {
+    const els = [...inputOf(k, region)]; if (!els.length) return undefined;
     const e = els[0];
     if (e.type === "radio") { const c = els.find((x) => x.checked); return c ? c.value : null; }
     if (e.type === "checkbox") return els.length > 1 ? els.filter((x) => x.checked).map((x) => x.value) : e.checked;
     if (e.type === "range" || e.type === "number") return e.value === "" ? null : +e.value;
     return e.value;
   }
-  function writeInput(k, v) {
-    for (const e of inputOf(k)) {
+  function writeInput(k, v, region = root) {
+    for (const e of inputOf(k, region)) {
       if (e.type === "radio") e.checked = String(e.value) === String(v);
       else if (e.type === "checkbox") e.checked = Array.isArray(v) ? v.includes(e.value) : !!v;
       else if ("value" in e) e.value = v;
     }
-    if (inputOf(k)[0]) inputOf(k).forEach((e) => e.dispatchEvent(new Event("input", { bubbles: true })));
+    if (inputOf(k, region)[0]) inputOf(k, region).forEach((e) => e.dispatchEvent(new Event("input", { bubbles: true })));
   }
   // state keys are mirrored as window accessors so plain <script> code (`score = 3`) and bindings share one store
   function expose(k) {
@@ -137,34 +151,44 @@
   B.show = show;
   H.show = show;
 
-  const byId = (k) => { try { return root ? root.querySelector("#" + CSS.escape(k)) : null; } catch { return null; } };
+  const byId = (k, region = root) => { try { return region ? region.querySelector("#" + CSS.escape(k)) : null; } catch { return null; } };
   const refs = new Proxy({}, { get: (_, k) => (root && typeof k === "string" ? root.querySelector(`[x-ref="${CSS.escape(k)}"],[ref="${CSS.escape(k)}"],#${CSS.escape(k)}`) : undefined) });
   const MAGIC = { $refs: refs, $nextTick: (f) => new Promise((r) => requestAnimationFrame(() => r(f && f()))), $dispatch: null, $store: null };
   // names read while evaluating bindings that exist nowhere: reported by the self-check (typos, missing state)
   const missing = new Set(); let recording = false;
   const known = (k, locals) => (locals && k in locals) || k in store || k in dataVars || k in H || k in window || !!inputOf(k).length || !!byId(k);
   function scope(locals) {
+    const region = locals?.[SCOPE] || root;
+    const owner = locals?.[OWNER];
     return new Proxy(Object.create(null), {
       has(_, k) {
         if (typeof k !== "string") return false;
-        if ((locals && k in locals) || k in store || k in dataVars || k in H || k in MAGIC || inputOf(k).length || byId(k)) return true;
+        if ((locals && k in locals) || k in store || k in dataVars || k in H || k in MAGIC || inputOf(k, region).length || byId(k, region)) return true;
         return !(k in window);
       },
       get(_, k) {
         if (k === Symbol.unscopables) return undefined;
         if (locals && k in locals) return locals[k];
+        if (inputOf(k, region).length && region !== root) return readInput(k, region);
         if (k in store) return store[k];
-        if (inputOf(k).length) return readInput(k);
+        if (inputOf(k, region).length) return readInput(k, region);
         if (k in dataVars) return dataVars[k];
+        if (k === "form") return (selector) => form(selector || region);
+        if (k === "$refs") return new Proxy({}, { get: (_, id) => byId(id, region) || region?.querySelector(`[x-ref="${CSS.escape(id)}"]`) });
         if (k in H) return H[k];
-        if (k in MAGIC) return k === "$store" ? S : k === "$dispatch" ? (n, d) => root.dispatchEvent(new CustomEvent(n, { detail: d, bubbles: true })) : MAGIC[k];
-        const r = byId(k) || window[k];
+        if (k in MAGIC) return k === "$store" ? scope(locals) : k === "$dispatch" ? (n, d) => region.dispatchEvent(new CustomEvent(n, { detail: d, bubbles: true })) : MAGIC[k];
+        const r = byId(k, region) || window[k];
         if (r === undefined && recording && typeof k === "string" && !(k in window)) missing.add(k);
         return r;
       },
       set(_, k, v) {
-        if (locals && k in locals) locals[k] = v;
-        else if (!(k in store) && inputOf(k).length) writeInput(k, v);
+        if (["__proto__", "constructor", "prototype"].includes(k)) return false;
+        if (locals && k in locals) {
+          let target = locals;
+          while (!Object.hasOwn(target, k) && Object.getPrototypeOf(target)) target = Object.getPrototypeOf(target);
+          target[k] = v;
+        } else if (inputOf(k, region).length && (region !== root || !(k in store))) writeInput(k, v, region);
+        else if (owner) owner[k] = v;
         else { store[k] = v; expose(k); }
         schedule(); return true;
       },
@@ -199,7 +223,7 @@
   // `clicks++` / `total += x` / `items.push(…)` on a name nobody declared starts from 0 / [] instead of NaN / TypeError
   function autoInit(code, locals) {
     const declared = (k) => new RegExp(`\\b(?:let|const|var|function)\\s+${k.replace(/\$/g, "\\$")}\\b|(?:=>|\\bfor\\s*\\()[^;]*\\b${k.replace(/\$/g, "\\$")}\\b\\s*(?:=[^=]|of|in)`).test(code);
-    const init = (k, v) => { if (!/^[A-Za-z_$][\w$]*$/.test(k) || known(k, locals) || k in MAGIC || declared(k)) return; setStore(k, v); };
+    const init = (k, v) => { if (!/^[A-Za-z_$][\w$]*$/.test(k) || known(k, locals) || k in MAGIC || declared(k)) return; if (locals?.[OWNER]) locals[OWNER][k] = v; else setStore(k, v); };
     for (const m of code.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)\s*(?:\+\+|--|[-+*/%]=)|(?:\+\+|--)\s*([A-Za-z_$][\w$]*)/g)) init(m[1] || m[2], 0);
     for (const m of code.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)\.(?:push|unshift|splice)\(/g)) init(m[1], []);
   }
@@ -218,19 +242,34 @@
   const IDENT = /^[A-Za-z_$][\w$]*(?:\.[\w$]+|\[\d+\])*$/;
   let lastChain = null;
   function initData(el, locals) {
-    if (el.__data || !el.hasAttribute || !el.hasAttribute("x-data")) return;
+    if (!el.hasAttribute) return locals;
+    if (el.__data) return el.__locals;
+    const boundary = el.tagName === "X-BLOCK" || el.hasAttribute("x-data");
+    if (!boundary) { el.__locals = locals; return locals; }
     el.__data = true;
+    const own = Object.create(locals || null);
+    Object.defineProperties(own, { [SCOPE]: { value: el }, [OWNER]: { value: own } });
+    el.__locals = own;
     const src = el.getAttribute("x-data"); el.removeAttribute("x-data");
-    if (!src || !src.trim()) return;
-    let obj; try { obj = compile(src, false)(scope(locals)); } catch (e) { reportErr(e); return; }
-    if (!obj || typeof obj !== "object") return;
-    let initFn = null;
+    if (!src?.trim()) return own;
+    let obj; try { obj = compile(src, false)(scope(locals)); } catch (e) { reportErr(e); return own; }
+    if (!obj || typeof obj !== "object") return own;
+    const proxy = scope(own);
+    let initFn;
     for (const [k, d] of Object.entries(Object.getOwnPropertyDescriptors(obj))) {
-      if (d.get) { Object.defineProperty(store, k, { configurable: true, enumerable: true, get: () => d.get.call(S), set: d.set ? (v) => { d.set.call(S, v); schedule(); } : undefined }); expose(k); }
-      else if (typeof d.value === "function") { const f = d.value.bind(S); if (k === "init") initFn = f; else { store[k] = f; expose(k); } }
-      else if (!(k in store)) setStore(k, d.value);
+      if (["__proto__", "constructor", "prototype"].includes(k)) continue;
+      if (d.get) Object.defineProperty(own, k, { configurable: true, enumerable: true, get: () => d.get.call(proxy), set: d.set ? (v) => { d.set.call(proxy, v); schedule(); } : undefined });
+      else if (typeof d.value === "function") { const f = d.value.bind(proxy); if (k === "init") initFn = f; else own[k] = f; }
+      else own[k] = d.value;
+      // Legacy documents often access their first x-data group from a following sibling.
+      // Preserve that alias, while all bindings inside groups resolve their own local state.
+      // Explicit x-block compositions never export implicit globals.
+      if (!el.closest("x-block") && !locals?.[OWNER] && el.tagName !== "X-BLOCK" && !(k in store)) {
+        Object.defineProperty(store, k, { configurable: true, enumerable: true, get: () => own[k], set: (v) => { own[k] = v; schedule(); } }); expose(k);
+      }
     }
     if (initFn) queueMicrotask(() => { try { Promise.resolve(initFn()).catch(reportErr).finally(schedule); } catch (e) { reportErr(e); } });
+    return own;
   }
   function bindModel(el, expr, locals, mods, list) {
     const custom = el.tagName.includes("-"), t = el.type; el.__model = true;
@@ -246,7 +285,7 @@
     el.addEventListener(ev, () => { if (t === "radio" && !el.checked) return; write(read()); });
     if (custom && ev === "input") el.addEventListener("change", () => write(read()));
     if (!el.getAttribute("name") && /^[\w$]+$/.test(expr) && t !== "radio") el.setAttribute("name", expr);
-    if (evaluate(expr, locals) === undefined && /^[\w$]+$/.test(expr)) { const v0 = t === "radio" ? (el.checked ? el.value : undefined) : read(); if (v0 !== undefined) setStore(expr, v0); }
+    if (evaluate(expr, locals) === undefined && /^[\w$]+$/.test(expr)) { const v0 = t === "radio" ? (el.checked ? el.value : undefined) : read(); if (v0 !== undefined) { if (locals?.[OWNER]) locals[OWNER][expr] = v0; else setStore(expr, v0); } }
     list.push({ type: "model", el, expr, locals });
   }
   function listen(el, spec, code, locals) {
@@ -263,12 +302,13 @@
       if (mods.includes("stop")) e.stopPropagation();
       runStmt(code, locals, e, el);
     };
-    (mods.includes("outside") ? document : target).addEventListener(ev, h, { once: mods.includes("once") });
+    const eventTarget = mods.includes("outside") ? document : target;
+    eventTarget.addEventListener(ev, h, { once: mods.includes("once") });
+    if (eventTarget !== el) (el.__cleanups ||= []).push(() => eventTarget.removeEventListener(ev, h));
   }
   function bindEl(el, list, locals) {
     if (el.__bound) return; el.__bound = true;
     if (el.nodeType !== 1) return;
-    initData(el, locals);
     // <template x-for / x-if>: the template's content stands in for it
     if (el.tagName === "TEMPLATE") {
       const dir = ["x-for", "v-for", "each", "x-if", "v-if"].find((d) => el.hasAttribute(d));
@@ -277,21 +317,23 @@
       let inner = kids.length === 1 ? kids[0] : document.createElement("div");
       if (kids.length !== 1) { inner.style.display = "contents"; kids.forEach((k) => inner.appendChild(k)); }
       inner = document.importNode(inner, true);
-      for (const a of [...el.attributes]) if (a.name !== "key" && a.name !== ":key") inner.setAttribute(a.name, a.value);
+      for (const a of [...el.attributes]) inner.setAttribute(a.name, a.value);
       if (el.parentNode) el.replaceWith(inner);
       el = inner; el.__bound = true;
     }
     for (const d of ["x-for", "v-for"]) if (el.hasAttribute(d)) { el.setAttribute("each", el.getAttribute(d)); el.removeAttribute(d); }
-    el.removeAttribute(":key"); el.removeAttribute("x-cloak"); el.removeAttribute("v-cloak");
+    const keyExpr = el.getAttribute(":key") || el.getAttribute("key");
+    el.removeAttribute(":key"); el.removeAttribute("key"); el.removeAttribute("x-cloak"); el.removeAttribute("v-cloak");
     // each: turn element into a repeated template
     if (el.hasAttribute("each")) {
       const m = el.getAttribute("each").match(/^\s*\(?\s*([\w$]+)\s*(?:,\s*([\w$]+))?\s*\)?\s+(?:in|of)\s+([\s\S]+)$/);
       const anchor = document.createComment("each");
       el.parentNode.insertBefore(anchor, el);
       el.remove(); el.removeAttribute("each"); el.__bound = false;
-      if (m) list.push({ type: "each", anchor, tpl: el, item: m[1], idx: m[2] || "i", expr: m[3], clones: [], locals });
+      if (m) list.push({ type: "each", anchor, tpl: el, item: m[1], idx: m[2] || "i", expr: m[3], keyExpr, clones: [], locals });
       return;
     }
+    locals = initData(el, locals);
     const comp = el.tagName.startsWith("X-");
     if (!("__cls0" in el)) el.__cls0 = el.getAttribute("class") || "";
     for (const a of [...el.attributes]) {
@@ -314,7 +356,7 @@
     }
     if (el.hasAttribute("on")) bindOn(el, locals);
     // children (skip component-owned content)
-    if (el.__owns) return;
+    if (el.__owns || customElements.get(el.localName)?.owns) { el.__owns = true; return; }
     for (const c of [...el.childNodes]) {
       if (c.nodeType === 3) { if (!c.__bound && c.textContent.includes("{{")) (c.__bound = true), list.push({ type: "text", node: c, tpl: c.textContent, locals }); }
       else if (c.nodeType === 1 && c.tagName !== "SCRIPT" && c.tagName !== "STYLE") bindEl(c, list, locals);
@@ -363,23 +405,43 @@
   }
   function renderEach(b) {
     let list = evaluate(b.expr, b.locals);
-    if (typeof list === "number") list = H.range(list);
+    if (typeof list === "number") list = H.range(Math.min(1000, list));
     if (!list || typeof list !== "object") list = [];
-    const arr = Array.isArray(list) ? list : Object.entries(list).map(([k, v]) => ({ key: k, value: v }));
+    const arr = (Array.isArray(list) ? list : Object.entries(list).map(([key, value]) => ({ key, value }))).slice(0, 1000);
+    const used = new Set();
+    const entries = arr.map((item, i) => {
+      const locals = Object.assign(Object.create(b.locals || null), { [b.item]: item, [b.idx]: i });
+      const key = b.keyExpr ? evaluate(b.keyExpr, locals) : item && typeof item === "object" && item.id !== undefined ? item.id : i;
+      if (!["string", "number"].includes(typeof key) || used.has(key)) throw new Error("Repeated items need unique string/number keys");
+      used.add(key); return { key, item, i, locals };
+    });
+    const old = new Map(b.clones.map((c) => [c.key, c]));
+    const next = [];
     let after = b.anchor;
-    arr.forEach((item, i) => {
-      let c = b.clones[i];
+    const focus = document.activeElement;
+    const selection = focus && "selectionStart" in focus ? [focus.selectionStart, focus.selectionEnd] : null;
+    for (const { key, item, i, locals } of entries) {
+      let c = old.get(key); old.delete(key);
       if (!c) {
         const node = b.tpl.cloneNode(true);
-        const locals = Object.assign(Object.create(b.locals || null), { [b.item]: item, [b.idx]: i });
-        c = b.clones[i] = { node, locals, list: [] };
-        bindEl(node, c.list, locals); c.list.forEach(applyBinding); // bind while detached: components init with final attrs
-        after.parentNode.insertBefore(node, after.nextSibling);
-        enter(node, i); typeset(node);
-      } else { c.locals[b.item] = item; c.locals[b.idx] = i; c.list.forEach(applyBinding); }
-      after = c.node;
-    });
-    b.clones.splice(arr.length).forEach((c) => c.node.remove());
+        c = { key, node, locals, list: [] };
+        bindEl(node, c.list, locals); c.list.forEach(applyBinding);
+        after.parentNode.insertBefore(node, after.nextSibling); enter(node, i); typeset(node);
+      } else {
+        c.locals[b.item] = item; c.locals[b.idx] = i; c.list.forEach(applyBinding);
+        if (after.nextSibling !== c.node) {
+          const parent = after.parentNode;
+          if (parent.moveBefore && c.node.isConnected) parent.moveBefore(c.node, after.nextSibling);
+          else parent.insertBefore(c.node, after.nextSibling);
+        }
+      }
+      next.push(c); after = c.node;
+    }
+    old.forEach((c) => c.node.remove()); b.clones = next;
+    if (focus?.isConnected && document.activeElement !== focus && next.some((c) => c.node.contains(focus))) {
+      focus.focus({ preventScroll: true });
+      if (selection && focus.setSelectionRange) try { focus.setSelectionRange(...selection); } catch {}
+    }
   }
   let queued = false;
   function schedule() { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; render(); }); }
@@ -398,6 +460,18 @@
   }
   function render() {
     toInputs();
+    root?.querySelectorAll("[name]").forEach((el) => {
+      const locals = el.__locals, name = el.getAttribute("name");
+      if (!locals || !(name in locals) || el.__model || el === document.activeElement) return;
+      const v = locals[name];
+      if (el.type === "checkbox") el.checked = Array.isArray(v) ? v.includes(el.value) : !!v;
+      else if (el.type === "radio") el.checked = String(el.value) === String(v);
+      else if ("value" in el && JSON.stringify(el.value) !== JSON.stringify(v)) try { el.value = v; } catch {}
+    });
+    for (let i = rootBindings.length - 1; i >= 0; i--) {
+      const b = rootBindings[i], node = b.anchor || b.el || b.h || b.node;
+      if (node && !node.isConnected) rootBindings.splice(i, 1);
+    }
     rootBindings.forEach(applyBinding);
     if (root) root.querySelectorAll("[data-reactive]").forEach((el) => el.refresh && el.refresh());
   }
@@ -460,6 +534,8 @@
       const pre = r.mode === "all" ? "" : `body[data-o=${r.mode}] `;
       const sel = r.sels.map((s) => pre + scopeSel(s)).join(","); const p = r.props; let d = "";
       if (p.size) { const n = SIZE[p.size] ?? (parseFloat(p.size) || 1); d += `--s:${(0.55 + n * 0.45).toFixed(2)};--g:${n};flex-grow:${n};font-size:${(0.8 + n * 0.2).toFixed(2)}em;`; }
+      if (p.weight) { const n = Number(p.weight); if (n > 0 && Number.isFinite(n)) d += `--g:${n};flex-grow:${n};`; }
+      if (p.type) d += `font-size:${{ caption: ".85em", body: "1em", title: "1.35em", display: "2em" }[p.type] || "1em"};`;
       if (p.orient === "horizontal") d += "--dir:row;flex-direction:row;flex-wrap:wrap;align-items:center;";
       if (p.orient === "vertical") d += "--dir:column;flex-direction:column;align-items:stretch;";
       if (p.place === "top") d += "order:-2;"; if (p.place === "bottom") d += "order:99;"; if (p.place === "center") d += "align-self:center;margin-inline:auto;text-align:center;";
@@ -569,8 +645,8 @@
       Returns the node to insert (an anchor comment when the node itself repeats with each=). */
   function prepare(el) {
     const list = []; let node = el;
-    if (el.nodeType === 1 && !el.parentNode && (el.tagName === "TEMPLATE" || ["each", "x-for", "v-for"].some((d) => el.hasAttribute(d)))) { const f = document.createDocumentFragment(); f.appendChild(el); bindEl(el, list, null); node = f.firstChild; }
-    else bindEl(el, list, null);
+    if (el.nodeType === 1 && !el.parentNode && (el.tagName === "TEMPLATE" || ["each", "x-for", "v-for"].some((d) => el.hasAttribute(d)))) { const f = document.createDocumentFragment(); f.appendChild(el); bindEl(el, list, el.__locals || el.parentElement?.__locals || null); node = f.firstChild; }
+    else bindEl(el, list, el.__locals || el.parentElement?.__locals || null);
     list.forEach((b) => b.type !== "each" && applyBinding(b));
     rootBindings.push(...list);
     return node;
@@ -586,7 +662,7 @@
         const t = s.textContent.replace(/\{\{[^}]*\}?\}?/g, (m) => (done ? m : ""));
         if (!l) { l = live.__kids[i] = document.createTextNode(t); live.appendChild(l); }
         else if (!l.__done && l.textContent !== t) l.textContent = t;
-        if (done && !l.__done) { l.__done = l.__bound = true; if (t.includes("{{")) rootBindings.push({ type: "text", node: l, tpl: t, locals: null }); }
+        if (done && !l.__done) { l.__done = l.__bound = true; if (t.includes("{{")) rootBindings.push({ type: "text", node: l, tpl: t, locals: live.__locals || null }); }
         return;
       }
       if (l && l.__done) return;
@@ -595,6 +671,7 @@
       if (!open) {
         if (l && l.__shell) { sync(s, l, stack, depth + 1, true); l.__done = true; prepare(l); settle(l); return; }
         const full = document.importNode(s, true);
+        full.__locals = live.__locals || null;
         const node = prepare(full);
         if (l) live.replaceChild(node, l); else live.appendChild(node);
         live.__kids[i] = node; node.__done = true;
@@ -603,7 +680,7 @@
       }
       if (s.tagName === "TEMPLATE" || ["each", "x-for", "v-for"].some((d) => s.hasAttribute(d))) { if (!l) { l = live.__kids[i] = skeleton("each"); live.appendChild(l); } return; }
       if (isContainer(tag)) {
-        if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__shell = true; initData(l, null); live.appendChild(l); enter(l); if (l.parentElement === root) placeUnit(l); }
+        if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__shell = true; initData(l, live.__locals || null); live.appendChild(l); enter(l); if (l.parentElement === root) placeUnit(l); }
         sync(s, l, stack, depth + 1, false);
       } else if (TEXTY.has(tag)) {
         if (!l) { l = live.__kids[i] = document.importNode(s, false); l.__texty = true; live.appendChild(l); enter(l); }
@@ -668,7 +745,7 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   const on = (sel, ev, fn) => { (typeof sel === "string" ? $$(sel) : [sel]).forEach((el) => el && el.addEventListener(ev, (e) => { const r = fn(e, el); schedule(); return r; })); };
   function form(scopeEl) {
     const o = {}; const r = scopeEl ? (typeof scopeEl === "string" ? $(scopeEl) : scopeEl) : root;
-    (r || document).querySelectorAll("[name]").forEach((el) => { const n = el.getAttribute("name"); if (!(n in o)) o[n] = readInput(n); });
+    (r || document).querySelectorAll("[name]").forEach((el) => { const n = el.getAttribute("name"); if (!(n in o)) o[n] = readInput(n, r || root); });
     return o;
   }
   const notify = (t) => { const d = document.createElement("div"); d.className = "toast"; d.textContent = String(t); document.body.appendChild(d); setTimeout(() => d.classList.add("out"), 1900); setTimeout(() => d.remove(), 2300); };
@@ -714,23 +791,38 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   const every = (ms, fn) => setInterval(() => { fn(); schedule(); }, ms);
   const after = (ms, fn) => setTimeout(() => { fn(); schedule(); }, ms);
   const state = (k, init) => { if (!(k in store)) store[k] = init; return { get: () => store[k], set: (v) => { store[k] = v; schedule(); } }; };
-  const upload = (file, dir) => new Promise((res) => { const r = new FileReader(); r.onload = () => call("upload", { name: file.name, type: file.type, data: String(r.result).split(",")[1], dir }).then(res); r.readAsDataURL(file); });
+  const upload = (file, dir) => new Promise((res) => { const r = new FileReader(); r.onload = () => call("upload", { name: file.name, mime: file.type, data: String(r.result).split(",")[1], dir }).then(res); r.readAsDataURL(file); });
   Object.assign(H, { sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, notify, form, every, after, open });
   Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, notify, state, every, after, open, S, render: schedule });
-  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, backend, backendStream, upload, standalone, H });
+  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, stateFor: (el) => scope(el.__locals || el.parentElement?.__locals), initState: (el, attrs) => {
+    const locals = el.__locals || el.parentElement?.__locals, target = locals?.[OWNER] || store;
+    for (const a of attrs) if (!(a.name in target) && !["hidden", "id", "class", "style"].includes(a.name)) {
+      let value; try { value = JSON.parse(a.value); } catch { value = a.value; }
+      if (target === store) setStore(a.name, value); else target[a.name] = value;
+    }
+    schedule();
+  }, call, backend, backendStream, upload, standalone, H });
 
   window.addEventListener("message", (e) => {
+    if (e.source !== parent || (!standalone && e.origin !== ORIGIN)) return;
     const m = e.data || {};
     if (m.type === "reply" && pending[m.id]) { pending[m.id](m.value); delete pending[m.id]; }
     else if (m.type === "backend-chunk" && streams[m.id]) { try { streams[m.id](String(m.chunk || ""), m); } catch (err) { reportErr(err); } schedule(); }
     else if (m.type === "backend-data" && streams[m.id]) { try { streams[m.id](m.data, m); } catch (err) { reportErr(err); } schedule(); }
-    else if (m.type === "theme") { for (const k in m.vars) document.documentElement.style.setProperty(k, m.vars[k]); document.body.dataset.theme = m.theme; root && root.querySelectorAll("[data-themed]").forEach((x) => x.refresh ? x.refresh(true) : x.render && x.render()); }
+    else if (m.type === "theme") { for (const k in m.vars) document.documentElement.style.setProperty(k, m.vars[k]); document.body.dataset.theme = m.theme; document.documentElement.dataset.theme = m.theme; root && root.querySelectorAll("[data-themed]").forEach((x) => x.refresh ? x.refresh(true) : x.render && x.render()); }
     else if (m.type === "source") feed(m.source, m.done);
   });
   window.addEventListener("error", (e) => reportErr(e.message));
   root = document.getElementById("root");
   // a named control and a state key with the same name are one value: the control writes it, code writes the control
-  const fromInput = (e) => { const t = e.target, n = t && t.getAttribute && t.getAttribute("name"); if (n && n in store && !t.__model) { const v = readInput(n); if (JSON.stringify(store[n]) !== JSON.stringify(v)) store[n] = v; } schedule(); };
+  const fromInput = (e) => {
+    const t = e.target, n = t?.getAttribute?.("name"), locals = t?.__locals;
+    if (n && !t.__model) {
+      if (locals && n in locals) { const state = scope(locals); const v = readInput(n, locals[SCOPE]); if (JSON.stringify(state[n]) !== JSON.stringify(v)) state[n] = v; }
+      else if (!locals && n in store) { const v = readInput(n); if (JSON.stringify(store[n]) !== JSON.stringify(v)) store[n] = v; }
+    }
+    schedule();
+  };
   root.addEventListener("input", fromInput); root.addEventListener("change", fromInput);
   document.addEventListener("tick", schedule);
 
@@ -743,7 +835,7 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
     for (const [n, c] of p.data) if (!(n in dataVars)) { try { dataVars[n] = JSON.parse(c); } catch { dataVars[n] = c.trim(); } if (!(n in window)) window[n] = dataVars[n]; }
     const tpl = document.createElement("template"); tpl.innerHTML = p.html;
     sync(tpl.content, root, done ? [] : openStack(p.html), 0, !!done);
-    if (done) { finished = true; startLogic(p.js, p.py); }
+    if (done) { finished = true; const issues = window.BlocksSchema?.validate(source || "") || []; if (issues.length) post("issues", { issues }); startLogic(p.js, p.py); }
     schedule();
   }
   B.feed = feed;
@@ -751,6 +843,14 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
   orient();
   const ro = new ResizeObserver(() => post("height", { h: Math.ceil(Math.max(root.scrollHeight + 8, document.body.scrollHeight)) }));
   ro.observe(document.body); ro.observe(root);
+
+  new MutationObserver((records) => {
+    const removed = records.flatMap((r) => [...r.removedNodes]);
+    queueMicrotask(() => {
+      const dispose = (node) => { if (node.isConnected) return; node.__cleanups?.splice(0).forEach((f) => f()); node.childNodes?.forEach(dispose); };
+      removed.forEach(dispose);
+    });
+  }).observe(root, { childList: true, subtree: true });
 
   B.connect = () => {
     const tpl = document.querySelector("template[data-blocks]");

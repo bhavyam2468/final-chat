@@ -5,40 +5,37 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { launch } from "./chromium.mjs";
 import { cases } from "./blocks-cases.mjs";
+import { regressions } from "./blocks-regressions.mjs";
+cases.push(...regressions);
 
 const PUB = path.resolve(import.meta.dirname, "../public");
 const MIME = { ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".woff": "font/woff", ".svg": "image/svg+xml", ".json": "application/json", ".html": "text/html" };
 const srv = http.createServer((req, res) => {
   const u = decodeURIComponent(new URL(req.url, "http://x").pathname);
   if (u === "/api/tikz") { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>' })); }); return; }
-  const f = path.join(PUB, u);
-  if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.statusCode = 404; return res.end(); }
+  const base = u.startsWith("/vendor/elk/") ? path.resolve("node_modules/elkjs/lib") : PUB;
+  const f = path.join(base, u.startsWith("/vendor/elk/") ? u.slice("/vendor/elk/".length) : u);
+  if (!f.startsWith(base + path.sep) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.statusCode = 404; return res.end(); }
   res.setHeader("content-type", (MIME[path.extname(f)] || "application/octet-stream") + (/\.(js|css|html)$/.test(f) ? "; charset=utf-8" : ""));
+  res.setHeader("access-control-allow-origin", "*");
   fs.createReadStream(f).pipe(res);
 });
 await new Promise((r) => srv.listen(0, "127.0.0.1", r));
 const ORIGIN = `http://127.0.0.1:${srv.address().port}`;
 
-async function launch() {
-  const req = (await import("node:module")).createRequire(import.meta.url);
-  let puppeteer; try { puppeteer = req("puppeteer-core"); } catch { puppeteer = req("/tmp/shot/node_modules/puppeteer-core"); }
-  let exe = process.env.CHROME, args = [];
-  if (!exe) { process.env.AWS_EXECUTION_ENV ||= "AWS_Lambda_nodejs22.x"; const c = (await import("/tmp/shot/node_modules/@sparticuz/chromium/build/esm/index.js")).default; exe = await c.executablePath(); args = c.args; }
-  return puppeteer.launch({ executablePath: exe, args, headless: true, defaultViewport: { width: 900, height: 700 } });
-}
-
 const VARS = "--bg:#1f1e1c;--fg:#e8e4dc;--muted:#9a958c;--faint:#6b675f;--line:rgba(255,255,255,.1);--surface:rgba(255,255,255,.04);--bubble:#2b2a27;--float:#2b2a27;--accent:#d97757;--success:#7c9a6d;--danger:#c0645a;--r:12px";
-const page = (src, fill) => `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="${ORIGIN}/blocks/runtime.css"><style>:root{${VARS}}html{background:var(--bg)}</style></head><body class="${fill ? "fill" : ""}" data-theme="dark"><div id="root"></div><script>window.BLOCKS_ORIGIN=${JSON.stringify(ORIGIN)};window.__errs=[];addEventListener("error",e=>__errs.push(String(e.message)));window.parent.postMessage=function(m){if(m&&m.type==="error")__errs.push(m.text);if(m&&m.type==="lm")window.__lm=m;if(m&&m.type==="issues")window.__issues=m.issues}</script><script src="${ORIGIN}/blocks/runtime.js"></script><script src="${ORIGIN}/blocks/elements.js"></script><script>(function(){const src=${JSON.stringify(src).replace(/</g, "\\u003c")};for(let i=37;i<src.length;i+=37)Blocks.feed(src.slice(0,i),false);Blocks.feed(src,true)})()</script></body></html>`;
+const page = (src, fill) => `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="${ORIGIN}/blocks/runtime.css"><style>:root{${VARS}}html{background:var(--bg)}</style></head><body class="${fill ? "fill" : ""}" data-theme="dark"><div id="root"></div><script>window.BLOCKS_ORIGIN=${JSON.stringify(ORIGIN)};window.__errs=[];addEventListener("error",e=>__errs.push(String(e.message)));window.parent.postMessage=function(m){if(m&&m.type==="error")__errs.push(m.text);if(m&&m.type==="lm")window.__lm=m;if(m&&m.type==="issues")window.__issues=m.issues}</script><script src="${ORIGIN}/blocks/flow-core.js"></script><script src="${ORIGIN}/blocks/schema.js"></script><script src="${ORIGIN}/blocks/runtime.js"></script><script src="${ORIGIN}/blocks/elements.js"></script><script src="${ORIGIN}/blocks/flowchart.js"></script><script>(function(){const src=${JSON.stringify(src).replace(/</g, "\\u003c")};for(let i=37;i<src.length;i+=37)Blocks.feed(src.slice(0,i),false);Blocks.feed(src,true)})()</script></body></html>`;
 
 const filter = process.argv[2] || "";
 if (!cases.some((c) => c.name.includes(filter))) { console.log(`No case name contains "${filter}" (plain substring match).`); process.exit(2); }
-const b = await launch();
+const b = await launch().catch((error) => { srv.close(); throw error; });
 let pass = 0, fail = 0; const fails = [];
 for (const c of cases.filter((c) => c.name.includes(filter))) {
   for (const fill of c.modes || [false, true]) {
     const p = await b.newPage();
-    if (c.width) await p.setViewport({ width: c.width, height: 700 });
+    await p.setViewport({ width: c.width || 900, height: 700 });
     const tag = `${c.name} [${fill ? "canvas" : "inline"}]`;
     try {
       await p.goto(`${ORIGIN}/blocks/runtime.css`); // same-origin blank-ish page so setContent resolves relative fetches
@@ -63,7 +60,7 @@ for (const c of cases.filter((c) => c.name.includes(filter))) {
       const junk = /\{\{|\[object Object\]|undefined|NaN/.exec(text);
       if (r === true && !errs.length && !(junk && !c.allowJunk)) { pass++; }
       else { fail++; fails.push(`${tag}: ${r !== true ? "expect → " + JSON.stringify(r) : ""}${errs.length ? " errors → " + errs.join(" | ") : ""}${junk && !c.allowJunk ? " junk → " + JSON.stringify(junk[0]) : ""}`); }
-      if (process.env.SHOT) await p.screenshot({ path: `/tmp/shot/${c.name.replace(/\W+/g, "_")}_${fill ? "c" : "i"}.png`, fullPage: true });
+      if (process.env.SHOT) { fs.mkdirSync(process.env.SHOT, {recursive:true}); await p.screenshot({ path: `${process.env.SHOT}/${c.name.replace(/\W+/g, "_")}_${fill ? "c" : "i"}.png`, fullPage: true }); }
     } catch (e) { fail++; fails.push(`${tag}: threw ${e.message.split("\n")[0]}`); }
     await p.close();
   }

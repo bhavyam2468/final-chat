@@ -64,6 +64,8 @@ export async function POST(req: NextRequest) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
+  if (!body || typeof body !== "object" || Array.isArray(body)) return Response.json({ ok: false, error: "Expected an object" }, { status: 400 });
+
   const backend = String(body.backend || "").toLowerCase();
   if (!["python", "bash", "process", "resource"].includes(backend)) {
     return Response.json({ ok: false, error: "backend must be python, bash, process, or resource" }, { status: 400 });
@@ -79,9 +81,15 @@ export async function POST(req: NextRequest) {
   const settings = await getSettings();
   // Blocks run from a user-visible response, but never inherit host terminal access. Keep cwd inside
   // the configured workspace even when a model puts an absolute path in the request.
-  const cwd = body.cwd ? resolvePath(String(body.cwd), "sandbox") : WS;
+  let cwd: string;
+  try { cwd = body.cwd ? resolvePath(String(body.cwd), "sandbox") : WS; }
+  catch { return Response.json({ ok: false, error: "Invalid workspace path" }, { status: 400 }); }
   const timeout = Math.min(300_000, Math.max(2_000, Number(body.timeout) || (backend === "process" ? 120_000 : 60_000)));
   let closed = false;
+  const cancel = new AbortController();
+  const abort = () => cancel.abort();
+  if (req.signal.aborted) abort();
+  else req.signal.addEventListener("abort", abort, { once: true });
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const encoder = new TextEncoder();
@@ -89,8 +97,8 @@ export async function POST(req: NextRequest) {
         if (closed) return;
         try { controller.enqueue(encoder.encode(jsonLine(event))); } catch { closed = true; }
       };
-      const onData = (chunk: string) => send({ t: "chunk", chunk: String(chunk).slice(0, 32_000) });
-      const signal = req.signal;
+      const onData = (chunk: string) => { for (let i = 0; i < chunk.length; i += 32_000) send({ t: "chunk", chunk: chunk.slice(i, i + 32_000) }); };
+      const signal = cancel.signal;
       const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
       (async () => {
         send({ t: "start", backend, ...(attachedProcess ? { name: String(body.name) } : { cwd: cwd.startsWith(WS) ? cwd.slice(WS.length).replace(/^\//, "") || "." : "." }) });
@@ -120,9 +128,9 @@ export async function POST(req: NextRequest) {
       })().catch((error) => {
         send({ t: "done", ok: false, code: 1, out: String(error instanceof Error ? error.message : error) });
         if (!closed) { closed = true; try { controller.close(); } catch {} }
-      });
+      }).finally(() => req.signal.removeEventListener("abort", abort));
     },
-    cancel() { closed = true; },
+    cancel() { closed = true; cancel.abort(); req.signal.removeEventListener("abort", abort); },
   });
   return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
 }

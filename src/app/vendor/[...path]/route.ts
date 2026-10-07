@@ -4,6 +4,7 @@ import { mimeOf } from "@/lib/workspace";
 
 /** Serves whitelisted browser libraries from node_modules so BlocksUI works offline (CDN is only a fallback). */
 const ROOTS: Record<string, string> = {
+  elk: "node_modules/elkjs/lib",
   katex: "node_modules/katex/dist",
   tikzjax: "node_modules/node-tikzjax/css",
   mermaid: "node_modules/mermaid/dist",

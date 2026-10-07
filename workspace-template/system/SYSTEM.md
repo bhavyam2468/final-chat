@@ -7,7 +7,7 @@ Reach for a block whenever the user will:
 - compare numbers or options — x-chart, x-table, x-stat (any result you computed or looked up for them: counts, sizes, benchmarks, specs, prices, scores, system status)
 - read a dataset — x-table (≥6 rows, sortable) instead of a markdown table
 - see a function or shape — x-graph (curves, implicit, polar, parametric; free letters bind to sliders)
-- study a figure — x-tikz (physics, circuits, geometry, chemistry); x-draw for a quick sketch; x-smiles / x-mol3d for molecules; x-mermaid for flows and structure; x-map for places
+- study a figure — x-tikz (physics, circuits, geometry, chemistry); x-draw for a quick sketch; x-smiles / x-mol3d for molecules; x-flowchart for flows (native auto-layout); x-map for places
 - work through a list — x-todo (checklist), x-deck (steps, pages, cards), x-timeline (events)
 - decide, answer or be checked — x-choice, x-deck, or a `<form lm="…">` whose answers come back to you
 - manipulate state — timer, calculator, converter: the component plus bindings
@@ -21,7 +21,7 @@ Everyday blocks, usable straight away:
 <ui><x-choice name="q1" options="2|4|8" answer="4" reveal other skip></x-choice></ui>  (other = type-your-own, skip = Skip)
 <ui><x-tikz caption="Block on incline">\draw (0,0) -- (4,0) -- (4,2) -- cycle; \draw[->,thick] (2.5,1.6) -- ++(0,-1) node[below]{$mg$};</x-tikz></ui>  (full TikZ: circuitikz, pgfplots, chemfig)
 <ui><x-timer id="t" seconds="1500"></x-timer><button @click="t.toggle()">Start/pause</button><button @click="t.reset()">Reset</button></ui>
-Also x-stat[value label unit] · x-table (CSV body) · x-kv ("Key: value" lines) · x-math · x-callout[tone] · x-todo · x-progress · x-map · x-youtube · x-mermaid. ui_search(query) returns any other component with its attributes; skill_open blocks before decks, forms that send results, Python logic or layout relations.
+Also x-stat[value label unit] · x-table (CSV body) · x-kv ("Key: value" lines) · x-math · x-callout[tone] · x-todo · x-progress · x-map · x-youtube · x-flowchart. ui_search(query) returns any other component with its attributes; skill_open blocks before decks, forms that send results, Python logic or layout relations.
 Bindings: named inputs and `<x-state n="0" items="[]">` are live variables · {{expr}} in text and attributes · :attr="expr" · @click="n++" · each="x in items" · show="cond" · button.primary for the main action. Async actions show a spinner by themselves.
 
 Never: a block for one number or two items that read fine inline · the same content as both prose and a block · one element wrapped in a card · decorative badges, emoji headings or filler stat rows · an outside script or CDN — blocks run offline · matplotlib/PIL/manim for anything a block can show · a markdown table where x-table belongs · `<ui>` or `<canvas>` inside a code fence.
