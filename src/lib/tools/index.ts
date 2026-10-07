@@ -25,6 +25,7 @@ import { ensureProject, projectSlug } from "../projects";
 import { adb, adbShot, phoneOff } from "../phone";
 import { createHash } from "crypto";
 import { saveWorkflow, startInChat } from "../workflows";
+import { readTemplate, saveTemplate, searchTemplates, varMismatch } from "../templates";
 import os from "os";
 import type { ModeId } from "../modes";
 
@@ -84,6 +85,9 @@ export function toolDefs(st: Settings, packs: Pack[]): ToolDef[] {
     T("diff_since", "Files changed in this chat's folder (and the linked project) in the last N hours", { hours: n("default 24") }),
     T("canvas_open", "Open a file, web page or YouTube URL in a canvas. It uses the free sidebar automatically and floats if occupied; set dock=false to force floating or dock=true to request the sidebar.", { target: s("path or URL"), title: s(), dock: b("request sidebar; defaults to automatic") }, ["target"]),
     T("ui_search", "Find BlocksUI components. Do not invent a tag; if it is not in the system prompt, search here", { query: s() }, ["query"]),
+    T("template_search", "The template library: verified circuits (circuitikz drawings that are known to compile), reusable block shells (quiz, dashboard, flashcards, poll, checklist, explore-function) and document structures. Search here before drawing a circuit or hand-writing one of those shells", { query: s("what it is for, e.g. 'half adder', 'quiz with scoring', 'lab report'"), kind: s("circuit | block | doc") }, ["query"]),
+    T("template_get", "Read a template filled in: the source with your values, the prose around it, and a check that says whether it is sound (a circuit is rendered before you get it). Use the returned source as-is instead of rewriting it", { name: s("template id from template_search"), vars: { type: "object", description: "values for its {{placeholders}}; anything left out falls back to the template's example and is reported" } }, ["name"]),
+    T("template_save", "Save a template for later: a circuit or block or doc structure that has been verified once and should not be reinvented. It lands in the user's own shelf (templates/<name>/) and is searchable immediately", { name: s("lowercase-with-dashes"), kind: { type: "string", enum: ["circuit", "block", "doc"] }, title: s(), description: s("one line — what shows in a search"), tags: s("comma separated"), vars: arr({ type: "object", properties: { name: s("the placeholder in the body"), label: s(), example: s("shown when no value is passed") } }), body: s("markdown: the prose, plus the artefact in ONE fenced block (```tex for a circuit, ```html for a block)"), files: arr({ type: "object", properties: { path: s("e.g. bom.csv"), content: s() } }, "extra files next to it"), overwrite: b() }, ["name", "kind", "description", "body"]),
     T("start_workflow", "Run a workflow from workflows/<name>/ — the app performs its steps in the background and the report arrives in this chat as its own message. Returns at once: do not wait, and do not do the same work yourself", { name: s("workflow name, e.g. deep-research"), input: s("the question or input for this run") }, ["name"]),
     T("workflow_save", "Create or update a workflow: a named procedure the app can perform again. search/read steps do the fetching, the last agent step thinks and writes the report", { name: s("one word, e.g. deep-research"), title: s(), description: s("one line, shown in the workflow list"), inputs: arr({ type: "object", properties: { name: s("one word"), label: s("what the user is asked for when it starts"), optional: b() } }, "usually one: the question the run is about"), steps: arr({ type: "object", properties: { kind: { type: "string", enum: ["search", "read", "agent"] }, title: s("what this step is called in the window"), opts: { type: "object", properties: { query: s("search: one or more queries, ; separated"), limit: n("search: results to keep / read: pages to open"), parallel: n("read: pages fetched at once"), expect: n("agent: tool calls to expect, for the progress bar") } } } }, "in order; the agent step is last"), body: s("markdown brief: what the run is for, how the answer should read, what to cite"), overwrite: b() }, ["name", "steps", "body"]),
   ];
@@ -615,6 +619,37 @@ They can also press Connect in Settings → MCP.` : "";
           result: `Started "${run.title}" (run ${run.id})${first ? ` on: ${first}` : ""}. It works in the background — the bar is in its window and the report will appear in this chat as its own message. Tell the user it is running; do not do this work yourself${" "}and do not wait for it.`,
           meta: { run: run.id, workflow: run.name, title: run.title },
         };
+      }
+      case "template_search": {
+        const rows = await searchTemplates(String(a.query || ""), a.kind ? String(a.kind) : undefined, 8);
+        if (!rows.length) return { ok: true, result: `Nothing in the library matches "${String(a.query || "")}" — write it yourself, and if the result is worth keeping, template_save it so the next time is a lookup.` };
+        return {
+          ok: true,
+          result: rows.map((t) => `templates/${t.id} — ${t.title} (${t.kind})${t.source === "user" ? " · yours" : ""}\n  ${t.description}${t.vars.length ? `\n  vars: ${t.vars.map((v) => v.name).join(", ")}` : ""}`).join("\n") +
+            `\nRead one with template_get(name, vars). ${rows.some((t) => t.kind === "circuit") ? "A circuit comes back rendered — if it compiles for you it compiles for the user." : ""}`,
+          meta: { templates: rows.map((t) => ({ id: t.id, kind: t.kind })) },
+        };
+      }
+      case "template_get": {
+        const t = await readTemplate(String(a.name || ""), (a.vars && typeof a.vars === "object" ? Object.fromEntries(Object.entries(a.vars as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : {}));
+        const head = [`templates/${t.template.id} — ${t.template.title} (${t.template.kind}, ${t.template.source === "user" ? "yours" : "shipped"})`, t.template.description];
+        const gate = t.check.ok
+          ? [t.template.kind === "circuit" ? "Checked: the drawing rendered through the app's TikZ engine, so this source compiles. Use it as it is." : t.template.kind === "block" ? "Checked: the markup passed the app's block checker. Use it as it is." : "Structure only — the prose is yours to write."]
+          : [`NOT usable as it is — ${t.check.error}. Fix it before showing it, or template_save a corrected version.`];
+        const guessed = t.usedExample.length ? [`Filled from the template's examples: ${t.usedExample.join(", ")}. Replace anything that should be the user's own words or values.`] : [];
+        const missing = t.missing.length ? [`No value and no example for: ${t.missing.join(", ")} — they are still {{placeholders}}.`] : [];
+        const body = t.template.kind === "doc" ? t.body : `${t.template.kind === "circuit" ? "Source (put it in an <x-tikz> block, or open it in a canvas):" : "Source (a Blocks document — wrap it in <ui>…</ui> to send it):"}\n\n${t.source}\n\nAround it:\n${t.body}`;
+        return { ok: true, result: cut([...head, ...gate, ...guessed, ...missing, "", body, ...(t.files.length ? [`\nFiles: ${t.files.map((f) => f.path).join(", ")}`] : [])].join("\n"), 12_000), meta: { template: t.template.id, kind: t.template.kind, check: t.check.ok } };
+      }
+      case "template_save": {
+        const def = await saveTemplate({
+          name: String(a.name || ""), kind: String(a.kind || ""), title: a.title, description: a.description,
+          tags: a.tags, vars: Array.isArray(a.vars) ? a.vars : [], body: String(a.body || ""),
+          files: Array.isArray(a.files) ? a.files : [], overwrite: !!a.overwrite,
+        });
+        const mismatch = varMismatch(def);
+        const notes = [mismatch.unused.length ? `declared but never used in the body: ${mismatch.unused.join(", ")}` : "", mismatch.undeclared.length ? `used in the body but not declared: ${mismatch.undeclared.join(", ")}` : ""].filter(Boolean);
+        return { ok: true, result: `Saved templates/${def.name}/ (${def.kind}). It is searchable now — template_search finds it like a shipped one.${notes.length ? `\nOne thing to tidy: ${notes.join("; ")}.` : ""}`, meta: { template: def.name, kind: def.kind } };
       }
       case "workflow_save": {
         const def = await saveWorkflow({

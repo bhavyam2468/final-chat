@@ -212,6 +212,19 @@ function scenario(messages) {
     return { text: `CSS anchor positioning is specified and shipping; the practical changes are in how fallbacks and overflow are handled [1](${list[0]}).\n\n## What changed\n\nThe position-try fallback syntax replaced the older \`position-fallback\` proposal, and \`anchor-scope\` limits which anchors a query can see [2](${list[1] || list[0]}). Browsers that shipped early still accept the older spelling, so feature detection is worth keeping [3](${list[2] || list[0]}).\n\n## Where the sources disagree\n\nOne source calls the fallback ordering deterministic, another describes it as implementation-defined for overlapping candidates; the specification is the tiebreaker [1](${list[0]}), [2](${list[1] || list[0]}).\n\n## Not known\n\nNone of the pages states a date for the last specification change, so the schedule is not settled here.` };
   }
   // the workflows pair: save a definition, then run one — enough to exercise both tools end to end
+  if (/^tmpl:/.test(q)) {
+    // The template library through the tool path the model actually uses: search, read (which verifies),
+    // then quote the check line back. The chat e2e asserts on that summary.
+    const want = (q.split(":")[1] || "").trim() || "half adder";
+    const seen = messages.filter((m) => m.role === "tool").map((m) => String(typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+    const found = seen.find((t) => /templates\//.test(t));
+    if (!found) return { text: `Looking that up in the template library.`, call: { name: "template_search", args: { query: want } } };
+    const id = (found.match(/templates\/([\w-]+)/) || [])[1] || "half-adder";
+    const read = seen.find((t) => /checked:/i.test(t) || /NOT usable/i.test(t));
+    if (!read) return { text: "", call: { name: "template_get", args: { name: id } } };
+    const line = (read.match(/(Checked:|NOT usable)[^\n]*/) || [])[0] || "read it";
+    return { text: `Took ${id} from the library. ${line}\n\nThe source below is the verified one.` };
+  }
   if (/^wfsave:/.test(q)) {
     const name = (q.split(":")[1] || "").trim().split(/\s+/)[0] || "digest";
     return afterTool ? { text: `Saved workflows/${name}/workflow.md — search, read, then the report.` } : { call: { name: "workflow_save", args: {

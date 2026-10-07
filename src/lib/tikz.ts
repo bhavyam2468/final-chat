@@ -6,6 +6,7 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { Worker } from "node:worker_threads";
 
 const CACHE = path.join(os.tmpdir(), "final-chat-tikz");
 const mem = new Map<string, string>();
@@ -61,25 +62,64 @@ function themable(svg: string) {
     .replace(/<svg /, '<svg class="tikz" fill="currentColor" ');
 }
 
+const RENDER_TIMEOUT_MS = 120_000;
+/** A TeX log is mostly noise; keep the first real error, which is the one TeX stopped on. */
+function cleanError(text: string) {
+  const t = String(text || "");
+  const m = t.match(/^! .*(?:\n.*){0,3}/m);
+  return (m?.[0] || t).slice(0, 600).trim() || "TikZ could not draw this";
+}
+
+const WORKER_SRC = `
+const { parentPort, workerData } = require("node:worker_threads");
+const { createRequire } = require("node:module");
+const req = createRequire(workerData.root + "/package.json");
+const log = [];
+const out = (...a) => { log.push(a.map((x) => (typeof x === "string" ? x : String(x))).join(" ")); };
+(async () => {
+  try {
+    const mod = req("node-tikzjax");
+    const tex2svg = (mod && mod.default) || mod;
+    const svg = await tex2svg(workerData.source, Object.assign({ showConsole: true }, workerData.opts));
+    parentPort.postMessage({ svg, log: log.join("\\n") });
+  } catch (e) {
+    parentPort.postMessage({ error: String((e && e.message) || e), log: log.join("\\n") });
+  }
+})();
+`;
+
+/** One render, one worker, one deadline. A crash, a hang or a missing font comes back as a sentence. */
+function texWorker(source: string, opts: Record<string, unknown>, timeoutMs: number): Promise<{ svg?: string; error?: string; log?: string }> {
+  return new Promise((resolve) => {
+    let worker: Worker | null = null;
+    let done = false;
+    const finish = (r: { svg?: string; error?: string; log?: string }) => { if (done) return; done = true; clearTimeout(timer); worker?.terminate().catch(() => {}); resolve(r); };
+    const timer = setTimeout(() => finish({ error: `TikZ did not finish in ${Math.round(timeoutMs / 1000)}s — the source may be too large, or the engine wedged` }), timeoutMs);
+    try {
+      worker = new Worker(WORKER_SRC, { eval: true, workerData: { source, opts, root: process.cwd() } });
+    } catch (e) {
+      clearTimeout(timer);
+      return resolve({ error: String((e as Error)?.message || e) });
+    }
+    worker.on("message", (m: { svg?: string; error?: string; log?: string }) => finish(m));
+    worker.on("error", (e) => finish({ error: String((e as Error)?.message || e) }));
+    worker.on("exit", (code) => finish({ error: `the TikZ engine exited (${code}) — usually a font it does not carry` }));
+  });
+}
+
 export async function renderTikz(src: string): Promise<{ svg?: string; error?: string }> {
   const key = crypto.createHash("sha1").update("v3\n" + src).digest("hex"); // bump when themable() changes
   if (mem.has(key)) return { svg: mem.get(key)! };
   const file = path.join(CACHE, key + ".svg");
   try { const svg = await fs.readFile(file, "utf8"); mem.set(key, svg); return { svg }; } catch {}
   const job = queue.then(async () => {
-    const mod = await import("node-tikzjax");
-    const tex2svg = (mod as unknown as { default: (s: string, o: object) => Promise<string> }).default;
     const p = prepare(src);
-    let log = "";
-    const orig = console.log;
-    console.log = (...a: unknown[]) => { log += a.join(" ") + "\n"; };
-    try {
-      const svg = await tex2svg(p.source, { texPackages: p.texPackages, tikzLibraries: p.tikzLibraries, showConsole: true });
-      return { svg: themable(svg) };
-    } catch (e) {
-      const err = (log.match(/^! .*(?:\n.*){0,3}/m)?.[0] || String((e as Error)?.message || e)).slice(0, 600);
-      return { error: err };
-    } finally { console.log = orig; }
+    // The engine is a TeX distribution compiled to WebAssembly: it can die in ways a try/catch never sees
+    // (a missing font throws from inside a WASM callback and takes the whole process with it). So it runs in
+    // its own worker, on a clock: a source that hangs or crashes costs one worker and one error sentence,
+    // not the app. Renders are still serialized — the engine is single-instance and memory-hungry.
+    const r = await texWorker(p.source, { texPackages: p.texPackages, tikzLibraries: p.tikzLibraries }, RENDER_TIMEOUT_MS);
+    return r.svg ? { svg: themable(r.svg) } : { error: cleanError(r.error || r.log || "the TikZ engine stopped") };
   });
   queue = job.catch(() => {});
   const r = await job;

@@ -14,12 +14,14 @@ import { CanvasSpec, ProcInfo, TreeNode, flatFiles, useApp } from "./ctx";
 import { chatDir } from "@/lib/shared";
 import type { ConvItem } from "./Panels";
 
-export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills" | "modes" | "workflows";
+export type PaletteMode = "commands" | "chats" | "workspace" | "files" | "artifacts" | "sources" | "settings" | "processes" | "skills" | "modes" | "workflows" | "templates";
 export type PaletteTab = "model" | "tools" | "access" | "mcp" | "skills";
 export type PaletteCommand = { name: string; hint: string; panel?: Exclude<PaletteMode, "commands">; seed?: string; run?: (arg?: string) => void };
 
 export type WorkflowRunInfo = { id: string; name: string; title: string; input: Record<string, string>; status: string; progress: number; startedAt: number; /** the chat the run reports into, if any */ chat?: string | null };
 export type WorkflowInfo = { name: string; title: string; description: string; inputs: { name: string; label: string; required: boolean }[]; steps: { kind: string; title: string }[]; ok: boolean };
+/** a verified piece from the template library: a circuitikz drawing, a block shell, or a document shape */
+export type TemplateInfo = { id: string; kind: "circuit" | "block" | "doc"; title: string; description: string; tags: string[]; source: "bundled" | "user"; vars: { name: string; label: string; example: string }[] };
 export type PaletteApi = {
   commands: PaletteCommand[];
   /** the workflows this workspace has, and the runs it has done */
@@ -27,6 +29,10 @@ export type PaletteApi = {
   runs: WorkflowRunInfo[];
   /** start one; `input` lands in the workflow's first declared input */
   startWorkflow: (name: string, input: string) => void;
+  /** the template library: circuits that compile, block shells that work, document shapes */
+  templates: TemplateInfo[];
+  /** open one in a canvas, filled with its examples */
+  openTemplate: (id: string) => void;
   /** the mode lens for this chat: what each one is, and which is on */
   modes: { id: string; label: string; hint: string; active: boolean }[];
   setMode: (id: string | null) => void;
@@ -159,6 +165,19 @@ export const Palette = forwardRef<PaletteHandle, {
           key: "run:" + r.id, icon: Clock, label: r.title, group: "Recent runs",
           hint: `${Object.values(r.input).filter(Boolean).join(" ").slice(0, 60)} · ${r.status}${r.status === "running" ? ` · ${Math.round(r.progress * 100)}%` : ""}`,
           act: () => { window.dispatchEvent(new CustomEvent("open-workflow", { detail: { run: r.id, title: r.title } })); collapse(); },
+        });
+      }
+      return out;
+    }
+    if (mode === "templates") {
+      const groups: Record<string, string> = { circuit: "Circuits", block: "Blocks", doc: "Documents" };
+      for (const t of api.templates) {
+        if (q && !t.title.toLowerCase().includes(q) && !t.id.includes(q) && !t.description.toLowerCase().includes(q) && !t.tags.some((x) => x.includes(q))) continue;
+        out.push({
+          key: t.id, icon: t.kind === "circuit" ? Waypoints : t.kind === "block" ? AppWindow : FileText,
+          label: t.title, group: groups[t.kind] || t.kind,
+          hint: `${t.description}${t.vars.length ? ` · ${t.vars.length} value${t.vars.length > 1 ? "s" : ""}` : ""}${t.source === "user" ? " · yours" : ""}`,
+          act: () => { api.openTemplate(t.id); collapse(); },
         });
       }
       return out;

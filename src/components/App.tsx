@@ -5,7 +5,7 @@ import { AppApi, AppCtx, CanvasSpec, Conv, Msg, OpenOpts, Part, ProcInfo, QueueI
 import { Message } from "./Message";
 import { Composer, ComposerHandle, SendPayload, Command, upload } from "./Composer";
 import { MODES, isModeId } from "@/lib/modes";
-import type { WorkflowInfo as PaletteWorkflow, WorkflowRunInfo as PaletteRun } from "./palette";
+import type { WorkflowInfo as PaletteWorkflow, WorkflowRunInfo as PaletteRun, TemplateInfo as PaletteTemplate } from "./palette";
 import { chatDir } from "@/lib/shared";
 import { ChatsPanel, ConvItem, WorkspacePanel, ArtifactsPanel, SourcesPanel, CtxRef } from "./Panels";
 import { CanvasLayer, Win, contentRatio } from "./Canvas";
@@ -729,6 +729,25 @@ export default function App() {
     if (j) setWf({ workflows: j.workflows || [], runs: j.runs || [] });
   }, []);
   useEffect(() => { void refreshWf(); }, [refreshWf]);
+  // templates: what is on the shelf (shipped + the user's own). Opened in a canvas, filled with its examples,
+  // so a circuit shows a rendered drawing and a block shell shows itself working.
+  const [tpl, setTpl] = useState<PaletteTemplate[]>([]);
+  const refreshTpl = useCallback(async () => {
+    const j = await fetch("/api/templates").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (j) setTpl(j.templates || []);
+  }, []);
+  useEffect(() => { void refreshTpl(); }, [refreshTpl]);
+  const openTemplate = useCallback(async (id: string) => {
+    const j = await fetch(`/api/templates?id=${encodeURIComponent(id)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (!j || !j.template) return;
+    const title = j.template.title as string;
+    if (j.template.kind === "doc") { openCanvas({ kind: "md", title, body: j.body }); return; }
+    if (j.template.kind === "circuit") {
+      openCanvas({ kind: "ui", title, source: `<ui>\n<x-stack gap="loose">\n<x-card title="${title.replace(/"/g, "&quot;")}">\n<x-tikz src-tex="${String(j.source).replace(/"/g, "&quot;")}"></x-tikz>\n</x-card>\n<x-md>${String(j.body).split("```")[0].replace(/</g, "&lt;").trim()}</x-md>\n</x-stack>\n</ui>` });
+      return;
+    }
+    openCanvas({ kind: "ui", title, source: `<ui>\n${j.source}\n</ui>` });
+  }, [openCanvas]);
   // A run finishing has to land in the conversation that owns it (the report is appended to the card there),
   // and the run itself is not a stream we can subscribe to, so we keep the catalog warm while anything runs
   // and re-read the owning chat the moment a run settles.
@@ -783,6 +802,7 @@ export default function App() {
     { name: "new", hint: "New chat", run: newChat },
     { name: "mode", hint: activeMode ? `Mode: ${MODES.find((m) => m.id === activeMode)?.label} — change or leave it` : "Focus this chat on one job", panel: "modes" },
     ...MODES.map((m) => ({ name: "mode " + m.id, hint: m.hint, run: () => { void setChatMode(activeMode === m.id ? null : m.id); } })),
+    { name: "templates", hint: "Verified circuits, quiz shells, document shapes — drop one in", panel: "templates" },
     { name: "workflows", hint: wf.runs.some((r) => r.status === "running") ? "Run a workflow, or watch the one that is running" : "Run a workflow: research, brief, a pipeline of your own", panel: "workflows" },
     ...wf.workflows.filter((w) => w.ok).map((w): Command => ({ name: "run " + w.name, hint: w.description || w.title, run: (arg?: string) => { void startWorkflow(w.name, arg || ""); } })),
     { name: "google", hint: "Use connected Google Workspace tools", run: (arg?: string) => mainRef.current?.insert("Use the Google Workspace MCP tools if they are connected. If none are, say which server to add in Settings and stop.\n\n" + (arg || "")) },
@@ -857,7 +877,7 @@ export default function App() {
             activeMode={activeMode} onMode={(id) => { void setChatMode(id); }}
             queue={queueOf(view)} onEnqueue={(p) => enqueue(view, p)} onSteer={steer} onSteerQueued={steerQueued} onDequeue={dequeue} onUpdateQueued={updateQueued}
             procs={procs} onOpenProc={(name) => openTerm({ proc: name })}
-            palette={{ commands, modes: modeList, setMode: (id) => { void setChatMode(id); }, workflows: wf.workflows, runs: wf.runs, startWorkflow, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
+            palette={{ commands, modes: modeList, setMode: (id) => { void setChatMode(id); }, workflows: wf.workflows, runs: wf.runs, startWorkflow, templates: tpl, openTemplate, convs, runningIds, sources, procs, recent, hostTerm, openChat: (id, msg) => { void loadConv(id, undefined, msg); }, deleteChat }} />
           </div>
         </div>
 

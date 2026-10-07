@@ -7,7 +7,7 @@ const X = new Set([
   "x-chart", "x-sparkline", "x-table", "x-heatmap", "x-timeline", "x-math", "x-graph", "x-plot",
   "x-smiles", "x-mol3d", "x-draw", "x-tikz", "x-mermaid", "x-flow", "x-tree", "x-list", "x-todo", "x-timer", "x-stopwatch", "x-clock",
   "x-choice", "x-segmented", "x-toggle", "x-rating", "x-sortable", "x-sketch", "x-upload",
-  "x-image", "x-video", "x-audio", "x-youtube", "x-embed", "x-map", "x-state",
+  "x-image", "x-video", "x-audio", "x-youtube", "x-embed", "x-map", "x-state", "x-live",
 ]);
 
 /** Models wrap `<ui>` in a fence and the user sees source. Lift those fences; leave real code alone. */
