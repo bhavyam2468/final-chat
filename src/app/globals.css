@@ -946,3 +946,13 @@ button.busy:not(.solid)::after { border-color: var(--fg) var(--fg) transparent t
 .crumb.on { color: var(--fg); background: var(--surface); }
 .crumb svg { width: 12px; height: 12px; }
 .panel-sub { font-size: 10.5px; letter-spacing: .06em; color: var(--faint); padding: 10px 10px 2px; text-transform: uppercase; }
+
+/* ============ live variables (x-live) ============ */
+.x-live { display: inline-flex; align-items: center; }
+.x-live .lv { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.x-live .lv-label { color: var(--muted); }
+.x-live .lv-v { color: var(--fg); font-weight: 600; }
+.x-live .lv-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+.x-live .lv-dot.on { background: var(--success); animation: breathe 2.2s var(--ease) infinite; }
+.x-live .lv-dot.bad { background: var(--danger); }
+.x-live .lv-err { color: var(--danger); font-size: 11.5px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

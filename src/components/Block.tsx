@@ -93,7 +93,7 @@ export const Block = memo(function Block({ source, done, fill = false, event, on
           // One streaming bridge for Python, sandbox Bash, long-running process output, and resource
           // snapshots. The iframe stays responsive while the host forwards NDJSON chunks as they arrive.
           try {
-            const r = await fetch("/api/blocks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ backend: m.backend, code: m.code, command: m.command, name: m.name, follow: m.follow, cwd: m.cwd, timeout: m.timeout } ) });
+            const r = await fetch("/api/blocks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ backend: m.backend, lang: m.lang, code: m.code, command: m.command, name: m.name, follow: m.follow, cwd: m.cwd, timeout: m.timeout } ) });
             if (!r.ok) { reply({ ok: false, code: r.status, out: await r.text() }); break; }
             const reader = r.body?.getReader();
             if (!reader) { reply({ ok: false, code: 1, out: "backend response has no stream" }); break; }
@@ -111,7 +111,7 @@ export const Block = memo(function Block({ source, done, fill = false, event, on
               const x = await reader.read();
               if (x.done) break;
               buf += decoder.decode(x.value, { stream: true });
-              const lines = buf.split("\\n"); buf = lines.pop() || "";
+              const lines = buf.split("\n"); buf = lines.pop() || "";
               lines.forEach(consume);
             }
             consume(buf); reply(result); app.refreshTree();

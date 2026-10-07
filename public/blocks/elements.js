@@ -1538,6 +1538,41 @@
   }, { void: true });
 
   // ================================================================ state
+  // ================================================================ live data
+  /** <x-live name="ram" lang="bash" every="1s" label="RAM">free -m | awk ...</x-live>
+   *  Runs the producer through the sandbox bridge and keeps `S.<name>` current: `.value`, `.history`,
+   *  `.at`, `.ok`, `.error`. The pill shows the value — or the failure, in the same place.
+   *  Not a void tag on purpose: its content *is* the producer's source (`code=` / `run=` work too). */
+  define("x-live", class extends Base {
+    static owns = true;
+    init() { this._code = this.a("code") || this.a("run") || this._src || ""; }
+    render() {
+      const name = this.a("name") || this.a("key");
+      if (!name) { this.textContent = "x-live needs a name"; return; }
+      if (this._stop) this._stop();
+      if (!this._box) { this.textContent = ""; this._box = document.createElement("span"); this._box.className = "lv"; this.appendChild(this._box); }
+      const every = this.a("every");
+      this._stop = B.live(name, {
+        lang: this.a("lang", "bash"), code: this._code, parse: this.a("parse", "number"),
+        every: /^[\d.]+s$/.test(every || "") ? parseFloat(every) * 1000 : Number(every) || 1000,
+        stream: this.hasAttribute("stream"), cwd: this.a("cwd"), timeout: Number(this.a("timeout")) || undefined,
+      });
+      const paint = () => {
+        const v = B.store[name] || {};
+        const text = this.a("show", "value") === "none" ? "" : B.show(v.value);
+        const dot = v.ok === false ? " bad" : v.ok ? " on" : "";
+        let html = '<i class="lv-dot' + dot + '"></i>';
+        if (this.a("label")) html += '<span class="lv-label">' + esc(this.a("label")) + "</span>";
+        if (text) html += '<span class="lv-v">' + esc(text) + esc(this.a("unit", "")) + "</span>";
+        if (v.error) html += '<span class="lv-err">' + esc(String(v.error).split("\n")[0].slice(0, 90)) + "</span>";
+        this._box.innerHTML = html;
+      };
+      paint(); this._paint = paint;
+      if (!this._watch) this._watch = setInterval(() => this._paint && this._paint(), 400);
+    }
+    disconnectedCallback() { if (this._stop) this._stop(); if (this._watch) clearInterval(this._watch); }
+  });
+
   // <x-state score="0" answers="{}"> initial reactive values (JSON-parsed)
   define("x-state", class extends HTMLElement {
     connectedCallback() { if (this._d) return; this._d = true; this.hidden = true; for (const a of this.attributes) if (!(a.name in B.store) && a.name !== "hidden") B.setStore(a.name, parseVal(a.value)); }

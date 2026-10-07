@@ -70,6 +70,7 @@ Native `h1–h4 p small ul ol table details code a` are styled. Also:
 | `x-progress value max` · `x-ring value max label` · `x-gauge value min max label` | Progress and meters |
 | `x-chart type data labels series title x-label y-label center` | `line bar hbar stacked area pie donut scatter radar`. `data="1,2,3"`, multi-series `"1,2|3,4"` with `series="A|B"`, scatter `"x:y,x:y"`, or JSON. Draw-in animation; hover values |
 | `x-sparkline data` | Inline trend |
+| `x-live name lang every parse label unit show` | A live variable. Its producer — the element's content, or `code=` — runs every `every` (default `1s`) through the sandbox and keeps `S.‹name›` current: `.value`, `.history` (≤120 points), `.at`, `.ok`, `.error`. `parse="number"` (last number on the last line, the default) `"json"` `"text"`; a failed read keeps the last good value and shows the message in its place. Feed `x-sparkline`/`x-chart` with `:data="ram.history"` |
 | `x-table csv|data sortable select total caption height dense cols` | A real data table. Body may be CSV, TSV, markdown pipes or pasted output (quoted fields keep commas); `csv=` or `:data` (array of objects or arrays) also work. Numeric columns are detected and right-aligned automatically (`cols="l,r,c"` forces a column), `**bold**` renders, signed values colour. `sortable` = click/focus+Enter a header, ascending → descending, with the caret showing where it is. `select` makes rows pickable: `.value` is the row as an object and a `select` event fires. `total="sum|avg|count"` (optionally `total="time,memory"`) pins a totals row that keeps the column's unit; a table over ~14 rows — or any `height=` — scrolls inside its own panel with the header and totals held. `caption` sits above |
 | `x-heatmap data x-labels y-labels caption tone min max values` | A matrix read for its pattern: `data` is rows separated by `|` (or a JSON array of arrays), intensity carries the value, each cell names its row and column, and the numbers are printed inside the cells when the matrix is small (or with `values`). `min`/`max` fix the scale so two heatmaps compare |
 | `x-timeline` | `date | title | detail` lines |
@@ -157,9 +158,22 @@ Any element with `name=` becomes a reactive variable of the same name.
 | Formatting and math | `fmt(sec)` (mm:ss), `sum`, `avg`, `count(arr, fn)`, `pct(a, b)`, `round(x, d)`, `clamp` |
 | Collections and time | `range(n)`, `pick`, `shuffle`, `len`, `now`, `date`, `time`, `json` |
 | Chat and workspace | `sendToLm(obj|str, label|{label, prompt})`, `saveIn(path, text|obj)`, `py(code)` |
-| Backends | `backend(kind, input, opts)` for `python`, `bash`, `process`, `resource`; `shell(command, opts)` / `processRun(command, opts)` launch sandbox work; `processLogs(name, {follow:true})` tails an existing agent process (including explicitly host-started processes); `backendStream(kind, input, onChunk, opts)` forwards live stdout/snapshots; blocks never launch arbitrary host commands |
-| Live system data | `resource()` returns one snapshot; `watchResources(ms, key)` maintains `key.history.cpu`, `key.history.memory`, and `key.history.load` for `x-chart` / `x-sparkline` |
+| Backends | `backend(kind, input, opts)` for `python`, `bash`, `process`, `resource`, `lang` (any language the sandbox has — `node`, `ruby`, `go`, `c`, `lua`, `r`…: the snippet is written into `<workspace>/.blocks/` and its interpreter runs it, so an unknown one comes back as a sentence rather than a blank); `shell(command, opts)` / `processRun(command, opts)` launch sandbox work; `processLogs(name, {follow:true})` tails an existing agent process (including explicitly host-started processes); `backendStream(kind, input, onChunk, opts)` forwards live stdout/snapshots; blocks never launch arbitrary host commands |
+| Live system data | `resource()` returns one snapshot; `watchResources(ms, key)` maintains `key.history.cpu`, `key.history.memory`, and `key.history.load` for `x-chart` / `x-sparkline`; `live(key, {lang, code, produce, parse, every, stream})` is the general form — one shell line, a Python/Ruby/Node producer, or a function — and returns a `stop()` |
 | Page utilities | `form(sel?)`, `notify(text)`, `every(ms, fn)`, `after(ms, fn)`, `open(pathOrUrl)`, `state(k, init)`, `$`, `$$` |
+
+Numbers that come from the machine are live variables, not prose. The producer runs in the sandbox; the element only paints what it returns, and says so when the producer breaks:
+
+```html
+<x-live name="ram" lang="bash" every="1s" label="RAM" unit="%">free -m | awk '/Mem:/{printf "%.1f", $3/$2*100}'</x-live>
+<x-sparkline :data="ram.history"></x-sparkline>
+```
+
+```js
+// the same thing from a script: any language, any shape
+live("heap", { lang: "node", parse: "json", every: 1000, code: 'console.log(JSON.stringify({ value: Math.round(process.memoryUsage().heapUsed / 1048576), unit: "MB" }))' });
+// S.heap.value · S.heap.history · S.heap.ok · S.heap.error   (produce: () => … is the testable seam)
+```
 
 `sendToLm` posts a `<ui_event>` into the chat as the user's next turn. The chat shows `label` as a compact card (fields collapsible) and passes `prompt` to the model as the instruction for its reply, so a button can invoke the AI with custom context:
 

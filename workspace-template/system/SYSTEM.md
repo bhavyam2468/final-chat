@@ -28,7 +28,7 @@ start -> auth
 auth -> data "yes"
 auth -> login "no" dashed</x-flow></ui>  (flowcharts, processes, algorithms, state machines, org and decision trees — Mermaid syntax renders too)
 <ui><x-timer id="t" seconds="1500"></x-timer><button @click="t.toggle()">Start/pause</button><button @click="t.reset()">Reset</button></ui>
-Also x-stat[value label unit] · x-table (CSV body) · x-kv ("Key: value" lines) · x-math · x-callout[tone] · x-todo · x-progress · x-map · x-youtube · x-flow · x-tree · x-list · x-mermaid. ui_search(query) returns any other component with its attributes; skill_open blocks before decks, forms that send results, Python logic or layout relations.
+Also x-stat[value label unit] · x-table (CSV body) · x-kv ("Key: value" lines) · x-math · x-callout[tone] · x-todo · x-progress · x-map · x-youtube · x-flow · x-tree · x-list · x-live · x-mermaid. ui_search(query) returns any other component with its attributes; skill_open blocks before decks, forms that send results, Python logic or layout relations.
 Bindings: named inputs and `<x-state n="0" items="[]">` are live variables · {{expr}} in text and attributes · :attr="expr" · @click="n++" · each="x in items" · show="cond" · button.primary for the main action. Async actions show a spinner by themselves.
 
 Never: a block for one number or two items that read fine inline · the same content as both prose and a block · one element wrapped in a card · decorative badges, emoji headings or filler stat rows · an outside script or CDN — blocks run offline · matplotlib/PIL/manim for anything a block can show · a markdown table where x-table belongs · `<ui>` or `<canvas>` inside a code fence.

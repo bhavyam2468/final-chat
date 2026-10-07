@@ -710,14 +710,85 @@ def after(ms, fn): return _js.after(ms, create_proxy(fn))
     tick();
     return () => { alive = false; if (timer) clearTimeout(timer); };
   };
+  /**
+   * A live variable: run a producer on a loop — a shell command, Python, or any language the sandbox has —
+   * parse what it prints, and bind it into the store as `key`. The value keeps a `history` ready for
+   * `x-sparkline` / `x-chart`, the time it was read, and an `error` instead of throwing, so a dashboard that
+   * loses its producer says so where the number was.
+   *
+   *   live("ram", { lang: "bash", every: 1000, code: "free -m | awk '/Mem:/{printf \"%.0f\", $3/$2*100}'" })
+   *   // S.ram.value · S.ram.history → <x-sparkline :data="ram.history"/> <x-stat :value="ram.value + '%'"/>
+   *
+   * `produce` (a function) and `parse` ("number" | "json" | "text") are the testable seams; `stream: true`
+   * keeps one connection open and updates on every line instead of polling.
+   */
+  const live = (key, spec = {}) => {
+    const every = Math.max(250, Number(spec.every) || 1000);
+    const what = String(spec.parse || "number");
+    const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    const firstNum = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.values(o).map(Number).find((v) => Number.isFinite(v)) : undefined);
+    const parseOut = (out) => {
+      const text = String(out === undefined || out === null ? "" : out).trim();
+      const last = text.split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
+      if (what === "text") return last;
+      if (what === "json" || (last.startsWith("{") && last.endsWith("}"))) { try { return JSON.parse(last); } catch { /* not JSON after all */ } }
+      // the last number in the line, so "mem: 41.5%" and "reading 41.5" both work while "3.2 GB free of 8"
+      // still reads as 8 (the value producers print last, which is the one that is being reported)
+      const found = last.match(/-?\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?/g);
+      if (!found) return undefined;
+      const n = Number(found[found.length - 1].replace(/_/g, ""));
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const write = (value, extra) => {
+      const prev = store[key] && typeof store[key] === "object" ? store[key] : {};
+      const points = value && typeof value === "object" && !Array.isArray(value) ? Number(num(value.value) === undefined ? firstNum(value) : num(value.value)) : Number(value);
+      const history = Number.isFinite(points) ? [...(prev.history || []), points].slice(-120) : (prev.history || []);
+      // a failed read keeps the last good number on screen (with the dot turning red) rather than blanking it
+      const flat = value === undefined ? { value: prev.value }
+        : value && typeof value === "object" && !Array.isArray(value) ? { ...value, value: num(value.value) === undefined ? (firstNum(value) === undefined ? prev.value : firstNum(value)) : value.value }
+          : { value };
+      setStore(key, { ...prev, ...flat, history, at: Date.now(), ...(extra || {}) });
+    };
+    let alive = true, timer = 0, busy = false;
+    const once = async () => {
+      try {
+        const out = spec.produce ? await spec.produce()
+          : await backend(String(spec.lang || "bash").toLowerCase() === "python" ? "python" : "lang",
+              { lang: String(spec.lang || "bash"), code: String(spec.code || ""), cwd: spec.cwd }, { timeout: spec.timeout });
+        // A failed run is a message, not a number: keep the last good value on screen and say what broke.
+        if (out && typeof out === "object" && out.ok === false) {
+          let why = String(out.out || out.error || "the producer failed");
+          const j = why.trim().startsWith("{") ? why.trim().match(/"error"\s*:\s*"([^"]*)"/) : null;
+          if (j) why = j[1];
+          write(undefined, { ok: false, error: why.split("\n")[0].slice(0, 200), out: String(out.out || "").slice(-4000) });
+          return;
+        }
+        const v = parseOut(out && typeof out === "object" && "out" in out ? out.out : out);
+        write(v, { ok: true, error: "", out: String((out && out.out) || "").slice(-4000) });
+      } catch (e) { write(undefined, { ok: false, error: String((e && e.message) || e).slice(0, 200) }); }
+    };
+    const tick = async () => {
+      if (!alive) return;
+      if (!busy) { busy = true; await once(); busy = false; }
+      if (alive) timer = setTimeout(tick, every);
+    };
+    const done = (r) => write(undefined, { ok: !!(r && r.ok), error: r && r.ok ? "" : String((r && r.out) || "the producer stopped").slice(0, 200), out: String((r && r.out) || "").slice(-4000) });
+    if (spec.stream && !spec.produce) {
+      backendStream(String(spec.lang || "bash").toLowerCase() === "python" ? "python" : "lang",
+        { lang: String(spec.lang || "bash"), code: String(spec.code || ""), cwd: spec.cwd },
+        (chunk) => { const v = parseOut(chunk); if (v !== undefined) write(v, { ok: true, error: "" }); },
+        { timeout: spec.timeout }).then(done).catch((e) => write(undefined, { ok: false, error: String((e && e.message) || e).slice(0, 200) }));
+    } else tick();
+    return () => { alive = false; clearTimeout(timer); };
+  };
   const open = (target) => post("open", { target });
   const every = (ms, fn) => setInterval(() => { fn(); schedule(); }, ms);
   const after = (ms, fn) => setTimeout(() => { fn(); schedule(); }, ms);
   const state = (k, init) => { if (!(k in store)) store[k] = init; return { get: () => store[k], set: (v) => { store[k] = v; schedule(); } }; };
   const upload = (file, dir) => new Promise((res) => { const r = new FileReader(); r.onload = () => call("upload", { name: file.name, type: file.type, data: String(r.result).split(",")[1], dir }).then(res); r.readAsDataURL(file); });
-  Object.assign(H, { sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, notify, form, every, after, open });
-  Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, notify, state, every, after, open, S, render: schedule });
-  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, backend, backendStream, upload, standalone, H });
+  Object.assign(H, { sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, live, notify, form, every, after, open });
+  Object.assign(window, { $, $$, on, form, sendToLm, saveIn, py, shell, processRun, processLogs, backend, backendStream, resource, watchResources, live, notify, state, every, after, open, S, render: schedule });
+  Object.assign(B, { S, store, expose, setStore, scope, evaluate, runStmt, schedule, render, call, backend, backendStream, live, upload, standalone, H });
 
   window.addEventListener("message", (e) => {
     const m = e.data || {};

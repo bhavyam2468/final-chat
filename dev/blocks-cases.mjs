@@ -3,6 +3,41 @@
 const txt = (sel) => `(document.querySelector(${JSON.stringify(sel)})||{}).textContent`;
 export const cases = [
   {
+    name: "live variable: a producer feeds a stat and a sparkline",
+    // No sandbox here: the seam the runtime exposes for exactly this is `produce` (a function), so the loop,
+    // the parsing, the history and the teardown are tested without a server.
+    src: `<x-state ram='{}'></x-state>
+      <x-stat label="RAM" :value="ram.value + '%'" :trend="ram.history"></x-stat>
+      <x-sparkline :data="ram.history" height="28"></x-sparkline>
+      <p id="err">{{ ram.error || 'ok' }}</p>
+      <script>
+        let n = 40;
+        const stop = live("ram", { every: 250, produce: () => String(++n) + "%" });
+        every(600, () => { window.__h = (S.ram.history || []).length; });
+      </script>`,
+    wait: 2000,
+    expect: () => {
+      const v = document.querySelector("x-stat .v");
+      const pts = window.__h;
+      return (parseInt((v || {}).textContent) >= 41 && Number(pts) >= 3) || `value=${(v || {}).textContent} history=${pts} err=${document.getElementById("err").textContent}`;
+    },
+  },
+  {
+    name: "live variable: the last line is the number, and a failure is shown not thrown",
+    src: `<x-state m='{}'></x-state>
+      <x-live name="m" every="250" parse="number" label="mem" show="value"></x-live>
+      <script>
+        let bad = false;
+        live("m", { every: 250, produce: () => { if (!bad) { bad = true; return "reading 41.5"; } throw new Error("producer died"); } });
+      </script>`,
+    wait: 1400,
+    expect: () => {
+      const box = document.querySelector("x-live .lv-v");
+      const err = document.querySelector("x-live .lv-err");
+      return (box && box.textContent === "41.5" && err && /died/.test(err.textContent)) || (document.querySelector("x-live") || {}).outerHTML;
+    },
+  },
+  {
     name: "counter native",
     src: `<x-state count="0"></x-state><button @click="count++">Click Me ({{count}})</button><x-stat label="Clicks" :value="count"></x-stat>`,
     steps: [{ click: "button" }, { click: "button", wait: 900 }],
