@@ -63,7 +63,7 @@ async function mountTerm(holder: HTMLDivElement, opts: { readOnly?: boolean; fon
   const { FitAddon } = await import("@xterm/addon-fit");
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", var(--font-mono), ui-monospace, Menlo, monospace',
-    fontSize: opts.fontSize ?? 14, lineHeight: 1.32, letterSpacing: 0.2,
+    fontSize: opts.fontSize ?? 14, lineHeight: 1.42, letterSpacing: 0.35,
     cursorBlink: true, cursorStyle: "bar", cursorWidth: 2,
     scrollback: 8000, convertEol: false, allowProposedApi: true,
     disableStdin: !!opts.readOnly,

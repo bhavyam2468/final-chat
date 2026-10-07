@@ -267,7 +267,7 @@ kbd { font: 11px/1 var(--font-mono), ui-monospace, monospace; color: var(--muted
 
 /* ============ Terminal canvas (xterm.js) ============ */
 .term { position: relative; height: 100%; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) 90%, var(--fg)); }
-.term-body { flex: 1; min-height: 0; padding: 10px 12px 6px; }
+.term-body { flex: 1; min-height: 0; padding: 12px 14px 8px; }
 .term-body .xterm { height: 100%; }
 .term-veil { position: absolute; inset: 0 0 30px; display: grid; place-items: center; gap: 8px; align-content: center; color: var(--muted); font-size: 13px; pointer-events: none; }
 .term-veil.err { color: var(--danger); pointer-events: auto; }

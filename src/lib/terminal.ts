@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from "child_process";
 import fsSync from "fs";
+import path from "path";
 import type { Settings } from "./settings";
 import { baseEnv, hasBwrap, hostDenied, wrap } from "./exec";
 import { WS, HOME } from "./workspace";
@@ -60,6 +61,28 @@ function scriptBin(): string {
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 const termId = () => "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/**
+ * The sandbox terminal's shell reads the workspace ~/.bashrc (HOME is the workspace): the prompt
+ * shows the directory, a blank line separates commands, bracketed paste is on, ls is colored.
+ * Written once; a .bashrc that already exists — the user's or an edited one — is never touched.
+ */
+const BASHRC = [
+  "# The app's sandbox terminal sources this on launch (HOME is the workspace). Edit freely.",
+  "case $- in *i*) ;; *) return ;; esac",
+  "shopt -s checkwinsize",
+  "bind 'set enable-bracketed-paste on' 2>/dev/null",
+  "alias ls='ls --color=auto'",
+  "alias ll='ls -lah --color=auto'",
+  "",
+  "PS1='\\n\\[\\e[38;5;245m\\]\\w\\[\\e[0m\\] \\[\\e[32m\\]❯\\[\\e[0m\\] '",
+  "",
+].join("\n");
+function ensureBashrc() {
+  const rc = path.join(WS, ".bashrc");
+  try { fsSync.accessSync(rc); return; } catch { /* missing: write ours */ }
+  try { fsSync.writeFileSync(rc, BASHRC, "utf8"); } catch { /* read-only workspace: defaults still apply */ }
+}
+
 function emit(p: Term, e: { t: "data" | "exit"; chunk?: string; code?: number }) {
   p.listeners.forEach((l) => l(e));
 }
@@ -86,6 +109,7 @@ export function termCreate(st: Settings, o: { host?: boolean; cols?: number; row
   // spawn reports ENOENT when the cwd is missing: the workspace folder may not exist before the first agent run
   try { fsSync.mkdirSync(cwd, { recursive: true }); } catch {}
 
+  if (!host) ensureBashrc();
   const pty = ptyLib();
   if (pty) {
     let shell: string, args: string[];
@@ -93,7 +117,7 @@ export function termCreate(st: Settings, o: { host?: boolean; cols?: number; row
       shell = process.env.SHELL || "/bin/bash";
       args = ["-i"]; // the shell's own rc files run: profile, toolchains, aliases
     } else {
-      const [cmd, ...rest] = wrap(["/bin/bash", "--noprofile", "--norc", "-i"], true, WS);
+      const [cmd, ...rest] = wrap(["/bin/bash", "--noprofile", "-i"], true, WS, true);
       shell = cmd; args = rest;
     }
     const session = pty.spawn(shell, args, { name: "xterm-256color", cols, rows, cwd, env });
@@ -108,7 +132,7 @@ export function termCreate(st: Settings, o: { host?: boolean; cols?: number; row
       const shell = process.env.SHELL || "/bin/bash";
       inner = `${prelude}exec ${q(shell)} -i`;
     } else {
-      const [cmd, ...args] = wrap(["/bin/bash", "--noprofile", "--norc", "-i"], true, WS);
+      const [cmd, ...args] = wrap(["/bin/bash", "--noprofile", "-i"], true, WS, true);
       inner = `${prelude}exec ${[cmd, ...args].map(q).join(" ")}`;
     }
     const child = spawn(scriptBin(), ["-qfc", inner, "/dev/null"], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });

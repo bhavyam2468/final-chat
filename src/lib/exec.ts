@@ -74,14 +74,17 @@ function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.Pro
 
 /** Wrap argv in bubblewrap when sandboxing is requested and available. */
 
-export function wrap(argv: string[], sandboxed: boolean, cwd: string = WS): string[] {
+export function wrap(argv: string[], sandboxed: boolean, cwd: string = WS, interactive = false): string[] {
   if (!sandboxed || !hasBwrap()) return argv;
   const app = process.cwd();
   const hide = ["/home", "/root", "/Users"].filter((d) => fs.existsSync(d));
   if (!hide.some((h) => app.startsWith(h + path.sep))) hide.push(app);
+  // interactive shells (the user's terminal) skip the pid namespace and setsid: bash must be able
+  // to own a process group on the tty, or every job-control key (Ctrl+C, Ctrl+Z, &) is dead.
+  const isolation = interactive ? ["--die-with-parent"] : ["--unshare-pid", "--die-with-parent", "--new-session"];
   return ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
     ...hide.flatMap((d) => ["--tmpfs", d]), ...(VENV() ? ["--ro-bind", VENV(), VENV()] : []), "--bind", WS, WS, "--chdir", cwd.startsWith(WS) ? cwd : WS, "--setenv", "HOME", WS,
-    "--unshare-pid", "--die-with-parent", "--new-session", "--", ...argv];
+    ...isolation, "--", ...argv];
 }
 
 /**
