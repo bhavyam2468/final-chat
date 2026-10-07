@@ -88,6 +88,7 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
   const disposeRef = useRef<(() => void) | null>(null);
   const [exit, setExit] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
+  const [err, setErr] = useState("");
   const [dims, setDims] = useState<string>("");
 
   const write = useCallback((data: string) => {
@@ -96,12 +97,13 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
 
   useEffect(() => {
     let stop = false;
+    const ac = new AbortController();
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     (async () => {
       const el = holder.current;
       if (!el) return;
       let term: XTerm, dispose: () => void;
-      try { ({ term, dispose } = await mountTerm(el)); } catch { return; }
+      try { ({ term, dispose } = await mountTerm(el)); } catch { setErr("The terminal renderer failed to load."); return; }
       if (stop) { dispose(); return; }
       disposeRef.current = dispose;
       termRef.current = term;
@@ -120,10 +122,11 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
         if (ev.metaKey && !ev.ctrlKey && ev.key.toLowerCase() === "a") { term.selectAll(); return false; }
         return true;
       });
-      // stream the session
+      // stream the session — the veil hides as soon as the stream is open (it stays open for the life of the session)
       try {
-        const res = await fetch(`/api/terminal?id=${encodeURIComponent(id)}`);
-        if (!res.body || stop) { setReady(true); return; }
+        const res = await fetch(`/api/terminal?id=${encodeURIComponent(id)}`, { signal: ac.signal });
+        setReady(true);
+        if (!res.body || stop) return;
         const reader = res.body.getReader();
         const dec = new TextDecoder();
         let buf = "";
@@ -141,10 +144,9 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
             } catch {}
           }
         }
-      } catch { /* connection dropped; the session itself keeps running on the server */ }
-      setReady(true);
+      } catch { setReady(true); /* connection dropped; the session itself keeps running on the server */ }
     })();
-    return () => { stop = true; clearTimeout(resizeTimer); disposeRef.current?.(); disposeRef.current = null; termRef.current = null; };
+    return () => { stop = true; ac.abort(); clearTimeout(resizeTimer); disposeRef.current?.(); disposeRef.current = null; termRef.current = null; };
   }, [id, write]);
 
   useEffect(() => {
@@ -162,7 +164,7 @@ function Shell({ id, host, setBar }: { id: string; host?: boolean; setBar: (n: R
   return (
     <div className="term">
       <div className="term-body" ref={holder} aria-label="Terminal" />
-      {!ready && <div className="term-veil"><span className="spin" /> connecting…</div>}
+      {err ? <div className="term-veil err">{err}</div> : !ready && <div className="term-veil"><span className="spin" /> connecting…</div>}
       <div className="term-foot">
         <i className={"tdot" + (exit === null ? " live" : "")} />
         <span>{host ? "your machine" : "sandbox"}{exit !== null ? ` · exited ${exit}` : dims ? ` · ${dims}` : ""}</span>
