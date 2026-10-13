@@ -1,6 +1,6 @@
-# Minimalist AI Chat Workspace
+# Workspace
 
-A quiet, minimal AI operating surface: chat, sandboxed workspace, tools, generative UI (Blocks), and floating canvases, running entirely on your local machine with your own AI providers and zero mandatory cloud dependency.
+A quiet, minimal blah blah AI operating surface: chat, sandboxed workspace, tools, generative UI (Blocks), and floating canvases, running entirely on your local machine with your own AI providers and zero mandatory cloud dependency.
 
 > **Live instance** runs as a systemd user service (on an arch device) at `http://localhost:3000`. Open it from the desktop app launcher.
 
