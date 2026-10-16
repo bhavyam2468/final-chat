@@ -87,12 +87,16 @@ config.env        your configuration (see below)
 runtime.json      the live port and pid — how scripts find the running app
 ```
 
-`config.env` is seeded on first run with a commented template and **never overwritten**. It is
-`KEY=value`, read by the shell at startup and handed to the app server; real environment variables
-and the app's own paths (ports, data directories) take precedence over it. Use it for a fixed
-model, a real PostgreSQL, your own SearXNG, `PYTHON_BIN`, access defaults, or `DEV_MODE=1`. The file
-is the same one Settings writes to where a setting can be expressed that way (`APP_DATA_DIR`,
-`WORKSPACE_DIR`, …).
+`config.env` is seeded on first run with a commented template and **never overwritten** — the file
+is yours to edit, and only a fresh data directory replaces it. It is `KEY=value`, read by the shell
+at startup and handed to the app server; real environment variables and the app's own paths (ports,
+data directories) take precedence over it. Use it for a fixed model, a real PostgreSQL, your own
+SearXNG, `PYTHON_BIN`, access defaults, or `DEV_MODE=1`.
+
+Settings in the UI are stored in the database, not in this file: what you change in
+Settings → Model or → Access survives restarts because it lives in PGlite. From a source checkout
+(`npm run desktop:dev`) the shell does not start the app server at all, so `config.env` never
+reaches it — export those variables, or use a `.env` at the repository root the way Next reads it.
 
 `APP_MODE=desktop` is what tells the app it is inside the shell: on the Node side, `src/lib/paths.ts`
 is the only module that reads those variables, and it deliberately uses no `fs` — the shell parses
