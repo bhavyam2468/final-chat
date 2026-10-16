@@ -51,7 +51,8 @@ fn interpreter_candidates(layout: &Layout) -> Vec<(PathBuf, String)> {
 /// `command -v`: first executable named `name` on PATH.
 pub fn which_path(name: &str) -> Option<PathBuf> {
     let paths = std::env::var("PATH").unwrap_or_default();
-    for dir in paths.split(':') {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    for dir in paths.split(separator) {
         if dir.is_empty() {
             continue;
         }
@@ -203,11 +204,6 @@ fn settings_file_secret(settings: &PathBuf) -> String {
         })
         .filter(|v| !v.is_empty())
         .unwrap_or_else(random_secret)
-}
-
-/// Used by the shell for optional tools (xdg-open, python3, …).
-pub fn has_command(name: &str) -> bool {
-    which_path(name).is_some()
 }
 
 /// `xdg-open` (or `open` on macOS) for a path or a URL.

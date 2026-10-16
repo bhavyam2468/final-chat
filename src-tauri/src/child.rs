@@ -7,6 +7,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child as StdChild, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,14 @@ pub struct Child {
     inner: Mutex<Option<StdChild>>,
     /// Started with `process_group(0)`: the pid *is* the group id, so the whole tree can be signalled.
     pub pid: u32,
+    /// Recorded when the process is reaped — `is_running` reaps, so the outcome has to be kept
+    /// here. An exit by signal leaves `code` at `NO_CODE`, and `exited` still tells the truth.
+    exited: AtomicBool,
+    code: AtomicI32,
 }
+
+/// Sentinel for "no exit code" (killed by a signal, or never exited).
+const NO_CODE: i32 = i32::MIN;
 
 impl Child {
     pub fn spawn(
@@ -58,22 +66,26 @@ impl Child {
         if let Some(err) = child.stderr.take() {
             tee(name_owned.clone(), err);
         }
-        logging::info(&format!("started {name} (pid {pid})"));
+        logging::info(&format!("started {name} (pid {pid}): {}", program.display()));
         Ok(Self {
             name: name.to_string(),
             program: program.display().to_string(),
             inner: Mutex::new(Some(child)),
             pid,
+            exited: AtomicBool::new(false),
+            code: AtomicI32::new(NO_CODE),
         })
     }
 
-    /// True while the process has not exited. Also reaps it once it has.
+    /// True while the process has not exited. Also reaps it once it has, recording the outcome.
     pub fn is_running(&self) -> bool {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {
             Some(child) => match child.try_wait() {
                 Ok(Some(status)) => {
                     logging::info(&format!("{} exited ({})", self.name, describe_status(status.code())));
+                    self.code.store(status.code().unwrap_or(NO_CODE), Ordering::Relaxed);
+                    self.exited.store(true, Ordering::Relaxed);
                     *guard = None;
                     false
                 }
@@ -84,11 +96,24 @@ impl Child {
         }
     }
 
+    /// True once the process has ended, however it ended.
+    pub fn has_exited(&self) -> bool {
+        let running = self.is_running();
+        !running || self.exited.load(Ordering::Relaxed)
+    }
+
+    /// The exit code, if the process ended normally. `None` while it runs, and `None` when a
+    /// signal ended it — which is exactly what a caller needs to tell "done" from "killed".
     pub fn exit_code(&self) -> Option<i32> {
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        match guard.as_mut() {
-            Some(child) => child.try_wait().ok().flatten().and_then(|s| s.code()),
-            None => None,
+        let _ = self.is_running(); // reap first: until then there is nothing to report
+        if !self.exited.load(Ordering::Relaxed) {
+            return None;
+        }
+        let code = self.code.load(Ordering::Relaxed);
+        if code == NO_CODE {
+            None
+        } else {
+            Some(code)
         }
     }
 
@@ -115,11 +140,6 @@ impl Child {
             std::thread::sleep(Duration::from_millis(100));
         }
         false
-    }
-
-    /// Take the process out of the supervisor (used when it is replaced by a restart).
-    pub fn take(&self) -> Option<StdChild> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
 
@@ -154,8 +174,10 @@ pub fn signal_group(pid: u32, signal: Signal) {
     #[cfg(not(unix))]
     {
         let _ = signal;
-        // Windows: no process groups here yet — the shell's children are single binaries.
-        let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status();
+        // Windows: no process groups here (yet) — the shell's children are single binaries, and
+        // /T still takes down anything they started.
+        let pid = pid.to_string();
+        let _ = Command::new("taskkill").args(["/PID", pid.as_str(), "/T", "/F"]).status();
     }
 }
 

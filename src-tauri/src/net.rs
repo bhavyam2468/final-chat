@@ -20,19 +20,6 @@ pub fn free_port() -> std::io::Result<u16> {
     Ok(port)
 }
 
-/// Block until `127.0.0.1:port` accepts connections, or the deadline passes.
-pub fn wait_for_port(port: u16, timeout: Duration) -> bool {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    false
-}
-
 /// True when something is listening on `127.0.0.1:port` right now.
 pub fn port_in_use(port: u16) -> bool {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));

@@ -4,7 +4,7 @@ import { X, Plus } from "lucide-react";
 import { Mcp, Skills } from "./Extensions";
 
 type S = { provider: string; baseUrl: string; apiKey: string; model: string; contextTokens: number; workingTokens?: number; searxngUrl: string; firecrawlEnabled: boolean; firecrawlUrl: string; firecrawlKey: string; firecrawlCloudUrl?: string; access: "sandbox" | "home" | "full"; terminal: "sandbox" | "host"; sudo: boolean; phone?: boolean; secrets: Record<string, string>; vision: boolean; quality: "off" | "warn" | "fix"; toolLoading: "auto" | "all" | "lean" };
-type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean };
+type Caps = { bwrap: boolean; soffice: boolean; home: string; workspace: string; platform: string; locked?: boolean; desktop?: boolean };
 type Srv = { command?: string; args?: string[]; url?: string; headers?: Record<string, string>; env?: Record<string, string>; enabled?: boolean };
 
 export function Settings({ onClose, theme, setTheme, initialTab }: { onClose: () => void; theme: string; setTheme: (t: string) => void; initialTab?: "model" | "tools" | "access" | "mcp" | "skills" }) {
@@ -19,6 +19,7 @@ export function Settings({ onClose, theme, setTheme, initialTab }: { onClose: ()
   const [secretK, setSecretK] = useState(""); const [secretV, setSecretV] = useState("");
   const [models, setModels] = useState<{ id: string; name?: string; contextWindow?: number; status?: string }[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [restarting, setRestarting] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then((j) => { setS(j.settings); setPresets(j.presets); setCaps(j.caps || null); });
@@ -171,6 +172,8 @@ export function Settings({ onClose, theme, setTheme, initialTab }: { onClose: ()
             <div className={"srv" + (s.terminal !== "host" ? " off" : "")}><div className="t">Phone testing<small>{s.terminal !== "host" ? "Requires the host terminal." : "adb on a device you plugged in: install, launch, screenshot, tap, logcat. Every call shows in the chat."}</small></div>
               <button className={"sw" + (s.phone ? " on" : "")} disabled={s.terminal !== "host"} aria-label="Phone testing" onClick={() => saveS({ phone: !s.phone })} /></div>
             {caps && <small className="note">{caps.soffice ? "LibreOffice found: office files preview as pages." : "Install LibreOffice for page-accurate .doc/.ppt/.odp previews."}</small>}
+            {caps?.desktop && <div className="srv"><div className="t">Restart the app server<small>{restarting ? "Restarting — this window comes back on the same port." : "Start a fresh server without quitting the app. A turn that is running stops."}</small></div>
+              <button className="ib sm" disabled={restarting} onClick={async () => { if (!confirm("Restart the app server? A turn that is running now stops.")) return; setRestarting(true); await fetch("/api/desktop", { method: "POST", body: JSON.stringify({ action: "restart" }) }).catch(() => {}); }}>Restart</button></div>}
           </>}
           {tab === "mcp" && <Mcp servers={servers} saveSrv={saveSrv} reload={reloadSrv} saveSecret={(k, v) => saveS({ secrets: { [k]: v } })} flash={flash} />}
           {tab === "skills" && <Skills flash={flash} />}

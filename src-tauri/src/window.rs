@@ -27,8 +27,12 @@ pub fn handle(app: &AppHandle, shell: &Arc<Shell>, label: &str, event: &WindowEv
 
 fn close_requested(app: &AppHandle, shell: &Arc<Shell>, label: &str, api: &tauri::CloseRequestApi) {
     if label == SPLASH_WINDOW {
-        // Startup continues in the background regardless; just put it back if it is still useful.
-        api.prevent_close();
+        // The shell closes the splash itself once the main window is on screen. Before that,
+        // closing it would leave the user with no window at all while startup carries on, so it is
+        // held open — and released the moment there is something to replace it with.
+        if app.get_webview_window(MAIN_WINDOW).is_none() {
+            api.prevent_close();
+        }
         return;
     }
     if label != MAIN_WINDOW {
@@ -52,10 +56,13 @@ fn close_requested(app: &AppHandle, shell: &Arc<Shell>, label: &str, api: &tauri
 }
 
 /// The startup window: shown immediately, closed once the real UI is up (or replaced by an error
-/// message the user can act on). Skipped in development, where the server is already running and
-/// the window comes up straight away.
+/// message the user can act on).
+///
+/// It is created from the embedded `splash/` assets, which is why `tauri.conf.json` keeps
+/// `frontendDist` set even though the main window is loaded from the app server: development and
+/// release then behave identically here.
 pub fn create_splash(app: &AppHandle) -> tauri::Result<()> {
-    if crate::layout::is_dev() || app.get_webview_window(SPLASH_WINDOW).is_some() {
+    if app.get_webview_window(SPLASH_WINDOW).is_some() {
         return Ok(());
     }
     let _window = WebviewWindowBuilder::new(app, SPLASH_WINDOW, WebviewUrl::App("index.html".into()))

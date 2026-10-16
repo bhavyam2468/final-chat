@@ -7,8 +7,8 @@
 //! browser as a courtesy (it cannot raise another process's window from here), and exits.
 
 use std::net::{Ipv4Addr, TcpListener};
-use std::path::Path;
 
+use crate::layout::Layout;
 use crate::logging;
 
 /// Deliberately unusual, still inside the dynamic range, and never used for the app itself.
@@ -30,20 +30,30 @@ impl InstanceLock {
     }
 }
 
-/// Send the user to the instance that is already running, if it can be located.
-pub fn focus_existing(data_dir: &Path) {
-    let runtime = data_dir.join("runtime.json");
-    let port = std::fs::read_to_string(&runtime)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|json| json.get("port").and_then(|p| p.as_u64()))
-        .map(|p| p as u16);
-    match port {
-        Some(port) => {
-            let url = format!("http://127.0.0.1:{port}");
+/// Hand over to the instance that is already running, if there really is one.
+///
+/// The lock port can also be held by an unrelated program, in which case starting our own app is
+/// the right answer rather than refusing to launch. So "another instance" is only believed when
+/// the port recorded in `runtime.json` answers `/api/health` — that is our app, and nothing else.
+///
+/// Returns true when the caller should exit (the running app was opened for the user).
+pub fn focus_existing(layout: &Layout) -> bool {
+    let Some(port) = layout.read_runtime_port() else {
+        logging::warn("the single-instance port is in use but no running app was found");
+        return false;
+    };
+    let url = format!("http://127.0.0.1:{port}");
+    match crate::net::http_get(&format!("{url}/api/health"), std::time::Duration::from_millis(1500)) {
+        Ok((200, _)) => {
             logging::info(&format!("another instance is running on {url}; opening it and exiting"));
             crate::search::open_url(&url);
+            true
         }
-        None => logging::info("another instance is running; exiting"),
+        _ => {
+            logging::warn(&format!(
+                "the single-instance port is in use, but nothing answers on {url} — starting anyway"
+            ));
+            false
+        }
     }
 }

@@ -1,6 +1,5 @@
 import type { Settings } from "./settings";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type OAMsg = { role: string; content: any; tool_calls?: any[]; tool_call_id?: string };
 
 /** ~3.6 chars/token is a decent cross-model estimate for mixed prose/code. */

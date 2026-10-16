@@ -32,7 +32,7 @@ mod window;
 
 use std::sync::{Arc, OnceLock};
 
-use tauri::RunEvent;
+use tauri::{Manager, RunEvent};
 
 use crate::shell::Shell;
 
@@ -80,8 +80,12 @@ pub fn run() {
     let lock = match instance::InstanceLock::acquire() {
         Ok(Some(lock)) => Some(lock),
         Ok(None) => {
-            instance::focus_existing(&early.data);
-            return;
+            // Another instance (or an unrelated program on our lock port — `focus_existing` checks
+            // which, by asking the recorded port for a health answer).
+            if instance::focus_existing(&early) {
+                return;
+            }
+            None
         }
         Err(err) => {
             logging::warn(&format!("could not check for another instance ({err}); continuing"));
@@ -131,8 +135,17 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
-        .expect("could not build the desktop application");
+        .build(tauri::generate_context!());
+
+    // A GUI app has no console to print to: report a build failure to both the log and stderr.
+    let app = match app {
+        Ok(app) => app,
+        Err(err) => {
+            logging::error(&format!("could not build the desktop application: {err}"));
+            eprintln!("minimalist-ai: could not build the desktop application: {err}");
+            std::process::exit(1);
+        }
+    };
 
     let run_cell = Arc::clone(&shell_cell);
     app.run(move |_app, event| match event {

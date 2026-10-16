@@ -48,7 +48,6 @@ export async function procStart(st: Settings, o: { name: string; command: string
   const child = spawn(sp.cmd, sp.args, { cwd: sp.cwd, env: { ...sp.env, ...o.env, FORCE_COLOR: "0", CI: "1", BROWSER: "none" }, detached: true, stdio: ["pipe", "pipe", "pipe"] });
   const p: Proc = { name, command: o.command, cwd: o.cwd, host, child, log: "", dropped: 0, started: Date.now(), exit: null, ports: new Set() };
   const onData = (d: Buffer) => {
-    // eslint-disable-next-line no-control-regex
     const s = d.toString().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     p.log += s; scanPorts(p, s);
     if (p.log.length > MAX_LOG) { const cut = p.log.length - MAX_LOG * 0.8; p.dropped += cut; p.log = p.log.slice(cut); }

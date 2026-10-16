@@ -40,7 +40,6 @@ const terms: Map<string, Term> = (g.__terms ??= new Map());
 function ptyLib(): typeof import("node-pty") | null {
   if (g.__ptyLib) return g.__ptyLib;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     // Specifier built at run time on purpose. node-pty is optional, and a literal require()
     // makes Next's file tracer try to walk a package that may not exist — which it answers by
     // tracing the entire project. The desktop build copies the compiled module in explicitly

@@ -50,7 +50,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
 }
 
 impl Cli {
-    /// Flags that change process-wide environment used by `Layout::resolve`.
+    /// Flags that change process-wide environment used by `Layout::resolve` — the same variables
+    /// the app server later reads, so the CLI and the GUI agree on where the app's data lives.
     pub fn apply_env(&self) {
         if let Some(dir) = &self.data_dir {
             std::env::set_var("APP_DATA_DIR", dir);
@@ -58,9 +59,8 @@ impl Cli {
         if let Some(port) = self.port {
             std::env::set_var("DESKTOP_APP_PORT", port.to_string());
         }
-        if self.background {
-            std::env::set_var("DESKTOP_BACKGROUND", "1");
-        }
+        // `background` is not exported: the flag is consumed by `lib.rs` directly, and the app
+        // server has no opinion about whether the window was shown at launch.
     }
 
     pub fn print_help() {

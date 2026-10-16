@@ -677,7 +677,8 @@
 2. Implement execution branch in `switch (name)` inside `execTool()` in `src/lib/tools/index.ts`.
 3. If tool edits files, route writes through `src/lib/tools/edit.ts` and validate syntax via `src/lib/tools/syntax.ts`.
 4. Run validation: `npm run typecheck && npm run build`.
-5. Restart service: `systemctl --user restart minimalist-chat`.
+5. Restart the app server in place: `scripts/minimalist-ai-ctl restart` (the desktop shell starts a fresh one on the same port and the window reloads onto it; the same thing from inside the app is Settings → Restart).
+   A change to the shell or to the bundle needs a relaunch instead — `npm run desktop:build`, then start the app again.
 
 ### Adding an API Route
 1. Create directory `src/app/api/<route_name>/` and file `route.ts`.

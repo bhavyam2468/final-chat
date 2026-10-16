@@ -531,7 +531,9 @@ const Viewer = memo(function Viewer({ spec, winId, dock, active, onDock }: { spe
   else if (spec.kind === "chat") body = <ChatView id={spec.id} setBar={setBar} />;
   else if (spec.kind === "term") body = <TermView spec={spec} setBar={setBar} />;
   else if (k === "ui") body = mode === "a" ? <Block key={rev + ":" + src.length} source={src} done fill /> : editor;
-  else if (k === "image") body = <div className="imgview">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
+  // The viewer shows a file from the user's own workspace; next/image cannot optimize it.
+  // eslint-disable-next-line @next/next/no-img-element
+  else if (k === "image") body = <div className="imgview"><img src={fileUrl(path!)} alt="" /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div>;
   else if (k === "pdf") body = <PdfView key={path} path={path!} ink={ink} setInk={setInk} pen={pen} setBar={setBar} active={active} />;
   else if (k === "html") body = mode === "a" ? <div style={{ position: "relative", height: "100%" }}><iframe key={rev} className="full" src={fileUrl(path!)} sandbox="allow-scripts allow-forms allow-popups allow-modals" title={path} /><Ink strokes={ink.view || []} onChange={(s) => setInk("view", s)} active={pen} /></div> : editor;
   else if (k === "md") body = mode === "a" ? <div className="reader"><StreamMarkdown text={src} {...md} /></div> : editor;

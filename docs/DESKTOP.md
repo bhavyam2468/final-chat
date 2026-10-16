@@ -51,13 +51,19 @@ same code runs unchanged in a browser during development (`npm run dev`).
 6. In the background: a watchdog thread checks both services every two seconds. A dead app server is
    restarted on the same port when it is still free (the window reloads onto it); a dead SearXNG is
    restarted with backoff. Restarts are logged, never silent.
+   An app server that exits *on purpose* says so first, in `runtime.json`: `restart: true` means
+   "replace me, don't count this as a crash" and `quit: true` means "end the app" — that is what
+   `POST /api/desktop {action:"restart"}` and the `stop` used on shutdown write, and the shell
+   clears each flag as it acts on it. Without them a deliberate exit would look like a crash and
+   the watchdog would start the server straight back up.
 7. After the window is up, `python -m venv` + `pip install -r python-requirements.txt` runs in the
    background to provision `<data>/venv` for `run_python` and office previews. It never delays the
    window, and quitting during the install takes pip down with it.
 
-**Shutdown** is ordered and bounded, from any of: the tray's Quit, closing the last window when no
-tray exists, or a signal. The shell asks the server to stop (`POST /api/desktop {action:"stop"}`,
-which closes child processes and PGlite first), waits, then escalates within the same process group.
+**Shutdown** is ordered and bounded, from any of: the tray's Quit, `minimalist-ai-ctl stop`,
+`POST /api/desktop {action:"stop"}` (which the shell turns into a quit via the `quit: true` note),
+closing the last window when no tray exists, or a signal. The shell asks the server to stop (which
+closes child processes and PGlite first), waits, then escalates within the same process group.
 
 ---
 

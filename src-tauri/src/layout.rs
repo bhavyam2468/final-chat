@@ -107,12 +107,15 @@ impl Layout {
         }
     }
 
+    /// The app version the window's splash and `/api/health` report. The bundle records it in
+    /// BUILD-INFO.json; a `tauri dev` run has no bundle, so it falls back to the crate version —
+    /// the two are kept equal by dev/tests/desktop.test.ts.
     pub fn version(&self) -> String {
         self.build_info
             .as_ref()
             .and_then(|v| v.get("version"))
             .and_then(|v| v.as_str())
-            .unwrap_or("0.0.0")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
             .to_string()
     }
 
@@ -227,14 +230,26 @@ impl Layout {
     /// writes `restart: true` into the runtime file before exiting). Clears the request, so the
     /// flag can never make a later crash look intentional.
     pub fn take_restart_request(&self) -> bool {
+        self.take_request("restart")
+    }
+
+    /// True when the app server asked the whole app to quit (`POST /api/desktop {action:"stop"}`).
+    /// The server cannot end the app by exiting: the watchdog would see a dead server and start a
+    /// new one. It leaves a note instead, and the shell quits.
+    pub fn take_quit_request(&self) -> bool {
+        self.take_request("quit")
+    }
+
+    /// Read `key: true` out of the runtime file and clear it, so it is acted on exactly once.
+    fn take_request(&self, key: &str) -> bool {
         let Ok(text) = fs::read_to_string(&self.runtime_file) else { return false };
         let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
-        if json.get("restart").and_then(|v| v.as_bool()) != Some(true) {
+        if json.get(key).and_then(|v| v.as_bool()) != Some(true) {
             return false;
         }
         if let Some(object) = json.as_object_mut() {
-            object.remove("restart");
-            object.remove("restartAt");
+            object.remove(key);
+            object.remove(&format!("{key}At"));
         }
         let _ = fs::write(&self.runtime_file, serde_json::to_vec_pretty(&json).unwrap_or_default());
         true
@@ -307,6 +322,12 @@ pub fn is_dev() -> bool {
         Some("dev") => true,
         _ => cfg!(debug_assertions),
     }
+}
+
+/// A port the app server was *asked* to use (`--port`, exported by `cli::apply_env`).
+/// `None` means "pick a free one"; a request that cannot be honoured is dropped by the caller.
+pub fn app_port() -> Option<u16> {
+    std::env::var("DESKTOP_APP_PORT").ok().and_then(|v| v.parse().ok()).filter(|p| *p != 0)
 }
 
 /// The port the dev server listens on (Next's default for `npm run dev -- -p 3100`).

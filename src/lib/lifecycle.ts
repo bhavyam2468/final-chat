@@ -41,14 +41,31 @@ export async function shutdown(reason: string): Promise<void> {
  */
 export function requestRestart(): { ok: boolean; error?: string } {
   if (!DESKTOP) return { ok: false, error: "restart is only available in the desktop app" };
+  return requestHandover("restart");
+}
+
+/**
+ * Ask the desktop shell to quit the whole app.
+ *
+ * Exiting is not enough on its own: the shell supervises this process, so a server that simply
+ * dies looks like a crash and gets started again. The note in the runtime file is what tells the
+ * shell "this one was asked for" — the same mechanism the restart uses.
+ */
+export function requestQuit(): { ok: boolean; error?: string } {
+  if (!DESKTOP) return { ok: false, error: "quit is only available in the desktop app" };
+  return requestHandover("quit");
+}
+
+/** Write `<flag>: true` into the runtime file, then leave through the normal teardown. */
+function requestHandover(flag: "restart" | "quit"): { ok: boolean; error?: string } {
   try {
     const current = fs.existsSync(RUNTIME_FILE) ? JSON.parse(fs.readFileSync(RUNTIME_FILE, "utf8")) : {};
-    fs.writeFileSync(RUNTIME_FILE, `${JSON.stringify({ ...current, restart: true, restartAt: Date.now() }, null, 2)}\n`);
+    fs.writeFileSync(RUNTIME_FILE, `${JSON.stringify({ ...current, [flag]: true, [`${flag}At`]: Date.now() }, null, 2)}\n`);
   } catch (e) {
     return { ok: false, error: `could not write ${RUNTIME_FILE}: ${(e as Error).message}` };
   }
   // Answer the request first, then tear down (the caller sees a clean 200).
-  setTimeout(() => void shutdown("restart request"), 100);
+  setTimeout(() => void shutdown(`${flag} request`), 100);
   return { ok: true };
 }
 

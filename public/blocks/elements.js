@@ -382,7 +382,6 @@
     const own = new Set(vars.split(",").map((x) => x.trim()));
     const free = [...new Set((e.match(/\b[a-zA-Z_]\w*\b/g) || []).filter((w) => !own.has(w) && !MATHN.has(w) && !MATHN.has(w.toLowerCase())))];
     const pro = free.map((w) => `const ${w}=+v[${JSON.stringify(w)}]||0;`).join("");
-    // eslint-disable-next-line no-new-func
     const f = new Function(vars, "v", `with(Math){const e=E,sec=(z)=>1/cos(z),csc=(z)=>1/sin(z),cot=(z)=>1/tan(z);${pro}return (${e});}`);
     return { f, free };
   }

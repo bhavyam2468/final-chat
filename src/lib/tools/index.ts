@@ -208,7 +208,6 @@ async function guardAndWrite(f: string, before: string, after: string, spans: [n
   return { ok: true, result: `${notes.length ? notes.join("; ") + "\n" : ""}${snippet(after, spans)}${warn}` };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function execTool(name: string, a: Record<string, any>, ctx: ToolCtx): Promise<ToolOut> {
   const st = ctx.settings;
   const P = (p: string) => resolvePath(String(p ?? "."), st.access);

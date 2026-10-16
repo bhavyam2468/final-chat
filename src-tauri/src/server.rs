@@ -207,16 +207,19 @@ fn run_tracked(shell: &std::sync::Arc<crate::shell::Shell>, name: &str, program:
         }
     };
     let mut child = child;
-    loop {
-        if !child.is_running() {
-            return child.exit_code() == Some(0);
+    shell.track(child.pid);
+    let ok = loop {
+        if child.has_exited() {
+            break child.exit_code() == Some(0);
         }
         if shell.shutting_down.load(Ordering::Relaxed) {
             child.stop(Duration::from_secs(2));
-            return false;
+            break false;
         }
         std::thread::sleep(Duration::from_millis(250));
-    }
+    };
+    shell.untrack(child.pid);
+    ok
 }
 
 /// `<venv>/bin/python` (POSIX) or `<venv>/Scripts/python.exe` (Windows).

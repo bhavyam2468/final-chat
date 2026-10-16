@@ -7,7 +7,7 @@
 #   minimalist-ai-ctl status     is it running, and on which port?
 #   minimalist-ai-ctl logs       follow the shell log
 #   minimalist-ai-ctl restart    restart the app server in place (the window reloads)
-#   minimalist-ai-ctl stop       quit the running app
+#   minimalist-ai-ctl stop       quit the running app (services shut down first)
 #   minimalist-ai-ctl open       launch it, or print the URL of the running instance
 #   minimalist-ai-ctl data       print (and create) the data directory
 #
@@ -91,7 +91,7 @@ case "${1:-status}" in
   stop)
     if live="$(url)"; then
       curl -fsS -X POST -H 'content-type: application/json' -d '{"action":"stop"}' "$live/api/desktop" >/dev/null
-      echo "stopped"
+      echo "quitting; services shut down first"
     else
       echo "not running"
     fi

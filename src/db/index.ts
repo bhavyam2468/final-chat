@@ -39,9 +39,7 @@ function make(): NodePgDatabase {
     g.__wsSchema ??= pool.query(DDL).then(() => undefined).catch((e) => console.warn("[db] schema init:", e.message));
     return drizzlePg(pool);
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { PGlite } = require("@electric-sql/pglite");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { drizzle: drizzleLite } = require("drizzle-orm/pglite");
   require("fs").mkdirSync(PGLITE_DIR, { recursive: true });
   const client = new PGlite(PGLITE_DIR);

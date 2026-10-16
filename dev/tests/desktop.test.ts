@@ -123,6 +123,162 @@ await t("web mode is untouched: no environment, historical project-relative defa
   assert.equal(got.paths.envFile, path.join(root, "config.env"));
 });
 
+await t("every flag the shell accepts is actually consumed", () => {
+  const cli = read("src-tauri", "src", "cli.rs");
+  const layout = read("src-tauri", "src", "layout.rs");
+  const shell = read("src-tauri", "src", "shell.rs");
+  const lib = read("src-tauri", "src", "lib.rs");
+  // --data-dir → the variable layout.rs resolves the data directory from.
+  assert.match(cli, /set_var\("APP_DATA_DIR"/);
+  assert.match(layout, /var\("APP_DATA_DIR"\)/);
+  // --port → a port request the shell prefers, and falls back from when it is taken.
+  assert.match(cli, /set_var\("DESKTOP_APP_PORT"/);
+  assert.match(layout, /pub fn app_port\(\) -> Option<u16>/);
+  assert.match(shell, /server::start_on_port\(layout, searx_url\.as_deref\(\), layout::app_port\(\)/, "the requested port never reaches the server");
+  // --background → hides the window at launch, the way the autostart entry asks for.
+  assert.match(cli, /pub background: bool/);
+  assert.match(lib, /shell\.boot\(app\.handle\(\), !background\)/);
+  // The entry that is installed at login must actually ask for a hidden start.
+  const autostart = read("src-tauri", "src", "autostart.rs");
+  assert.match(autostart, /Exec=\{quoted\} --background/, "the login entry must not pop the window");
+  assert.match(autostart, /fn entry_path\(\) -> Option<PathBuf>/);
+  // …and the tray must not offer the toggle where there is no mechanism behind it.
+  assert.ok(read("src-tauri", "src", "tray.rs").includes("autostart::is_supported()"));
+});
+
+// ── the restart protocol: one file, written by the app server and read by the shell ────────
+// `POST /api/desktop {action:"restart"}` cannot restart anything itself — a Node process cannot
+// replace itself. What it actually does is write `restart: true` into runtime.json and exit; the
+// shell's watchdog sees the file, keeps the port, and does not count the exit as a crash. Both
+// halves are exercised here through the real modules, against a real file.
+const runtimeWith = (dir: string, body: Record<string, unknown>) => {
+  const file = path.join(dir, "runtime.json");
+  fs.writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`);
+  return file;
+};
+
+await t("a restart request is written into runtime.json and keeps the keys the shell needs", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-restart-"));
+  const runtimeFile = runtimeWith(tmp, { port: 3312, pid: 4242, startedAt: 1 });
+  const got = inFreshProcess(
+    { APP_MODE: "desktop", APP_DATA_DIR: tmp, RUNTIME_FILE: runtimeFile },
+    `const fs = await import("node:fs");
+     const { requestRestart } = await import(${JSON.stringify(moduleUrl("src/lib/lifecycle.ts"))});
+     const result = requestRestart();
+     const file = JSON.parse(fs.readFileSync(process.env.RUNTIME_FILE, "utf8"));
+     fs.writeSync(1, JSON.stringify({ result, file }) + "\\n");
+     // The teardown it scheduled is a separate concern; the file is what is under test.
+     process.exit(0);`
+  );
+  assert.deepEqual(got.result, { ok: true });
+  assert.equal(got.file.restart, true, "the shell keys off restart: true");
+  assert.equal(typeof got.file.restartAt, "number", "restartAt is how a stale request is spotted");
+  assert.equal(got.file.port, 3312, "the port survives: the shell reuses it so the window stands");
+  assert.equal(got.file.pid, 4242, "the pid survives too — the file is read as one document");
+});
+
+await t("the desktop endpoint answers, then stops; a bad action is rejected", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-route-"));
+  const runtimeFile = runtimeWith(tmp, { port: 3312, pid: 4242 });
+  const got = inFreshProcess(
+    { APP_MODE: "desktop", APP_DATA_DIR: tmp, RUNTIME_FILE: runtimeFile },
+    `const fs = await import("node:fs");
+     const route = await import(${JSON.stringify(moduleUrl("src/app/api/desktop/route.ts"))});
+     const post = (body) => route.POST(new Request("http://127.0.0.1/api/desktop", { method: "POST", body: JSON.stringify(body) }));
+     const restart = await post({ action: "restart" });
+     const bad = await post({ action: "nope" });
+     fs.writeSync(1, JSON.stringify({
+       restart: { status: restart.status, body: await restart.json() },
+       bad: { status: bad.status, body: await bad.json() },
+       file: JSON.parse(fs.readFileSync(process.env.RUNTIME_FILE, "utf8")),
+     }) + "\\n");
+     process.exit(0);`
+  );
+  assert.equal(got.restart.status, 200, "a restart is answered before the server goes down");
+  assert.deepEqual(got.restart.body, { ok: true, restarting: true });
+  assert.equal(got.file.restart, true, "…and the request really is on disk by then");
+  assert.equal(got.bad.status, 400);
+});
+
+await t("outside the desktop app a restart is refused, and nothing is written", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-web-"));
+  const runtimeFile = runtimeWith(tmp, { port: 3000, pid: 1 });
+  const got = inFreshProcess(
+    // No APP_MODE: this is the web/dev server, which has no supervisor to bring it back.
+    { APP_DATA_DIR: tmp, RUNTIME_FILE: runtimeFile },
+    `const fs = await import("node:fs");
+     const { requestRestart } = await import(${JSON.stringify(moduleUrl("src/lib/lifecycle.ts"))});
+     const route = await import(${JSON.stringify(moduleUrl("src/app/api/desktop/route.ts"))});
+     const response = await route.POST(new Request("http://127.0.0.1/api/desktop", { method: "POST", body: JSON.stringify({ action: "restart" }) }));
+     fs.writeSync(1, JSON.stringify({
+       result: requestRestart(),
+       status: response.status,
+       body: await response.json(),
+       file: fs.readFileSync(process.env.RUNTIME_FILE, "utf8"),
+     }) + "\\n");
+     process.exit(0);`
+  );
+  assert.equal(got.result.ok, false);
+  assert.match(String(got.result.error), /desktop/i);
+  assert.equal(got.status, 409, "the route turns the refusal into a 409");
+  assert.match(String(got.body.error), /desktop/i);
+  assert.ok(!got.file.includes("restart"), "an unsupported request must not be written to the file");
+});
+
+await t("the shell consumes each request once, without treating either as a crash", () => {
+  const layout = read("src-tauri", "src", "layout.rs");
+  // Same keys, same file: the writer in src/lib/lifecycle.ts and the reader here are one contract.
+  assert.match(layout, /pub fn take_restart_request\(&self\) -> bool \{\s*self\.take_request\("restart"\)/);
+  assert.match(layout, /pub fn take_quit_request\(&self\) -> bool \{\s*self\.take_request\("quit"\)/);
+  assert.match(layout, /json\.get\(key\)\.and_then\(\|v\| v\.as_bool\(\)\) != Some\(true\)/);
+  assert.match(layout, /object\.remove\(key\)/, "the flag has to be cleared when it is taken");
+  assert.match(layout, /object\.remove\(&format!\("\{key\}At"\)\)/, "…and so does its timestamp");
+  assert.match(layout, /pub fn write_runtime\(&self, port: u16, pid: u32\)/, "the shell writes the file in the first place");
+  assert.match(layout, /"port": port, "pid": pid, "startedAt"/, "the keys the server-side reader expects");
+
+  const shell = read("src-tauri", "src", "shell.rs");
+  const watchdog = shell.slice(shell.indexOf("pub fn watchdog"));
+  assert.ok(watchdog.length > 0, "shell.rs has no watchdog");
+  // Quit is answered first: a stop that fell through to the restart path would look like a crash.
+  const quit = watchdog.indexOf("take_quit_request()");
+  const restart = watchdog.indexOf("take_restart_request()");
+  assert.ok(quit > -1 && restart > -1);
+  assert.ok(quit < restart, "the quit request must be checked before the restart request");
+  assert.match(watchdog, /take_quit_request\(\) \{[\s\S]{0,300}shell\.stop_all\(\);\s*app\.exit\(0\)/, "a quit request ends the app");
+  assert.match(watchdog, /let requested = shell\.layout\.take_restart_request\(\);/);
+  assert.match(watchdog, /if requested \{[\s\S]{0,200}restart_attempts\.store\(0/, "a requested restart resets the crash backoff");
+  assert.match(watchdog, /\} else \{[\s\S]{0,300}fetch_add\(1/, "…and only a real death counts an attempt");
+  assert.match(watchdog, /if requested \{[\s\S]{0,200}logging::info\("app server asked for a restart/, "a request is logged as information, not as a warning");
+  // The restart path puts the window back on the new port; without that the reload goes nowhere.
+  const restartServer = shell.slice(shell.indexOf("pub fn restart_server"));
+  assert.match(restartServer, /write_runtime\(port, std::process::id\(\)\)/, "a restarted server rewrites the port it landed on");
+});
+
+await t("a stop request quits the whole app instead of looking like a crash", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-quit-"));
+  const runtimeFile = runtimeWith(tmp, { port: 3312, pid: 4242 });
+  const got = inFreshProcess(
+    { APP_MODE: "desktop", APP_DATA_DIR: tmp, RUNTIME_FILE: runtimeFile },
+    `const fs = await import("node:fs");
+     const { requestQuit } = await import(${JSON.stringify(moduleUrl("src/lib/lifecycle.ts"))});
+     const route = await import(${JSON.stringify(moduleUrl("src/app/api/desktop/route.ts"))});
+     const response = await route.POST(new Request("http://127.0.0.1/api/desktop", { method: "POST", body: JSON.stringify({ action: "stop" }) }));
+     fs.writeSync(1, JSON.stringify({
+       direct: requestQuit(),
+       status: response.status,
+       body: await response.json(),
+       file: JSON.parse(fs.readFileSync(process.env.RUNTIME_FILE, "utf8")),
+     }) + "\\n");
+     process.exit(0);`
+  );
+  assert.equal(got.status, 200);
+  assert.deepEqual(got.body, { ok: true, quitting: true }, "the caller is told the app is going, not just the server");
+  assert.equal(got.file.quit, true, "the shell needs the note, or it restarts what it thinks died");
+  assert.equal(typeof got.file.quitAt, "number");
+  assert.equal(got.file.port, 3312, "the rest of the runtime file is left alone");
+  assert.deepEqual(got.direct, { ok: true });
+});
+
 // ── dev/ sidecars: present in a checkout, copied into the bundle ─────────────────────────────
 await t("developer-mode sidecars resolve in a bundle layout and in a checkout layout", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-devfiles-"));
@@ -194,6 +350,8 @@ await t("resource target names match the paths layout.rs computes", () => {
 await t("the identifiers and versions on both sides agree", () => {
   assert.match(read("src-tauri", "src", "layout.rs"), new RegExp(`IDENTIFIER: &str = "${conf.identifier.replace(/\./g, "\\.")}"`));
   assert.equal(conf.version, packageJson.version, "the bundle version is the app version");
+  // The crate version is what a `tauri dev` run reports before any bundle exists.
+  assert.equal(/^\s*version\s*=\s*"([^"]+)"/m.exec(cargo)?.[1], packageJson.version, "the crate version is the app version too");
   assert.equal(conf.mainBinaryName, "minimalist-ai");
   assert.equal(conf.productName, "Minimalist AI Workspace");
 });

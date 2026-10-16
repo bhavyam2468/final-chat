@@ -31,9 +31,9 @@ pub struct Shell {
     pub layout: Layout,
     pub searxng: Mutex<Option<Search>>,
     pub server: Mutex<Option<AppServer>>,
-    /// Short-lived helper processes (python venv/pip). Tracked so quitting mid-install does not
-    /// leave a pip running in the background with no way to stop it.
-    pub background: Mutex<Vec<Child>>,
+    /// Short-lived helper processes (python venv/pip), by pid. Tracked so quitting mid-install
+    /// does not leave a pip running in the background with no way to stop it.
+    pub background: Mutex<Vec<u32>>,
     pub shutting_down: AtomicBool,
     /// False when the tray could not be created (missing libayatana-appindicator): closing the
     /// window must then quit the app instead of hiding it into an invisible tray.
@@ -67,11 +67,17 @@ impl Shell {
         self.server.lock().ok().and_then(|g| g.as_ref().map(|s| s.port))
     }
 
-    /// Hand a helper process to the shell so `stop_all` can end it.
-    pub fn track(&self, child: Child) {
+    /// Remember a helper process (by pid) so `stop_all` can end it.
+    pub fn track(&self, pid: u32) {
         if let Ok(mut guard) = self.background.lock() {
-            guard.retain(|c| c.is_running());
-            guard.push(child);
+            guard.push(pid);
+        }
+    }
+
+    /// Forget a helper that finished on its own.
+    pub fn untrack(&self, pid: u32) {
+        if let Ok(mut guard) = self.background.lock() {
+            guard.retain(|p| *p != pid);
         }
     }
 
@@ -81,6 +87,7 @@ impl Shell {
         let shell = Arc::clone(self);
         let app = app.clone();
         std::thread::spawn(move || {
+            splash_version(&app, &shell.layout.version());
             if let Err(err) = shell.start_services(&app) {
                 logging::error(&format!("startup failed: {err}"));
                 splash(&app, "Could not start", "error");
@@ -126,7 +133,7 @@ impl Shell {
         splash(app, "Starting search", "working");
         match search::start(layout, &|text| splash_detail(app, text)) {
             Ok(search) => {
-                logging::info(&format!("search engine ready: {}", search.url));
+                logging::info(&format!("search engine ready on {} ({})", search.url, search.engine));
                 *self.searxng.lock().map_err(|e| e.to_string())? = Some(search);
             }
             Err(err) => {
@@ -138,7 +145,7 @@ impl Shell {
 
         let searx_url = self.searxng_url();
         splash(app, "Starting the app server", "working");
-        let started = server::start(layout, searx_url.as_deref(), &|text| splash_detail(app, text))?;
+        let started = server::start_on_port(layout, searx_url.as_deref(), layout::app_port(), &|text| splash_detail(app, text))?;
         let port = started.port;
         let ready = server::wait_ready(&started, &started.child, Duration::from_secs(120), &|text| splash_detail(app, text));
         if !ready {
@@ -279,8 +286,16 @@ impl Shell {
                     .map(|guard| guard.as_ref().map(|s| !s.child.is_running()).unwrap_or(false))
                     .unwrap_or(false);
                 if server_dead && !shell.shutting_down.load(Ordering::Relaxed) {
-                    // The server can ask for this itself (POST /api/desktop {action:"restart"}):
-                    // that is not a crash, so it neither warns nor counts against the backoff.
+                    // `POST /api/desktop {action:"stop"}` is a request to end the app, not a crash:
+                    // without this the watchdog would dutifully start the server again.
+                    if shell.layout.take_quit_request() {
+                        logging::info("app server asked to quit; stopping the app");
+                        shell.stop_all();
+                        app.exit(0);
+                        return;
+                    }
+                    // The server can also ask to be *replaced* (POST /api/desktop {action:"restart"}):
+                    // that is not a crash either, so it neither warns nor counts against the backoff.
                     let requested = shell.layout.take_restart_request();
                     let attempts = if requested {
                         shell.restart_attempts.store(0, Ordering::Relaxed);
@@ -347,8 +362,13 @@ impl Shell {
             }
         }
         if let Ok(mut guard) = self.background.lock() {
-            for child in guard.drain(..) {
-                stop_child(&child, Duration::from_secs(3));
+            // Helpers (venv, pip) are owned by the thread that started them, which is what escalates
+            // to SIGKILL and untracks the pid — here they only get an immediate nudge, so quitting
+            // during a pip install does not wait for the poll interval. A pid that has already
+            // exited is still a zombie at worst: nothing reaps it before its own thread does.
+            for pid in guard.drain(..) {
+                logging::info(&format!("stopping helper process {pid}"));
+                crate::child::signal_group(pid, crate::child::Signal::Term);
             }
         }
         logging::info("services stopped");
@@ -366,6 +386,13 @@ pub fn splash(app: &AppHandle, text: &str, state: &str) {
     logging::info(text);
     if let Some(window) = app.get_webview_window(SPLASH_WINDOW) {
         let _ = window.eval(format!("window.setStatus({}, {})", json(text), json(state)));
+    }
+}
+
+/// Fill in the splash's version line (the window is created before the layout is read).
+pub fn splash_version(app: &AppHandle, version: &str) {
+    if let Some(window) = app.get_webview_window(SPLASH_WINDOW) {
+        let _ = window.eval(format!("window.setVersion({})", json(&format!("v{version}"))));
     }
 }
 

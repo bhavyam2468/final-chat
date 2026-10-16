@@ -345,7 +345,6 @@ export async function runAgent(opts: { conv: Conv; assistantId: string; parentId
       const split = new ReasoningSplitter();
       let buf = "", text = "", thought = "", checkedAt = 0, thoughtAt = 0, looped = false;
       const stepStart = Date.now();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const calls: any[] = [];
       const visible = (t: string) => {
         let v = opener.push(t);
