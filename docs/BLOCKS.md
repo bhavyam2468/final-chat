@@ -9,7 +9,7 @@ BlocksUI is the language the model writes inside `<ui>…</ui>` to produce inter
 
 The runtime owns every visual decision (theme, radius, spacing, typography, motion, responsiveness), so any combination the model writes looks like it belongs to the app. Models never write CSS.
 
-Files: `public/blocks/runtime.js` (streaming parser, bindings, relations, helpers), `public/blocks/elements.js` (components), `public/blocks/runtime.css` (the design system). The model's quick reference is `workspace-template/system/skills/blocks/SKILL.md` (~2k tokens; the everyday blocks are also taught directly in SYSTEM.md and those examples are part of the e2e bench), and `ui_search` serves per-component detail from `src/lib/blocks/catalog.ts`.
+Files: `public/blocks/runtime.js` (streaming parser, bindings, relations, helpers), `public/blocks/elements.js` (elements), `public/blocks/flowchart.js` (native diagrams), `public/blocks/schema.js` (shared registry/validation), `public/blocks/flow-core.js` (bounded graph parser), `public/blocks/runtime.css` (the design system). The model's quick reference is `workspace-template/system/skills/blocks/SKILL.md` (retrieved on demand; the everyday blocks are also taught directly in SYSTEM.md and those examples are part of the e2e bench), and `ui_search` serves per-component detail from `src/lib/blocks/catalog.ts`.
 
 ## Design principles
 
@@ -20,14 +20,14 @@ Files: `public/blocks/runtime.js` (streaming parser, bindings, relations, helper
   - Leaf components show a skeleton matched to their shape until their closing tag arrives, then render once.
   - Nothing that has rendered is re-rendered by later chunks, so nothing jumps.
   - Put `<style type="rel">` and data first so layout is known before content lands.
-- **Relative, not absolute.** Sizes are weights (`size: 3x`) and positions are relations (`place: start`, `group: controls`). The same UI works in a narrow docked canvas, a wide window, portrait or landscape.
+- **Relative, not absolute.** Space uses weights (`weight: 3`), independently of typography (`type: body`); legacy `size: 3x` still couples both and positions are relations (`place: start`, `group: controls`). The same UI works in a narrow docked canvas, a wide window, portrait or landscape.
 - **Token-frugal.** Short attribute names, CSV/pipe data formats, JSON only when structure needs it.
 
 ## Anatomy
 
 ```html
 <ui>
-<style type="rel"> .plot { size: 3x } .ctl { group: sliders } </style>
+<style type="rel"> .plot { weight: 3 } .ctl { group: sliders } </style>
 <script type="data" name="pts">[[0,1],[1,3]]</script>
 <x-state n="0"></x-state>
 
@@ -43,6 +43,8 @@ Files: `public/blocks/runtime.js` (streaming parser, bindings, relations, helper
 The default attribute values are shown where they matter. All components accept `class`, `id`, `tone` (`accent|success|danger|warning|info|neutral`) and bindings.
 
 ### Layout
+
+`x-block` composes functional elements with locally scoped `x-data`, inputs and references. Optional `surface="card"` adds a surface, not a new behavior. `x-split weights="2:1" min="240" axis="horizontal|vertical"` arranges children proportionally and reflows based on its own width; nest splits for adaptive compositions. `x-grid cols="3" min="180"` also measures its own available width. Use stable, globally unique DOM IDs; `x-ref` is local. Editable loops use `:key="item.id"` to preserve input values and focus across reorder.
 | Tag | Notes |
 |---|---|
 | `x-stack` `x-row` `x-col` | Flow containers. `x-row` wraps; `x-stack` picks row or column from available width |
@@ -81,7 +83,8 @@ Native `h1–h4 p small ul ol table details code a` are styled. Also:
 | `x-graph fn xmin xmax ymin ymax equal points legend height` | Desmos-style plot with pan, zoom and hover readout. See the notes below |
 | `x-smiles smiles label` | 2D structure from SMILES |
 | `x-mol3d name|cid|smiles|pdb still` | Rotatable 3D structure (PubChem/RCSB) |
-| `x-mermaid` | Flowchart, sequence, mindmap and similar diagrams, from the body text |
+| `x-flowchart` | Native app-styled flowcharts. Body uses `A["Step"] --> B{"Decision"}` and `-->|label|` edges; define every node. ELK auto-layout, text wrapping, pan/zoom/Fit, keyboard navigation and text outline. `direction="down|right|up|left"`; bounded to 100 nodes / 200 edges. |
+| `x-mermaid` | Legacy/full Mermaid diagrams, including sequence and mindmap; preserved for existing content |
 | `x-draw w h` | Diagram mini-language, one primitive per line. See the list below |
 
 `x-graph` details:
@@ -238,3 +241,12 @@ Components are registered with `Blocks.define(tag, class extends Blocks.Base { i
 - Dispatch `change` for value changes so bindings update.
 
 Add a catalog entry in `src/lib/blocks/catalog.ts`, and add one line to the skill only if the component is fundamental.
+
+
+## Current implementation and playground
+
+Open `/blocks/playground.html` while the app is running: edit and compose working examples, resize to phone/landscape/extreme ratios, switch themes, inspect checks/events, search the same component registry used by `ui_search`, and opt into real backend execution. It loads the same scripts and opaque-origin iframe sandbox as chat. Run creates a new instance; resizing and theme changes preserve it. The lab does not send chat messages or save workspace files on your behalf.
+
+The host validates the sending window, decodes fragmented UTF-8 NDJSON, and aborts backend requests on unmount. `backend` and `backendStream` return promises with `.cancel()` and accept `{signal}`. Invocation-owned subprocess groups terminate on cancellation on POSIX; stopping a subscription to an existing named process only stops tailing it. No new execution privilege is granted. The workspace is only a soft sandbox if bubblewrap is unavailable.
+
+Tests, authoring examples, exact scope and limitations: [BLOCKS-IMPLEMENTATION.md](BLOCKS-IMPLEMENTATION.md). Canvas opening is explicitly a **new copy**, not transfer of an active instance; persistent/remount state serialization remains future work.

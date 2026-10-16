@@ -25,9 +25,28 @@
         this._src = this.textContent;
         if (this.constructor.owns) { this.__owns = true; this.textContent = ""; }
         this.init && this.init();
-        new MutationObserver(() => this.queue()).observe(this, { attributes: true });
+        this._attrs = new MutationObserver(() => this.queue());
       }
+      this._attrs.observe(this, { attributes: true });
+      this._resources?.forEach((r) => { if (!r.stop) r.stop = r.start(); });
       this.queue(true);
+    }
+    // Resources restart on reattachment. A keyed move within the same document is not a disposal.
+    resource(start) { const r = { start, stop: start() }; (this._resources ||= []).push(r); }
+    observe(target, options, callback) { this.resource(() => { const o = new MutationObserver(callback); o.observe(target, options); return () => o.disconnect(); }); }
+    resize(target, callback) { this.resource(() => { const o = new ResizeObserver(callback); o.observe(target); return () => o.disconnect(); }); }
+    task() {
+      this._task?.abort(); const task = this._task = new AbortController();
+      return { signal: task.signal, current: () => !task.signal.aborted && this._task === task && this.isConnected };
+    }
+    disconnectedCallback() {
+      queueMicrotask(() => {
+        if (this.isConnected) return;
+        this._task?.abort();
+        this._attrs?.disconnect(); cancelAnimationFrame(this._q); this._q = 0; this._sig = null;
+        this._resources?.forEach((r) => { r.stop?.(); r.stop = null; });
+        this.dispose?.();
+      });
     }
     sig() { return [...this.attributes].filter((a) => !SKIP.test(a.name)).map((a) => a.name + "=" + a.value).join("\u0001"); }
     queue(now) {
@@ -52,7 +71,36 @@
   define("x-stack", class extends HTMLElement {}, { container: true });
   define("x-row", class extends HTMLElement {}, { container: true });
   define("x-col", class extends HTMLElement {}, { container: true });
-  define("x-grid", class extends Base { render() { this.style.setProperty("--cols", this.a("cols", 2)); } }, { container: true });
+  define("x-grid", class extends Base {
+    init() { this.resize(this, () => this.render()); }
+    render() {
+      const max = Math.max(1, Math.min(12, this.n("cols", 2))), min = Math.max(80, this.n("min", 180));
+      const gap = parseFloat(getComputedStyle(this).gap) || 14;
+      this.style.setProperty("--cols", Math.min(max, Math.max(1, Math.floor((this.clientWidth + gap) / (min + gap)))));
+    }
+  }, { container: true });
+  define("x-block", class extends Base {
+    render() { header(this, "x-card-t", "div", (t) => esc(t)); }
+  }, { container: true });
+  define("x-split", class extends Base {
+    init() {
+      this.resize(this, () => this.arrange());
+      this.observe(this, { childList: true }, () => this.arrange());
+    }
+    render() { this.arrange(); }
+    arrange() {
+      const kids = [...this.children].filter((c) => !c.hidden && !["SCRIPT", "STYLE", "X-STATE"].includes(c.tagName));
+      const vertical = this.a("axis", "horizontal") === "vertical";
+      const weights = this.a("weights", "").split(/[:,]/).map(Number);
+      const gap = parseFloat(getComputedStyle(this).gap) || 14;
+      const min = Math.max(80, this.n("min", 240));
+      const narrow = this.clientWidth < kids.length * min + Math.max(0, kids.length - 1) * gap;
+      this.dataset.stacked = String(vertical || narrow);
+      const ratios = kids.map((_, i) => `minmax(0,${weights[i] > 0 && Number.isFinite(weights[i]) ? weights[i] : 1}fr)`).join(" ");
+      this.style.gridTemplateColumns = vertical || narrow ? "minmax(0,1fr)" : ratios;
+      this.style.gridTemplateRows = vertical ? ratios.replaceAll("minmax(0,", "minmax(min-content,") : "";
+    }
+  }, { container: true });
   // reactive header from title=… (attribute is consumed so the browser shows no tooltip over the whole box)
   function header(el, cls, tag, html) {
     const t = el.getAttribute("title");
@@ -71,16 +119,16 @@
   // tabs: <x-tabs><x-tab label="A">…</x-tab>…</x-tabs>
   define("x-tabs", class extends Base {
     init() {
-      this._bar = document.createElement("div"); this._bar.className = "x-tabs-bar"; this.prepend(this._bar);
+      this._bar = document.createElement("div"); this._bar.className = "x-tabs-bar"; this._bar.setAttribute("role", "tablist"); this.prepend(this._bar);
       this.index = this.n("index", 0);
-      new MutationObserver(() => this.build()).observe(this, { childList: true });
+      this.observe(this, { childList: true }, () => this.build());
     }
     tabs() { return [...this.children].filter((c) => c !== this._bar); }
     build() {
       const tabs = this.tabs();
       if (this._bar.childElementCount !== tabs.length) this._bar.innerHTML = tabs.map((t, i) => `<button type="button" data-i="${i}">${esc(t.getAttribute("label") || "Tab " + (i + 1))}</button>`).join("");
-      [...this._bar.children].forEach((b, i) => { b.classList.toggle("on", i === this.index); b.onclick = () => this.go(i); });
-      tabs.forEach((t, i) => { const on = i === this.index; if (t.hidden === on) { t.hidden = !on; if (on) { t.classList.remove("x-tab-in"); void t.offsetWidth; t.classList.add("x-tab-in"); } } });
+      [...this._bar.children].forEach((b, i) => { b.classList.toggle("on", i === this.index); b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(i === this.index)); b.tabIndex = i === this.index ? 0 : -1; b.onclick = () => this.go(i); b.onkeydown = (e) => { const next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : e.key === "ArrowRight" ? (i + 1) % tabs.length : e.key === "ArrowLeft" ? (i + tabs.length - 1) % tabs.length : null; if (next !== null) { e.preventDefault(); this.go(next); this._bar.children[next].focus(); } }; });
+      tabs.forEach((t, i) => { t.setAttribute("role", "tabpanel"); const on = i === this.index; if (t.hidden === on) { t.hidden = !on; if (on) { t.classList.remove("x-tab-in"); void t.offsetWidth; t.classList.add("x-tab-in"); } } });
     }
     go(i) { this.index = Math.max(0, Math.min(this.tabs().length - 1, i)); this.build(); change(this); }
     get value() { return this.index; }
@@ -95,7 +143,7 @@
       this._view = document.createElement("div"); this._view.className = "x-deck-view";
       this._nav = document.createElement("div"); this._nav.className = "x-deck-nav";
       this.append(this._nav);
-      new MutationObserver(() => this.build()).observe(this, { childList: true });
+      this.observe(this, { childList: true }, () => this.build());
       this.addEventListener("change", (e) => { if (e.target !== this) this.marks(); });
       this.addEventListener("keydown", (e) => { if (e.target.closest("input,textarea,select")) return; if (e.key === "ArrowRight") this.next(); if (e.key === "ArrowLeft") this.prev(); });
       this.tabIndex = -1;
@@ -179,6 +227,8 @@
     render() {
       if (!this._i) { this._i = document.createElement("i"); this.appendChild(this._i); this._i.style.width = "0"; }
       const max = this.n("max", 1), v = Math.max(0, Math.min(1, this.n("value", 0) / (max || 1)));
+      this.setAttribute("role", "progressbar"); this.setAttribute("aria-valuemin", "0"); this.setAttribute("aria-valuemax", String(max)); this.setAttribute("aria-valuenow", String(v * max));
+      if (!this.hasAttribute("aria-label")) this.setAttribute("aria-label", this.a("label", "Progress"));
       const t = this.tone; if (t) this.style.setProperty("--tone", `var(--${t})`);
       requestAnimationFrame(() => (this._i.style.width = v * 100 + "%"));
     }
@@ -336,21 +386,39 @@
   define("x-sparkline", class extends Base {
     render() { this.innerHTML = ""; const v = list(this.getAttribute("data")).map(Number); const mx = Math.max(...v), mn = Math.min(...v), r = mx - mn || 1; const s = svg("svg", { viewBox: "0 0 100 30", preserveAspectRatio: "none" }, this); drawIn(svg("path", { d: v.map((x, i) => `${i ? "L" : "M"}${(i / (v.length - 1 || 1)) * 100},${28 - ((x - mn) / r) * 26}`).join(" "), fill: "none", stroke: "var(--tone)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }, s)); }
   }, { void: true });
+  B.tableData = { parse(source, sep = ",") {
+    if (!source) return [];
+    const rows = []; let row = [], value = "", quoted = false;
+    for (let i = 0; i < source.length; i++) {
+      const c = source[i];
+      if (c === '"') { if (quoted && source[i + 1] === '"') { value += '"'; i++; } else quoted = !quoted; }
+      else if (!quoted && (c === sep || c === "\n")) {
+        row.push(value.trim()); value = "";
+        if (c === "\n") { rows.push(row); row = []; }
+      } else if (c !== "\r" || quoted) value += c;
+    }
+    row.push(value.trim()); rows.push(row);
+    return rows.map((r) => sep === "|" ? r.filter((_, i) => !(i === 0 && r[0] === "" || i === r.length - 1 && r[i] === "")) : r).filter((r) => !r.every((c) => /^:?-+:?$/.test(c)));
+  } };
   define("x-table", class extends Base {
     static owns = true;
     render() {
       let rows;
       const d = this.getAttribute("data");
-      if (d) { try { const j = JSON.parse(d); rows = Array.isArray(j[0]) ? j : [Object.keys(j[0] || {}), ...j.map((o) => Object.values(o))]; } catch { rows = []; } }
-      else { const src = (this.getAttribute("csv") || this._src || "").replace(/\\n/g, "\n").trim(); const sep = src.includes("\t") ? "\t" : src.split("\n")[0].includes("|") ? "|" : ","; rows = src.split("\n").map((r) => r.replace(/^\||\|$/g, "").split(sep).map((c) => c.trim())).filter((r) => !r.every((c) => /^:?-+:?$/.test(c))); }
-      if (!rows.length) return;
+      if (d) { try { const j = JSON.parse(d); rows = Array.isArray(j[0]) ? j : (() => { const keys = [...new Set(j.flatMap((o) => Object.keys(o)))]; return [keys, ...j.map((o) => keys.map((k) => o[k] ?? ""))]; })(); } catch { rows = []; } }
+      else {
+        const src = (this.getAttribute("csv") || this._src || "").replace(/\\n/g, "\n").trim();
+        const sep = src.includes("\t") ? "\t" : src.split("\n")[0].includes("|") ? "|" : ",";
+        rows = B.tableData.parse(src, sep);
+      }
+      if (!rows.length) { this.replaceChildren(); this._rows = []; return; }
       this._rows = rows; this._sort = this._sort || null; this.paint();
     }
     paint() {
       const [head, ...body] = this._rows; let b = body;
       if (this._sort) { const [c, dir] = this._sort; b = [...body].sort((x, y) => { const p = parseFloat(x[c]), q = parseFloat(y[c]); const r = !isNaN(p) && !isNaN(q) ? p - q : String(x[c]).localeCompare(String(y[c])); return dir * r; }); }
-      this.innerHTML = `<table><thead><tr>${head.map((h, i) => `<th data-c="${i}">${esc(h)}${this._sort && this._sort[0] === i ? (this._sort[1] > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead><tbody>${b.map((r, ri) => `<tr style="--i:${Math.min(ri, 20)}">${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
-      if (this.hasAttribute("sortable")) this.querySelectorAll("th").forEach((th) => (th.onclick = () => { const c = +th.dataset.c; this._sort = this._sort && this._sort[0] === c ? [c, -this._sort[1]] : [c, 1]; this.paint(); }));
+      this.innerHTML = `<table><thead><tr>${head.map((h, i) => `<th scope="col" data-c="${i}"${this.hasAttribute("sortable") ? ` tabindex="0" aria-sort="${this._sort?.[0] === i ? this._sort[1] > 0 ? "ascending" : "descending" : "none"}"` : ""}>${esc(h)}${this._sort && this._sort[0] === i ? (this._sort[1] > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead><tbody>${b.map((r, ri) => `<tr style="--i:${Math.min(ri, 20)}">${r.map((c) => `<td>${esc(B.show(c))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+      if (this.hasAttribute("sortable")) this.querySelectorAll("th").forEach((th) => { th.onclick = () => { const c = +th.dataset.c; this._sort = this._sort && this._sort[0] === c ? [c, -this._sort[1]] : [c, 1]; this.paint(); this.querySelector(`[data-c="${c}"]`).focus({preventScroll:true}); }; th.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); th.click(); } }; });
       B.typeset(this);
     }
   });
@@ -370,7 +438,7 @@
   // ================================================================ math & science
   define("x-math", class extends Base {
     static owns = true;
-    render() { const tex = this.getAttribute("tex") || this._src || ""; B.katex().then(() => { this.innerHTML = window.katex.renderToString(tex.trim(), { displayMode: !this.hasAttribute("inline"), throwOnError: false }); }); }
+    render() { const task = this.task(), tex = this.getAttribute("tex") || this._src || ""; B.katex().then(() => { if (!task.current()) return; this.innerHTML = window.katex.renderToString(tex.trim(), { displayMode: !this.hasAttribute("inline"), throwOnError: false }); }); }
   });
 
   // interactive function graph (Desmos-like). fn="a*sin(x); x^2+y^2=16; x=cos(t), y=sin(t); r=2sin(3θ)"
@@ -382,7 +450,6 @@
     const own = new Set(vars.split(",").map((x) => x.trim()));
     const free = [...new Set((e.match(/\b[a-zA-Z_]\w*\b/g) || []).filter((w) => !own.has(w) && !MATHN.has(w) && !MATHN.has(w.toLowerCase())))];
     const pro = free.map((w) => `const ${w}=+v[${JSON.stringify(w)}]||0;`).join("");
-    // eslint-disable-next-line no-new-func
     const f = new Function(vars, "v", `with(Math){const e=E,sec=(z)=>1/cos(z),csc=(z)=>1/sin(z),cot=(z)=>1/tan(z);${pro}return (${e});}`);
     return { f, free };
   }
@@ -428,17 +495,17 @@
       this._wrap.addEventListener("wheel", (e) => { if (!this.view) return; e.preventDefault(); const { r, sx, sy } = px(), k = Math.exp(e.deltaY * 0.0015), v = this.view; const cx = v.x0 + (e.clientX - r.left) * sx, cy = v.y1 - (e.clientY - r.top) * sy; this.view = { x0: cx - (cx - v.x0) * k, x1: cx + (v.x1 - cx) * k, y0: cy - (cy - v.y0) * k, y1: cy + (v.y1 - cy) * k }; this.paint(false); }, { passive: false });
       this._wrap.addEventListener("dblclick", () => { this.view = null; this.paint(false); });
       // resize keeps units-per-pixel (reveals more plane) instead of stretching the picture
-      new ResizeObserver(() => {
+      this.resize(this._wrap, () => {
         const w = this._wrap.clientWidth, h = this._wrap.clientHeight; if (!w || !h) return;
         if (this.view && this._size && (this._size[0] !== w || this._size[1] !== h)) { const v = this.view, sx = (v.x1 - v.x0) / this._size[0], sy = (v.y1 - v.y0) / this._size[1], cx = (v.x0 + v.x1) / 2, cy = (v.y0 + v.y1) / 2; this.view = { x0: cx - (w / 2) * sx, x1: cx + (w / 2) * sx, y0: cy - (h / 2) * sy, y1: cy + (h / 2) * sy }; }
         if (this._fns) this.paint(!this._painted);
-      }).observe(this._wrap);
+      });
     }
     render() { this._key = null; this.refresh(true); }
     refresh(force) {
       const src = this.getAttribute("fn") || this._src || "x";
       if (!this._fns || this._srcFn !== src) { this._srcFn = src; try { this._fns = parseFns(src); } catch (e) { this._fns = []; B.post && B.post("error", { text: "x-graph: " + e.message }); } this.view = null; }
-      const vars = {}; this._fns.forEach((f) => f.free.forEach((k) => { const v = B.evaluate(k); vars[k] = typeof v === "number" ? v : num(v, 0); }));
+      const vars = {}; this._fns.forEach((f) => f.free.forEach((k) => { const v = B.evaluate(k, this.__locals); vars[k] = typeof v === "number" ? v : num(v, 0); }));
       const key = JSON.stringify(vars);
       if (!force && key === this._key) return;
       this._key = key; this._vars = vars;
@@ -525,58 +592,68 @@
 
   define("x-smiles", class extends Base {
     render() {
+      const task = this.task();
       const sm = this.getAttribute("smiles") || (this._src || "").trim(); if (!sm) return;
       this.dataset.themed = ""; this.innerHTML = "";
       const s = svg("svg", { id: "sm" + Math.random().toString(36).slice(2) }, this); s.style.minHeight = (this.n("height", 200)) + "px";
       B.loadLib("smiles", "smiles-drawer.min.js").then(() => {
+        if (!task.current()) return;
         const SD = window.SmilesDrawer, dark = document.body.dataset.theme === "dark";
         const d = new SD.SvgDrawer({ width: this.n("width", 320), height: this.n("height", 200), bondThickness: 1.1, compactDrawing: false });
-        SD.parse(sm, (tree) => { d.draw(tree, s, dark ? "dark" : "light", false); s.classList.add("pop"); const l = this.getAttribute("label"); if (l) { const c = document.createElement("div"); c.className = "cap"; c.textContent = l; this.appendChild(c); } }, (e) => { this.innerHTML = `<div class="err">${esc(e)}</div>`; });
+        SD.parse(sm, (tree) => { if (!task.current()) return; d.draw(tree, s, dark ? "dark" : "light", false); s.classList.add("pop"); const l = this.getAttribute("label"); if (l) { const c = document.createElement("div"); c.className = "cap"; c.textContent = l; this.appendChild(c); } }, (e) => { if (task.current()) this.innerHTML = `<div class="err">${esc(e)}</div>`; });
       });
     }
   }, { void: true });
   define("x-mol3d", class extends Base {
+    dispose() { this._viewer?.spin(false); this._viewer?.clear(); this._viewer = null; }
     render() {
+      this.dispose(); const task = this.task();
       this.innerHTML = '<div class="m3"></div>'; const box = this.firstChild;
       const name = this.getAttribute("name"), cid = this.getAttribute("cid"), smiles = this.getAttribute("smiles"), pdb = this.getAttribute("pdb");
       B.loadLib("3dmol", "3Dmol-min.js").then(async () => {
-        const v = window.$3Dmol.createViewer(box, { backgroundAlpha: 0 });
+        if (!task.current()) return;
+        const v = this._viewer = window.$3Dmol.createViewer(box, { backgroundAlpha: 0 });
         let data, fmt = "sdf";
         const pc = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound";
-        if (pdb) { data = await (await fetch(`https://files.rcsb.org/download/${pdb}.pdb`)).text(); fmt = "pdb"; }
-        else { const q = cid ? `cid/${cid}` : smiles ? `smiles/${encodeURIComponent(smiles)}` : `name/${encodeURIComponent(name || "water")}`; data = await (await fetch(`${pc}/${q}/SDF?record_type=3d`)).text(); }
+        if (pdb) { data = await (await fetch(`https://files.rcsb.org/download/${pdb}.pdb`, {signal:task.signal})).text(); fmt = "pdb"; }
+        else { const q = cid ? `cid/${cid}` : smiles ? `smiles/${encodeURIComponent(smiles)}` : `name/${encodeURIComponent(name || "water")}`; data = await (await fetch(`${pc}/${q}/SDF?record_type=3d`, {signal:task.signal})).text(); }
+        if (!task.current()) return;
         v.addModel(data, fmt); v.setStyle({}, fmt === "pdb" ? { cartoon: { color: "spectrum" } } : { stick: { radius: 0.14 }, sphere: { scale: 0.24 } });
         v.zoomTo(); v.render(); if (!this.hasAttribute("still")) v.spin("y", 0.4);
-      }).catch((e) => { box.innerHTML = `<div class="err">${esc(e)}</div>`; });
+      }).catch((e) => { if (!task.current()) return; box.innerHTML = `<div class="err">${esc(e)}</div>`; });
     }
   }, { void: true });
   define("x-mermaid", class extends Base {
     static owns = true;
     render() {
+      const task = this.task();
       this.dataset.themed = ""; const code = (this._src || "").trim(), dark = document.body.dataset.theme === "dark";
       B.libImport("mermaid", "mermaid.esm.min.mjs").then(async ({ default: m }) => {
+        if (!task.current()) return;
         m.initialize({ startOnLoad: false, theme: "base", fontFamily: "inherit", themeVariables: { darkMode: dark, background: "transparent", primaryColor: css("--surface-solid") || (dark ? "#2b2a27" : "#e8e2d7"), primaryTextColor: css("--fg"), primaryBorderColor: css("--line-solid") || css("--muted"), lineColor: css("--muted"), secondaryColor: dark ? "#2f2c28" : "#efe9df", tertiaryColor: "transparent", fontSize: "14px" } });
-        try { const { svg: out } = await m.render("m" + Math.random().toString(36).slice(2), code); this.innerHTML = out; this.firstElementChild && this.firstElementChild.classList.add("pop"); } catch (e) { this.innerHTML = `<div class="err">${esc(e.message || e)}</div>`; }
+        try { const { svg: out } = await m.render("m" + Math.random().toString(36).slice(2), code); if (!task.current()) return; this.innerHTML = out; this.firstElementChild && this.firstElementChild.classList.add("pop"); } catch (e) { if (task.current()) this.innerHTML = `<div class="err">${esc(e.message || e)}</div>`; }
       });
     }
   });
   // TikZ diagrams (physics, circuits via circuitikz, geometry, pgfplots, chemfig, Feynman), rendered offline by the host
   define("x-tikz", class extends Base {
     static owns = true;
+    dispose() { this._done = null; }
     render() {
-      const src = (this.getAttribute("src-tex") || this._src || "").trim(); if (!src || this._done === src) return; this._done = src;
+      const src = (this.getAttribute("src-tex") || this._src || "").trim(); if (!src || this._done === src) return; this._done = src; const task = this.task();
       this.dataset.themed = ""; this.innerHTML = '<div class="b-skel" data-k="viz"></div>';
       B.loadLib("tikzjax", "fonts.css");
-      fetch(`${B.ORIGIN}/api/tikz`, { method: "POST", headers: { "content-type": "text/plain" }, body: src })
+      fetch(`${B.ORIGIN}/api/tikz`, { method: "POST", headers: { "content-type": "text/plain" }, body: src, signal: task.signal })
         .then((r) => r.json())
         .then((r) => {
+          if (!task.current()) return;
           if (!r.svg) throw new Error(r.error || "render failed");
           this.innerHTML = r.svg; const s = this.querySelector("svg"); if (!s) return;
           const w = parseFloat(s.getAttribute("width")) || 200, k = this.n("scale", 1.6);
           s.removeAttribute("height"); s.setAttribute("width", "100%"); s.style.maxWidth = Math.round(w * k) + "px"; s.classList.add("pop");
           const cap = this.getAttribute("caption"); if (cap) { const c = document.createElement("div"); c.className = "cap"; c.textContent = cap; this.appendChild(c); }
         })
-        .catch((e) => { const m = String(e.message || e); this.innerHTML = `<div class="err">TikZ: ${esc(m)}</div>`; B.post("error", { text: "x-tikz: " + m.slice(0, 300) }); });
+        .catch((e) => { if (!task.current()) return; this._done = null; const m = String(e.message || e); this.innerHTML = `<div class="err">TikZ: ${esc(m)}</div>`; B.post("error", { text: "x-tikz: " + m.slice(0, 300) }); });
     }
   });
   // x-draw: primitives for physics/geometry diagrams, one per line (px units)
@@ -629,13 +706,14 @@
 
   // ================================================================ time
   define("x-timer", class extends Base {
-    init() { this.mode = this.a("mode", "down"); this.total = this.n("seconds", this.mode === "up" ? 0 : 60); this._s0 = this.n("seconds", null); this.left = this.total; this.elapsed = 0; this.running = false; if (this.hasAttribute("autostart")) requestAnimationFrame(() => this.start()); }
+    init() { this.mode = this.a("mode", "down"); this.total = this.n("seconds", this.mode === "up" ? 0 : 60); this._s0 = this.n("seconds", null); this.left = this.total; this.elapsed = 0; this.running = false; if (this.hasAttribute("autostart")) requestAnimationFrame(() => { if (this.isConnected) this.start(); }); }
     // a new `seconds` value (e.g. a mode switch bound with :seconds) always takes effect, even mid-run
     render() { if (this.hasAttribute("seconds") && this.n("seconds") !== this._s0 && this.mode !== "up") { const was = this.running; this._s0 = this.n("seconds"); if (was) this.stop(); this.total = this.left = this._s0; this.elapsed = 0; if (was && this.hasAttribute("keep-running")) this.start(); this.tick(); return; } this.paint(); }
     paint() { this.textContent = fmt(this.mode === "up" ? this.elapsed : this.left); this.classList.toggle("low", this.mode !== "up" && this.running && this.left <= 10); }
     tick() { this.paint(); this.dispatchEvent(new CustomEvent("tick", { bubbles: true, detail: { id: this.id, left: this.left, total: this.total, elapsed: this.elapsed } })); }
+    dispose() { this.stop(); }
     start() {
-      if (this.running) return; this.running = true; this._last = performance.now(); this.setAttribute("running", "");
+      if (!this.isConnected || this.running) return; this.running = true; this._last = performance.now(); this.setAttribute("running", "");
       this._iv = setInterval(() => {
         const n = performance.now(), dt = (n - this._last) / 1000; this._last = n; this.elapsed += dt;
         if (this.mode !== "up") { this.left -= dt; if (this.left <= 0) { this.left = 0; this.stop(); this.tick(); this.dispatchEvent(new CustomEvent("done", { bubbles: true })); return; } }
@@ -664,8 +742,8 @@
       this._m = svg("line", { x1: 50, y1: 50, x2: 50, y2: 16, stroke: "var(--fg)", "stroke-width": 1.8, "stroke-linecap": "round" }, s);
       this._sec = svg("line", { x1: 50, y1: 56, x2: 50, y2: 12, stroke: "var(--accent)", "stroke-width": 0.8 }, s);
       svg("circle", { cx: 50, cy: 50, r: 2, fill: "var(--fg)" }, s);
-      document.addEventListener("tick", (e) => { const f = this.getAttribute("for"); if (f ? f !== e.detail.id : !this.hasAttribute("seconds")) return; this.show(e.detail.left, e.detail.total); });
-      if (!this.hasAttribute("seconds") && !this.hasAttribute("time") && !this.hasAttribute("for")) { const up = () => { const d = new Date(); this.hands(d.getHours(), d.getMinutes(), d.getSeconds() + d.getMilliseconds() / 1000); }; up(); setInterval(up, 200); }
+      this.resource(() => { const tick = (e) => { const f = this.getAttribute("for"); if (f ? f !== e.detail.id : !this.hasAttribute("seconds")) return; this.show(e.detail.left, e.detail.total); }; document.addEventListener("tick", tick); return () => document.removeEventListener("tick", tick); });
+      if (!this.hasAttribute("seconds") && !this.hasAttribute("time") && !this.hasAttribute("for")) { const up = () => { const d = new Date(); this.hands(d.getHours(), d.getMinutes(), d.getSeconds() + d.getMilliseconds() / 1000); }; this.resource(() => { up(); const timer = setInterval(up, 200); return () => clearInterval(timer); }); }
     }
     hands(h, m, s) { const rot = (el, deg) => el.setAttribute("transform", `rotate(${deg} 50 50)`); rot(this._h, ((h % 12) + m / 60) * 30); rot(this._m, (m + s / 60) * 6); rot(this._sec, s * 6); }
     show(left, total) { const m = Math.floor(left / 60), s = left % 60; this.hands(0, m, s); this._h.style.opacity = 0; this._arc.setAttribute("stroke-dashoffset", this._C * (1 - left / Math.max(1, total))); }
@@ -681,8 +759,10 @@
     get value() { return this._v; } set value(v) { this._v = v; this.render(); }
   });
   define("x-toggle", class extends Base {
-    init() { this.tabIndex = 0; this.setAttribute("role", "switch"); const t = () => { this.toggleAttribute("checked"); change(this); }; this.addEventListener("click", t); this.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } }); }
-    get value() { return this.hasAttribute("checked"); } set value(v) { this.toggleAttribute("checked", !!v); }
+    init() { this.tabIndex = 0; this.setAttribute("role", "switch"); const t = () => { if (this.hasAttribute("disabled")) return; this.value = !this.value; change(this); }; this.addEventListener("click", t); this.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } }); }
+    get value() { return this.hasAttribute("checked"); } set value(v) { this.toggleAttribute("checked", !!v); this.render(); }
+    render() { this.setAttribute("aria-checked", String(this.value)); this.setAttribute("aria-disabled", String(this.hasAttribute("disabled"))); }
+    sig() { return super.sig() + this.hasAttribute("checked"); }
     get checked() { return this.value; }
   }, { void: true });
   // checklist: lines "- [x] done item" / "- [ ] open item" / plain; `add` lets the user append items; value = [{text, done}]
@@ -791,7 +871,7 @@
       this.innerHTML = `<canvas></canvas><div class="sk-bar"><button type="button" class="sk-clear">Clear</button></div>`;
       const c = (this._c = this.querySelector("canvas")), g = c.getContext("2d"); let down = false;
       const fit = () => { const r = c.getBoundingClientRect(), d = devicePixelRatio || 1; const img = this._dirty ? c.toDataURL() : null; c.width = r.width * d; c.height = r.height * d; g.scale(d, d); g.lineCap = g.lineJoin = "round"; g.lineWidth = 2.2; g.strokeStyle = css("--fg"); if (img) { const im = new Image(); im.onload = () => g.drawImage(im, 0, 0, r.width, r.height); im.src = img; } };
-      requestAnimationFrame(fit); new ResizeObserver(fit).observe(c);
+      requestAnimationFrame(fit); this.resize(c, fit);
       const pt = (e) => { const r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
       c.onpointerdown = (e) => { down = true; c.setPointerCapture(e.pointerId); g.strokeStyle = css("--fg"); g.beginPath(); g.moveTo(...pt(e)); };
       c.onpointermove = (e) => { if (!down) return; g.lineTo(...pt(e)); g.stroke(); this._dirty = true; };
@@ -825,10 +905,13 @@
   }, { void: true });
   define("x-embed", class extends Base { render() { this.innerHTML = `<iframe src="${esc(fileUrl(this.getAttribute("src") || ""))}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" style="height:${this.n("height", 360)}px"></iframe>`; } }, { void: true });
   define("x-map", class extends Base {
+    dispose() { this._map?.remove(); this._map = null; }
     render() {
+      this.dispose(); const task = this.task();
       this.innerHTML = `<div class="mp" style="height:${this.n("height", 280)}px"></div>`; const box = this.firstChild;
       B.loadLib("leaflet", "leaflet.css"); B.loadLib("leaflet", "leaflet.js").then(() => {
-        const L = window.L, m = L.map(box, { zoomControl: true, attributionControl: false }).setView([this.n("lat", 20), this.n("lng", 0)], this.n("zoom", 3));
+        if (!task.current()) return;
+        const L = window.L, m = this._map = L.map(box, { zoomControl: true, attributionControl: false }).setView([this.n("lat", 20), this.n("lng", 0)], this.n("zoom", 3));
         L.tileLayer("https://{s}.basemaps.cartocdn.com/" + (document.body.dataset.theme === "dark" ? "dark_all" : "light_all") + "/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(m);
         const pts = (this.getAttribute("markers") || "").split("|").map((s) => s.split(",").map((x) => x.trim())).filter((p) => p.length >= 2);
         pts.forEach(([la, ln, ...lab]) => { const mk = L.circleMarker([+la, +ln], { radius: 6, color: css("--accent"), weight: 2, fillOpacity: 0.6 }).addTo(m); if (lab.length) mk.bindTooltip(lab.join(","), { permanent: this.hasAttribute("labels") }); });
@@ -840,6 +923,6 @@
   // ================================================================ state
   // <x-state score="0" answers="{}"> initial reactive values (JSON-parsed)
   define("x-state", class extends HTMLElement {
-    connectedCallback() { if (this._d) return; this._d = true; this.hidden = true; for (const a of this.attributes) if (!(a.name in B.store) && a.name !== "hidden") B.setStore(a.name, parseVal(a.value)); }
+    connectedCallback() { if (this._d) return; this._d = true; this.hidden = true; B.initState(this, this.attributes); }
   }, { void: true });
 })();

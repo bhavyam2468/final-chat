@@ -147,7 +147,7 @@ export const cases = [
 // The examples the system prompt teaches must render cleanly: they are read from SYSTEM.md itself.
 import fs from "node:fs";
 const SYS = fs.readFileSync(new URL("../workspace-template/system/SYSTEM.md", import.meta.url), "utf8");
-[...SYS.matchAll(/<ui>([\s\S]*?)<\/ui>/g)].filter((m) => m[1].includes("<")).forEach((m, i) => {
+[...SYS.matchAll(/^<ui>([\s\S]*?)<\/ui>/gm)].filter((m) => m[1].includes("<")).forEach((m, i) => {
   const tag = m[1].match(/<(x-[\w-]+)/)?.[1] || "html";
   cases.push({
     name: `system prompt example ${i + 1} ${tag}`, wait: 1200, src: m[1],

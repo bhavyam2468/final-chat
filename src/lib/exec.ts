@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -58,17 +59,28 @@ export function baseEnv(sandboxed: boolean): NodeJS.ProcessEnv {
 /** live output + cancellation for a run (the chat's Stop kills the process instead of waiting for its timeout) */
 export type IO = { onData?: (chunk: string) => void; signal?: AbortSignal };
 function spawnRun(cmd: string, args: string[], o: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; input?: string } & IO): Promise<RunOut> {
+  if (o.signal?.aborted) return Promise.resolve({ out: "(stopped by the user)", code: 1 });
   return new Promise((res) => {
-    const p = spawn(cmd, args, { cwd: o.cwd, env: o.env });
-    let out = "";
-    const cap = (d: Buffer) => { const s = d.toString(); if (out.length < 400000) out += s; o.onData?.(s); };
-    const t = setTimeout(() => { p.kill("SIGKILL"); out += `\n(timeout after ${Math.round(o.timeout / 1000)}s)`; }, o.timeout);
-    p.stdout.on("data", cap); p.stderr.on("data", cap);
-    const kill = () => { out += "\n(stopped by the user)"; try { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 1500); } catch {} };
+    // Shell descendants must not survive cancellation. Each invocation owns its process group on POSIX.
+    const grouped = process.platform !== "win32";
+    const p = spawn(cmd, args, { cwd: o.cwd, env: o.env, detached: grouped });
+    let out = "", escalation: ReturnType<typeof setTimeout> | undefined;
+    const append = (s: string) => { if (out.length < 400000) out += s.slice(0, 400000 - out.length); if (s) o.onData?.(s); };
+    const stdout = new StringDecoder("utf8"), stderr = new StringDecoder("utf8");
+    p.stdout.on("data", (d: Buffer) => append(stdout.write(d)));
+    p.stderr.on("data", (d: Buffer) => append(stderr.write(d)));
+    const terminate = (signal: NodeJS.Signals) => {
+      try { if (grouped && p.pid) process.kill(-p.pid, signal); else p.kill(signal); } catch { /* already exited */ }
+    };
+    const t = setTimeout(() => { out += `\n(timeout after ${Math.round(o.timeout / 1000)}s)`; terminate("SIGKILL"); }, o.timeout);
+    const kill = () => { out += "\n(stopped by the user)"; terminate("SIGTERM"); escalation = setTimeout(() => terminate("SIGKILL"), 1500); };
+    const cleanup = () => { clearTimeout(t); clearTimeout(escalation); o.signal?.removeEventListener("abort", kill); };
     if (o.signal?.aborted) kill(); else o.signal?.addEventListener("abort", kill, { once: true });
-    p.on("close", (code) => { clearTimeout(t); o.signal?.removeEventListener("abort", kill); res({ out, code: code ?? 1 }); });
-    p.on("error", (e) => { clearTimeout(t); res({ out: String(e), code: 1 }); });
-    if (o.input !== undefined) { p.stdin.write(o.input); p.stdin.end(); } else p.stdin.end();
+    p.on("close", (code) => { append(stdout.end()); append(stderr.end()); cleanup(); res({ out, code: code ?? 1 }); });
+    p.on("error", (e) => { cleanup(); res({ out: String(e), code: 1 }); });
+    // A cancelled process may close stdin before a large input has finished writing.
+    p.stdin.on("error", () => {});
+    if (o.input !== undefined) p.stdin.end(o.input); else p.stdin.end();
   });
 }
 

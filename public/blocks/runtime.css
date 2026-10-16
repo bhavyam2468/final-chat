@@ -14,7 +14,7 @@ body.fill{height:100vh;padding:20px;overflow:auto;--page-bg:var(--bg)}
 body.fill #root{max-width:1100px;margin:0 auto}
 #root.as-all,body[data-o=landscape] #root.as-landscape,body[data-o=portrait] #root.as-portrait{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,var(--aside-w,.62fr));grid-auto-flow:row dense;align-items:start;column-gap:calc(var(--gap)*1.6)}
 #root.as-all>*,body[data-o=landscape] #root.as-landscape>*,body[data-o=portrait] #root.as-portrait>*{grid-column:1}
-#root.as-all>.is-aside,body[data-o=landscape] #root.as-landscape>.is-aside,body[data-o=portrait] #root.as-portrait>.is-aside{grid-column:2;grid-row:1/span 40;position:sticky;top:0}
+#root.as-all>.is-aside,body[data-o=landscape] #root.as-landscape>.is-aside,body[data-o=portrait] #root.as-portrait>.is-aside{grid-column:2;grid-row:auto;position:relative}
 #root.as-start.as-all,body[data-o=landscape] #root.as-start.as-landscape,body[data-o=portrait] #root.as-start.as-portrait{grid-template-columns:minmax(0,var(--aside-w,.62fr)) minmax(0,1fr)}
 #root.as-start.as-all>*,body[data-o=landscape] #root.as-start.as-landscape>*,body[data-o=portrait] #root.as-start.as-portrait>*{grid-column:2}
 #root.as-start.as-all>.is-aside,body[data-o=landscape] #root.as-start.as-landscape>.is-aside,body[data-o=portrait] #root.as-start.as-portrait>.is-aside{grid-column:1}
@@ -53,8 +53,6 @@ x-row>button,x-row>x-badge,x-row>x-toggle,x-row>x-kbd,x-row>x-icon,x-row>x-timer
 x-row>x-spacer{flex:1 1 0;min-width:0}
 x-stack{align-items:stretch}
 x-grid{display:grid;grid-template-columns:repeat(var(--cols,2),minmax(0,1fr))}
-body[data-o=portrait] x-grid{grid-template-columns:repeat(min(var(--cols,2),2),minmax(0,1fr))}
-@media (max-width:380px){x-grid{grid-template-columns:minmax(0,1fr)!important}}
 .grp{display:flex;gap:var(--gap);align-items:flex-end;flex-wrap:wrap;min-width:0}
 .grp>*{flex:var(--g,1) 1 0;min-width:120px}
 .grp>button{flex:0 1 auto;min-width:0}
@@ -284,3 +282,26 @@ x-choice label.opt.other input{font-size:1em}
 /* forms: fields stretch, buttons keep their size, steady spacing */
 form{display:flex;flex-direction:column;gap:var(--gap);align-items:stretch;margin:0}
 form>:is(button,a.btn){align-self:flex-start}
+
+/* Composition allocates space independently from typography; each split measures its own width. */
+x-block{display:flex;flex-direction:column;gap:var(--gap);min-width:0;max-width:100%}
+x-block[surface=card]{padding:var(--pad);border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+x-split{display:grid;gap:var(--gap);min-width:0;align-items:stretch}
+x-split>*{min-width:0;max-width:100%;overflow-wrap:anywhere}
+x-table{max-width:100%;overflow:auto}x-table th[tabindex]{cursor:pointer}x-table th:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+x-toggle[disabled]{opacity:.5;cursor:not-allowed}
+/* Native diagrams deliberately reuse Quiet Paper's surfaces, text, and accent. */
+x-flowchart{display:block;min-width:0;max-width:100%;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden}
+.flow-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+.flow-head strong:empty{display:none}.flow-tools{display:flex;align-items:center;gap:4px;margin-left:auto;flex-wrap:wrap}.flow-tools button{padding:5px 9px;font-size:12px}.flow-tools output{font-size:11px;color:var(--muted);min-width:36px;text-align:center}
+.flow-view{position:relative;overflow:hidden;touch-action:pan-y;cursor:grab;outline-offset:-3px}.flow-view:active{cursor:grabbing}.flow-view>svg{display:block;max-width:none;height:100%}
+.flow-edge{fill:none;stroke:var(--muted);stroke-width:1.5}.flow-edge-label-bg{fill:var(--bg)}.flow-edge-label{fill:var(--muted);font:12px system-ui,sans-serif}
+.flow-shape{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.flow-node{cursor:pointer;outline:none}.flow-node:hover .flow-shape,.flow-node:focus .flow-shape{stroke:var(--accent);stroke-width:2}.flow-node-label{fill:var(--fg);font-size:14px;font-family:inherit;pointer-events:none}
+.flow-status{font-size:12px;color:var(--muted);padding:0 12px}.flow-status:not(:empty){padding:10px 12px}.flow-status[data-error]{color:var(--danger)}
+.flow-outline{border-top:1px solid var(--line);padding:8px 12px;font-size:12px;color:var(--muted)}.flow-outline summary{cursor:pointer}.flow-outline li{padding-block:3px}
+@media(prefers-reduced-motion:reduce){#root *,#root *:before,#root *:after{animation-duration:.001ms!important;transition-duration:.001ms!important;scroll-behavior:auto!important}}
+
+@media(max-width:480px){#root.as-all,#root.as-landscape,#root.as-portrait{display:flex!important;flex-direction:column}}
+/* Opaque-origin frames must paint their own background: some browsers otherwise use a white canvas
+   even inside a dark parent, making the inherited light text unreadable. */
+html{background:var(--bg);color-scheme:light}html[data-theme=dark],body[data-theme=dark]{color-scheme:dark}

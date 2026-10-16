@@ -19,6 +19,7 @@
     "3dmol": "^2.4.2",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
+    "elkjs": "^0.12.0",
     "geist": "^1.7.2",
     "highlight.js": "^11.12.0",
     "katex": "^0.18.9",
