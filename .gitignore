@@ -2,6 +2,16 @@
 /workspace
 /.next
 /node_modules
+*.tsbuildinfo
+
+# Generated at build time: browser libraries served by /vendor/<lib>/<file>
+/vendor
+
+# Desktop build payload (runtime, standalone server, bundled SearXNG) and Rust artifacts
+/.desktop
+/src-tauri/resources
+/src-tauri/target
+/src-tauri/gen
 
 # Secrets
 .env
@@ -13,5 +23,5 @@ Thumbs.db
 # Embedded database (PGlite) when DATABASE_URL is unset
 /data
 
-# Python venv for run_python / previews (setup.sh)
+# Python venv for run_python / previews
 /.venv

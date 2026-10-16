@@ -1,11 +1,12 @@
 import { drizzle as drizzlePg, NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import path from "path";
+import { PGLITE_DIR } from "../lib/paths";
 
 /**
  * Two drivers, one schema:
- * - DATABASE_URL set  -> real Postgres (docker-compose db, or any server)
- * - DATABASE_URL unset -> embedded Postgres (PGlite, WASM) stored in ./data/pglite.
+ * - DATABASE_URL set  -> real Postgres (any server).
+ * - DATABASE_URL unset -> embedded Postgres (PGlite, WASM) stored in PGLITE_DIR
+ *   (./data/pglite in web mode, <app data>/data/pglite in the desktop app).
  *   Zero-install local mode: `npm i && npm run build && npm start` just works.
  * Schema is created idempotently on first use, so `drizzle-kit push` is optional.
  */
@@ -23,7 +24,12 @@ CREATE INDEX IF NOT EXISTS messages_conv_idx ON messages (conversation_id);
 CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value jsonb NOT NULL);
 `;
 
-type G = typeof globalThis & { __wsDb?: NodePgDatabase; __wsPool?: Pool; __wsSchema?: Promise<void> };
+type G = typeof globalThis & {
+  __wsDb?: NodePgDatabase;
+  __wsPool?: Pool;
+  __wsLite?: { close: () => Promise<void> };
+  __wsSchema?: Promise<void>;
+};
 const g = globalThis as G;
 
 function make(): NodePgDatabase {
@@ -37,9 +43,9 @@ function make(): NodePgDatabase {
   const { PGlite } = require("@electric-sql/pglite");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { drizzle: drizzleLite } = require("drizzle-orm/pglite");
-  const dir = path.resolve(process.env.PGLITE_DIR || "./data/pglite");
-  require("fs").mkdirSync(dir, { recursive: true });
-  const client = new PGlite(dir);
+  require("fs").mkdirSync(PGLITE_DIR, { recursive: true });
+  const client = new PGlite(PGLITE_DIR);
+  g.__wsLite = client;
   // PGlite serialises queries, so DDL issued first always runs before app queries.
   g.__wsSchema ??= client.exec(DDL).then(() => undefined);
   return drizzleLite(client) as NodePgDatabase;
@@ -60,3 +66,20 @@ export const db: NodePgDatabase = new Proxy({} as NodePgDatabase, {
   },
 });
 export const schemaReady = () => g.__wsSchema ?? Promise.resolve();
+
+/**
+ * Close the database cleanly. The desktop shell asks the server to stop before it exits, and
+ * PGlite writes its WAL on close — skipping this means replaying (or losing) the last writes.
+ * Safe to call when no database was ever opened: it is then a no-op.
+ */
+export async function closeDb(): Promise<void> {
+  await (g.__wsSchema ?? Promise.resolve()).catch(() => {});
+  const lite = g.__wsLite;
+  g.__wsLite = undefined;
+  g.__wsDb = undefined;
+  g.__wsSchema = undefined;
+  const pool = g.__wsPool;
+  g.__wsPool = undefined;
+  if (lite) await lite.close().catch(() => {});
+  if (pool) await pool.end().catch(() => {});
+}

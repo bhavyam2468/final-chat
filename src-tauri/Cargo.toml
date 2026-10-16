@@ -1,0 +1,42 @@
+[package]
+name = "minimalist-ai"
+version = "0.1.0"
+description = "Minimalist AI Workspace — local chat, agent tools, Blocks and canvas as a desktop app"
+authors = ["bhavyam2468"]
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/bhavyam2468/final-chat"
+default-run = "minimalist-ai"
+
+# The shell has no business being a library on mobile; the lib target exists so the same code
+# can be reused by `cargo test` and future mobile targets, matching the Tauri v2 template.
+[lib]
+name = "minimalist_ai_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+# Deliberately plugin-free: process supervision, ports, tray, autostart and single-instance are
+# implemented in this crate with the standard library, so the dependency graph is small (fast
+# first build, fewer version constraints) and every behaviour is visible in src/.
+tauri = { version = "2.12.3", features = ["tray-icon", "image-png", "devtools"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Process groups, so stopping a child stops the shells and servers it spawned too.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# Tauri's CLI sets this for `tauri dev`.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -1,0 +1,21 @@
+{
+  "_comment": "Pinned inputs for the desktop build. Update deliberately: both entries change behaviour of a shipped app.",
+  "node": {
+    "version": "22.14.0",
+    "libc": "",
+    "githubRelease": "v22.14.0-20250716"
+  },
+  "searxng": {
+    "repo": "https://github.com/searxng/searxng.git",
+    "commit": "ff8f5ddcc9f2c58d8b0276ec030f6a3adfa17525",
+    "description": "master at the time the desktop bundle was written; SearXNG publishes rolling releases, the commit keeps provisioning reproducible"
+  },
+  "python": {
+    "minVersion": "3.10",
+    "standalone": {
+      "_comment": "Optional relocatable interpreter. Empty tag disables it and provisioning uses the system python3 instead (Arch always has one).",
+      "tag": "",
+      "version": "3.12.11"
+    }
+  }
+}

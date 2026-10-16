@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Minimalist AI Workspace</title>
+    <!--
+      Startup window. It is the only document the shell itself renders (assets are embedded in
+      the binary at build time); the real UI is the app server's own page, loaded into the main
+      window once /api/health is green. src/lib.rs drives this file through window.setStatus().
+    -->
+    <style>
+      :root {
+        --r: 12px;
+        --bg: #f2eee6;
+        --surface: #fbf9f5;
+        --line: #e2dcd0;
+        --fg: #23211e;
+        --muted: #837c72;
+        --accent: #b4553c;
+        --ok: #6f8a5f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1f1e1c;
+          --surface: #262523;
+          --line: #343230;
+          --fg: #ebe6de;
+          --muted: #8b857c;
+          --accent: #c96a4f;
+          --ok: #86a173;
+        }
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; }
+      body {
+        font: 13.5px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 28px 30px;
+        gap: 18px;
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      .row { display: flex; align-items: center; gap: 12px; }
+      .mark {
+        width: 34px; height: 34px; border-radius: var(--r);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        display: grid; place-items: center;
+        flex: 0 0 auto;
+      }
+      .mark span { width: 10px; height: 10px; border-radius: 3px; background: var(--accent); }
+      h1 { font-size: 15.5px; font-weight: 600; letter-spacing: -0.01em; }
+      .sub { color: var(--muted); font-size: 12.5px; }
+      .status { display: flex; flex-direction: column; gap: 10px; }
+      .line { display: flex; align-items: baseline; gap: 8px; }
+      #state { font-size: 13px; }
+      .track { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+      .bar {
+        height: 100%; width: 30%; background: var(--accent); border-radius: 2px;
+        animation: sweep 1.4s ease-in-out infinite;
+      }
+      @keyframes sweep {
+        0% { transform: translateX(-110%); }
+        100% { transform: translateX(360%); }
+      }
+      body[data-state="ok"] .bar { animation: none; width: 100%; background: var(--ok); }
+      body[data-state="error"] .bar { animation: none; width: 100%; background: var(--accent); }
+      #detail {
+        color: var(--muted); font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        min-height: 16px;
+      }
+      #hint { color: var(--muted); font-size: 12px; display: none; }
+      body[data-state="error"] #hint { display: block; }
+      .dots::after { content: ""; animation: dots 1.2s steps(4, end) infinite; }
+      @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+      body[data-state="ok"] .dots::after, body[data-state="error"] .dots::after { content: ""; animation: none; }
+    </style>
+  </head>
+  <body data-state="working">
+    <div class="row">
+      <div class="mark"><span></span></div>
+      <div>
+        <h1>Minimalist AI Workspace</h1>
+        <div class="sub" id="version"></div>
+      </div>
+    </div>
+
+    <div class="status">
+      <div class="line"><span id="state" class="dots">Starting</span></div>
+      <div class="track"><div class="bar"></div></div>
+      <div id="detail"></div>
+      <div id="hint">
+        The app could not start. Logs are in the menu bar icon → “Open logs”, or:
+        <span id="logpath">~/.local/share/dev.bhavyam.minimalist-ai/logs</span>
+      </div>
+    </div>
+
+    <script>
+      // Kept deliberately tiny: src/lib.rs calls these three functions through eval().
+      const state = document.getElementById("state");
+      const detail = document.getElementById("detail");
+      window.setStatus = (text, kind) => {
+        state.textContent = text;
+        document.body.dataset.state = kind || "working";
+      };
+      window.setDetail = (text) => {
+        detail.textContent = text || "";
+      };
+      window.setVersion = (text) => {
+        document.getElementById("version").textContent = text || "";
+      };
+      window.setLogPath = (text) => {
+        if (text) document.getElementById("logpath").textContent = text;
+      };
+    </script>
+  </body>
+</html>

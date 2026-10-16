@@ -4,9 +4,10 @@ import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { execFile } from "child_process";
+import { WORKSPACE_DIR, TEMPLATE_DIR, VENV_DIR } from "@/lib/paths";
 
-export const WS = path.resolve(process.env.WORKSPACE_DIR || "./workspace");
-const TEMPLATE = path.resolve("./workspace-template");
+export const WS = WORKSPACE_DIR;
+const TEMPLATE = TEMPLATE_DIR;
 
 let seeded = false;
 const sha1 = (b: Buffer) => crypto.createHash("sha1").update(b).digest("hex");
@@ -77,11 +78,11 @@ export async function ensureWorkspace() {
   seeded = true;
 }
 
-/** Python interpreter: PYTHON_BIN → the app's .venv (created by setup.sh; avoids PEP 668 "externally managed" errors) → python3. */
-// Runtime-only path built with Array.join: the bundler's file tracer follows path.join(process.cwd(), …) and
-// fails on .venv/bin/python (a symlink outside the project).
-const VENV_DIR = () => [process.cwd(), process.env.VENV_DIR || ".venv"].join("/");
-export const VENV = () => { const d = VENV_DIR(); return fss.existsSync([d, "bin", "python"].join("/")) ? d : ""; };
+/**
+ * Python interpreter: PYTHON_BIN → the app venv (VENV_DIR: `./.venv` in web mode, the app data
+ * directory in desktop builds; avoids PEP 668 "externally managed" errors) → python3.
+ */
+export const VENV = () => (fss.existsSync([VENV_DIR, "bin", "python"].join("/")) ? VENV_DIR : "");
 export const PY = () => process.env.PYTHON_BIN || (VENV() ? [VENV(), "bin", "python"].join("/") : "python3");
 
 export type AccessMode = "sandbox" | "home" | "full";

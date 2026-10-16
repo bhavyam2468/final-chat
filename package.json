@@ -1,12 +1,24 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "minimalist-ai-workspace",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run test:unit && npm run typecheck && npm run lint",
+    "test:unit": "node --experimental-strip-types --no-warnings dev/tests/run.mjs",
+    "test:e2e": "node dev/blocks-e2e.mjs",
+    "desktop:icons": "node scripts/desktop/icons.mjs",
+    "desktop:searxng": "node scripts/desktop/provision-searxng.mjs",
+    "desktop:prepare": "node scripts/desktop/prepare.mjs",
+    "desktop:smoke": "node scripts/desktop/smoke.mjs",
+    "desktop:appimage": "tauri build --bundles appimage",
+    "desktop:build": "tauri build",
+    "desktop:dev": "tauri dev",
+    "desktop:check": "npm run test:unit && npm run typecheck && npm run lint && npm run build && npm run desktop:prepare -- --skip-build && npm run desktop:smoke"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
@@ -42,6 +54,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
+    "@tauri-apps/cli": "2.12.3",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",

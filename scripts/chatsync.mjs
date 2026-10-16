@@ -179,14 +179,50 @@ function ensureTsConfigExclude() {
   } catch {}
 }
 
+// ── The desktop app ───────────────────────────────────────────────
+// The app is a Tauri desktop application: there is no service to restart. The shell writes its
+// live port to runtime.json (see src-tauri/src/layout.rs), and the app server can be replaced in
+// place with POST /api/desktop {action:"restart"} — the shell starts a fresh one on the same port
+// and the window reloads onto it.
+const APP_IDENTIFIER = 'dev.bhavyam.minimalist-ai';
+
+function dataDir() {
+  const base = process.env.XDG_DATA_HOME || join(process.env.HOME || '', '.local', 'share');
+  return process.env.APP_DATA_DIR || join(base, APP_IDENTIFIER);
+}
+
+function appPort() {
+  try {
+    const runtime = JSON.parse(readFileSync(join(dataDir(), 'runtime.json'), 'utf8'));
+    if (runtime.port) return Number(runtime.port);
+  } catch {}
+  return Number(process.env.PORT || 3000);
+}
+
+function appUrl() {
+  return `http://127.0.0.1:${appPort()}`;
+}
+
+function appIsRunning() {
+  const res = run('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', `${appUrl()}/api/health`], REPO_DIR, true);
+  return res.stdout.trim() === '200';
+}
+
 async function checkAppHealth(timeoutMs = 15000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = run('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', 'http://localhost:3000/api/health'], REPO_DIR, true);
-    if (res.stdout.trim() === '200') return true;
+    if (appIsRunning()) return true;
     await new Promise(r => setTimeout(r, 600));
   }
   return false;
+}
+
+/** Ask the running app to replace its own server, then wait for it to answer again. */
+async function restartApp() {
+  if (!appIsRunning()) return false;
+  run('curl', ['-s', '-X', 'POST', '-H', 'content-type: application/json',
+    '-d', '{"action":"restart"}', `${appUrl()}/api/desktop`], REPO_DIR, true);
+  return checkAppHealth(90000);
 }
 
 // ── Rollback State Management ─────────────────────────────────────
@@ -248,7 +284,7 @@ function header() {
   console.clear();
   console.log(gradient(ASCII_BANNER));
   console.log(`  ${c.dim}Repository:${c.reset} ${c.bold}${REPO_DIR}${c.reset}  ${c.dim}│${c.reset}  ${c.dim}Active Branch:${c.reset} ${CYAN}${getCurrentBranch()}${c.reset}`);
-  console.log(`  ${c.dim}Service:${c.reset}    ${GREEN}minimalist-chat.service${c.reset}  ${c.dim}│${c.reset}  ${c.dim}Target:${c.reset} ${AMBER}http://localhost:3000${c.reset}\n`);
+  console.log(`  ${c.dim}App:${c.reset}        ${GREEN}Tauri desktop (${APP_IDENTIFIER})${c.reset}  ${c.dim}│${c.reset}  ${c.dim}Server:${c.reset} ${AMBER}${appUrl()}${c.reset}\n`);
 }
 
 function promptSelect(items, promptTitle, renderItem) {
@@ -423,10 +459,9 @@ async function pullWorkflow() {
       if (b.status !== 0) throw new Error("Build failed: " + b.stderr);
     });
 
-    // 5. Restart service
-    await runAsyncWithSpinner(`Restarting minimalist-chat.service`, async () => {
-      const s = run('systemctl', ['--user', 'restart', 'minimalist-chat.service'], REPO_DIR);
-      if (s.status !== 0) throw new Error("Systemd restart failed");
+    // 5. Restart the app server (the desktop shell replaces it, the window reloads)
+    await runAsyncWithSpinner(`Restarting the app server`, async () => {
+      if (!(await restartApp())) throw new Error(`The app did not answer again on ${appUrl()} — is the desktop app running?`);
     });
 
     // 6. Verify health
@@ -443,7 +478,7 @@ async function pullWorkflow() {
   ${GREEN}║${c.reset}  Branch:   ${CYAN}${selectedBranch.ref.padEnd(46)}${c.reset}${GREEN}║${c.reset}
   ${GREEN}║${c.reset}  Target:   ${AMBER}${targetBranch.padEnd(46)}${c.reset}${GREEN}║${c.reset}
   ${GREEN}║${c.reset}  Commit:   ${selectedBranch.hash} ${selectedBranch.subject.slice(0, 36).padEnd(38)}${GREEN}║${c.reset}
-  ${GREEN}║${c.reset}  Status:   ${GREEN}● LIVE & ACTIVE${c.reset}  (${AMBER}http://localhost:3000${c.reset})           ${GREEN}║${c.reset}
+  ${GREEN}║${c.reset}  Status:   ${GREEN}● LIVE & ACTIVE${c.reset}  (${AMBER}${appUrl()}${c.reset})           ${GREEN}║${c.reset}
   ${GREEN}║${c.reset}  Rollback: ${AMBER}chatsync --rollback${c.reset} ${c.dim}(undo update anytime)${c.reset}          ${GREEN}║${c.reset}
   ${GREEN}╚═══════════════════════════════════════════════════════════╝${c.reset}
 `);
@@ -541,17 +576,16 @@ async function restartWorkflow() {
       if (b.status !== 0) throw new Error(b.stderr);
     });
 
-    await runAsyncWithSpinner("Restarting minimalist-chat.service", async () => {
-      const r = run('systemctl', ['--user', 'restart', 'minimalist-chat.service'], REPO_DIR);
-      if (r.status !== 0) throw new Error("Restart failed");
+    await runAsyncWithSpinner("Restarting the app server", async () => {
+      if (!(await restartApp())) throw new Error(`The app did not answer again on ${appUrl()}`);
     });
 
-    await runAsyncWithSpinner("Awaiting service health check", async () => {
+    await runAsyncWithSpinner("Awaiting health check", async () => {
       const ok = await checkAppHealth();
-      if (!ok) throw new Error("Service health check timed out");
+      if (!ok) throw new Error("Health check timed out");
     });
 
-    console.log(`\n  ${GREEN}✓ minimalist-chat is active and responding on http://localhost:3000${c.reset}\n`);
+    console.log(`\n  ${GREEN}✓ Minimalist AI Workspace is running at ${appUrl()}${c.reset}\n`);
   } catch (e) {
     console.log(`\n  ${ROSE}Failed to restart:${c.reset} ${e.message}\n`);
   }
@@ -733,10 +767,9 @@ async function rollbackWorkflow() {
       if (b.status !== 0) throw new Error("Build failed: " + b.stderr);
     });
 
-    // 5. Restart service
-    await runAsyncWithSpinner(`Restarting minimalist-chat.service`, async () => {
-      const s = run('systemctl', ['--user', 'restart', 'minimalist-chat.service'], REPO_DIR);
-      if (s.status !== 0) throw new Error("Systemd restart failed");
+    // 5. Restart the app server (the desktop shell replaces it, the window reloads)
+    await runAsyncWithSpinner(`Restarting the app server`, async () => {
+      if (!(await restartApp())) throw new Error(`The app did not answer again on ${appUrl()} — is the desktop app running?`);
     });
 
     // 6. Verify health
@@ -752,7 +785,7 @@ async function rollbackWorkflow() {
   ${GREEN}╠═══════════════════════════════════════════════════════════╣${c.reset}
   ${GREEN}║${c.reset}  Restored: ${CYAN}${rollbackTarget.shortHash} ${rollbackTarget.subject.slice(0, 36).padEnd(38)}${c.reset}${GREEN}║${c.reset}
   ${GREEN}║${c.reset}  Branch:   ${AMBER}${(rollbackTarget.branch || getCurrentBranch()).padEnd(46)}${c.reset}${GREEN}║${c.reset}
-  ${GREEN}║${c.reset}  Status:   ${GREEN}● LIVE & ACTIVE${c.reset}  (${AMBER}http://localhost:3000${c.reset})           ${GREEN}║${c.reset}
+  ${GREEN}║${c.reset}  Status:   ${GREEN}● LIVE & ACTIVE${c.reset}  (${AMBER}${appUrl()}${c.reset})           ${GREEN}║${c.reset}
   ${GREEN}╚═══════════════════════════════════════════════════════════╝${c.reset}
 `);
   } catch (err) {

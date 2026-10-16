@@ -157,6 +157,14 @@ export function portOwner(port: number): Promise<string> {
   return new Promise((res) => execFile("bash", ["-lc", `(ss -ltnpH "sport = :${port}" 2>/dev/null || lsof -iTCP:${port} -sTCP:LISTEN -n -P 2>/dev/null) | head -3`], { timeout: 4000 }, (_e, out) => res(String(out || "").trim())));
 }
 
-for (const sig of ["exit", "SIGINT", "SIGTERM"] as const) {
-  process.once(sig, () => { for (const p of procs.values()) if (p.exit === null) killTree(p, "SIGTERM"); if (sig !== "exit") process.exit(0); });
+/**
+ * Kill every process this server started. Called by the app-wide shutdown hook
+ * (`src/instrumentation.ts`) so a SIGTERM from the desktop shell tears the whole tree down
+ * instead of orphaning the dev servers the agent left running.
+ */
+export function procShutdown(sig: NodeJS.Signals = "SIGTERM") {
+  for (const p of procs.values()) if (p.exit === null) killTree(p, sig);
 }
+
+// Last resort if the process is torn down without the shutdown hook running.
+process.once("exit", () => procShutdown());

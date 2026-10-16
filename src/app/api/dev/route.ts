@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import path from "path";
 import { execFile } from "child_process";
+import { devFile } from "@/lib/devtools";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { WS, ensureWorkspace } from "@/lib/workspace";
 import { PY } from "@/lib/exec";
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
     await ensureWorkspace();
     const out = path.join(WS, "uploads/samples");
     const r = await new Promise<{ ok: boolean; log: string }>((res) =>
-      execFile(PY(), [path.join(process.cwd(), "dev/samples.py"), out], { timeout: 120000 }, (e, so, se) => res({ ok: !e, log: (so + se).slice(-2000) })));
+      execFile(PY(), [devFile("samples.py") || path.join(process.cwd(), "dev/samples.py"), out], { timeout: 120000 }, (e, so, se) => res({ ok: !e, log: (so + se).slice(-2000) })));
     return Response.json({ ...r, dir: "uploads/samples" }, { status: r.ok ? 200 : 500 });
   }
   if (b.mock) {

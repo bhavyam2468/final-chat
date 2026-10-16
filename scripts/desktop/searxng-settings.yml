@@ -1,0 +1,52 @@
+# Settings template for the SearXNG instance the desktop app runs itself (no Docker).
+#
+# The shell copies this into <app data>/searxng/settings.yml on first run and replaces
+# `secret_key` with a random value; SearXNG reads the copy through SEARXNG_SETTINGS_PATH.
+# Beyond that, this is only what the app's search adapter (src/lib/web.ts) needs:
+#   - `format: json`, without which the JSON API is off and search silently falls back to the
+#     keyless adapters,
+#   - a loopback-only, non-public instance (no limiter, no metrics, no image proxy),
+#   - safe search on, matching the adapter's `safesearch=1`.
+# Everything else keeps SearXNG's defaults; engines that cannot work from a desktop bundle
+# (Tor/onion, API-key-only) are switched off so they don't log an error on every query.
+# `npm run desktop:searxng` smoke-tests this file, so a typo here fails the build, not the app.
+
+use_default_settings: true
+
+general:
+  instance_name: "Minimalist AI (bundled)"
+  enable_metrics: false
+  donation_url: false
+  contact_url: false
+  privacypolicy_url: false
+
+server:
+  # Overwritten with a fresh random value per install by the desktop shell.
+  secret_key: "REPLACED_AT_FIRST_RUN"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  # The app talks to this instance over loopback only.
+  bind_address: "127.0.0.1"
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 1
+  # No suggester calls: the app never asks for autocomplete.
+  autocomplete: ""
+  default_lang: "auto"
+
+ui:
+  static_use_hash: true
+
+engines:
+  # Onion services: need Tor, which a desktop bundle does not ship.
+  - name: ahmia
+    disabled: true
+  - name: torch
+    disabled: true
+  # Needs an API key the user has not provided.
+  - name: braveapi
+    disabled: true

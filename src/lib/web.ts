@@ -40,7 +40,9 @@ export async function searxngSearch(st: Settings, query: string, limit: number) 
   u.searchParams.set("safesearch", "1");
   const r = await fetch(u, {
     signal: AbortSignal.timeout(3500),
-    headers: { Accept: "application/json", "User-Agent": "MinimalistChat/1.0" },
+    // X-Forwarded-For: SearXNG's bot detection wants a client address; without a header it logs an
+    // error for every query even though it answers. The instance is loopback-only, so this is us.
+    headers: { Accept: "application/json", "User-Agent": "MinimalistChat/1.0", "X-Forwarded-For": "127.0.0.1" },
   });
   if (!r.ok) return [];
   const j = await r.json() as { results?: SearchRow[] };

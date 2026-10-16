@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The shell exposes no Tauri APIs to page content: the UI is the app server's own document loaded from loopback, and it talks to the server over HTTP, not IPC. This capability therefore only covers the splash window's core needs.",
+  "windows": ["splash"],
+  "webviews": ["splash"],
+  "permissions": ["core:default"]
+}

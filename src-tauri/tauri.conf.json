@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Minimalist AI Workspace",
+  "mainBinaryName": "minimalist-ai",
+  "version": "0.1.0",
+  "identifier": "dev.bhavyam.minimalist-ai",
+  "build": {
+    "frontendDist": "./splash",
+    "devUrl": "http://127.0.0.1:3100",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null,
+      "freezePrototype": false,
+      "assetProtocol": {
+        "enable": false,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "deb", "rpm"],
+    "category": "Utility",
+    "publisher": "bhavyam2468",
+    "copyright": "MIT licensed",
+    "homepage": "https://github.com/bhavyam2468/final-chat",
+    "shortDescription": "Local AI workspace: chat, agent tools, Blocks, canvas",
+    "longDescription": "A local-first AI workspace: chat with your own model provider, a sandboxed workspace the agent can read and write, generative UI (Blocks), floating canvases with native viewers, and web research through a bundled SearXNG. Everything runs on this machine; nothing is sent anywhere except the model endpoint you configure.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/appserver": "appserver",
+      "resources/runtime": "runtime",
+      "resources/searxng": "searxng",
+      "resources/workspace-template": "workspace-template",
+      "resources/python-requirements.txt": "python-requirements.txt",
+      "resources/BUILD-INFO.json": "BUILD-INFO.json"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "gtk3", "libayatana-appindicator-gtk3"]
+      }
+    }
+  }
+}

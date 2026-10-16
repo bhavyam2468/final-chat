@@ -2,7 +2,11 @@
 
 A quiet, minimal blah blah AI operating surface: chat, sandboxed workspace, tools, generative UI (Blocks), and floating canvases, running entirely on your local machine with your own AI providers and zero mandatory cloud dependency.
 
-> **Live instance** runs as a systemd user service (on an arch device) at `http://localhost:3000`. Open it from the desktop app launcher.
+> **It is a desktop application.** A Tauri shell starts a bundled app server and a bundled
+> SearXNG on loopback ports and shows the UI in a native window; there is no service to install, no
+> port to remember and no Docker. Everything below still applies — the app *is* the same
+> Next.js/React application, packaged so it runs as a normal program on your machine.
+> See [`docs/DESKTOP.md`](docs/DESKTOP.md) for the architecture and how to build it.
 
 ---
 
@@ -26,8 +30,8 @@ A quiet, minimal blah blah AI operating surface: chat, sandboxed workspace, tool
 
 ## Tech Stack
 
-- **Framework**: Next.js 16 (App Router, Turbopack)  
-- **Language**: TypeScript 5 + React 19  
+- **Framework**: Next.js 16 (App Router, Turbopack) inside a **Tauri 2 desktop shell** (Rust)  
+- **Language**: TypeScript 5 + React 19; Rust for the shell (window, process supervision, tray)  
 - **Database**: Drizzle ORM on PostgreSQL (`DATABASE_URL`) or embedded **PGlite** (default, zero setup)  
 - **Styling**: Tailwind CSS v4  
 - **Markdown**: Custom `streammark` streaming renderer (KaTeX math, highlight.js, footnotes, embeds)  
@@ -46,7 +50,10 @@ A quiet, minimal blah blah AI operating surface: chat, sandboxed workspace, tool
 | `next.config.ts` | Next.js config |
 | `tsconfig.json` | TypeScript config |
 | `drizzle.config.json` | Drizzle ORM config pointing at `DATABASE_URL` |
-| `docker-compose.yml` | Starts Postgres 16 and the lightweight SearXNG + Valkey discovery stack (Firecrawl is not included) |
+| `src-tauri/` | The desktop shell: `src/*.rs` (window, services, tray, autostart, single instance), `tauri.conf.json` (bundle layout), `icons/`, `splash/`, and `resources/` (the assembled bundle, gitignored) |
+| `scripts/desktop/` | The build pipeline: `prepare.mjs` (assemble the bundle), `fetch-runtime.mjs` (staged Node), `provision-searxng.mjs` (pinned SearXNG + its python env), `icons.mjs`, `smoke.mjs` (29 end-to-end checks on the assembled bundle), `versions.json` (pins) |
+| `scripts/install-desktop.sh` | Source install: builds the bundle, the shell, a launcher and a desktop entry |
+| `scripts/minimalist-ai-ctl` | Control script: `status`, `logs`, `restart`, `stop`, `open`, `data` |
 | `.env` | **Local-only** environment variables (not committed) |
 | `DESIGN.md` | Visual/UX design principles for the app |
 | `workspace/` | Agent's working directory (gitignored). Contains `system/SYSTEM.md`, `system/AGENTS.md` (the user's own standing instructions), `system/skills/`, `system/mcp/servers.json`, `system/memory/` (profile + dated episodes), `uploads/`, `artifacts/`, `notes/`, `chats/` |
@@ -130,9 +137,12 @@ A quiet, minimal blah blah AI operating surface: chat, sandboxed workspace, tool
 
 ---
 
-## Environment Variables (`.env`)
+## Environment Variables (`.env`, or `config.env` in the desktop app)
 
-See [`.env.example`](.env.example). Everything except the workspace location can also be changed in Settings.
+In a checkout, settings live in `.env` (see [`.env.example`](.env.example)). The desktop app reads
+the same keys from `<data>/config.env` — one file, seeded with a commented template the first time
+the app starts and never overwritten (see [Data & configuration](docs/DESKTOP.md#data--configuration)).
+Everything except the workspace location can also be changed in Settings.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -140,7 +150,7 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | FreeLLMAPI | Any OpenAI-compatible endpoint (Gemini, OpenRouter, OpenAI, Ollama, FreeLLMAPI) |
 | `LLM_CONTEXT_TOKENS` | model preset | Context window; prompts are budgeted to fit (16k works) |
 | `LLM_WORKING_TOKENS` | 64000 | What one request may use even if the window is bigger; trimming, folding and auto-compaction work against it (Settings → Working context) |
-| `SEARXNG_URL` | `http://localhost:8080` | Local SearXNG JSON endpoint for URL discovery |
+| `SEARXNG_URL` | the bundled SearXNG | SearXNG JSON endpoint for URL discovery. The desktop app passes the port of the copy it started; set this to use one you run yourself |
 | `FIRECRAWL_ENABLED` | `0` | Explicitly enable Firecrawl escalation; off keeps local browsers out of ordinary research |
 | `FIRECRAWL_URL` / `FIRECRAWL_API_KEY` / `FIRECRAWL_CLOUD_URL` | local :3002 | Optional local/cloud fallback for difficult pages and structured extraction |
 | `WORKSPACE_DIR` | `./workspace` | Agent root |
@@ -153,7 +163,7 @@ See [`.env.example`](.env.example). Everything except the workspace location can
 | `QUALITY_GUARD` | `fix` | `fix` = lint UI files the agent writes and allow one repair round, `warn` = report only, `off` |
 | `CHROME_PATH` | auto-detect | Chrome/Chromium used by the `browser` and `check` tools |
 | `PYTHON_BIN` | `.venv` → `python3` | Interpreter for `run_python`, `pip_install` and office previews |
-| `PORT` | `3000` | Used by `setup.sh`, the service and the launcher |
+| `PORT` | a free port | The app server's port. Web/dev mode defaults to `3000`; the desktop shell picks a free one at every launch and records it in `<data>/runtime.json` |
 | `DEV_MODE` | `0` | `1` = developer mode (mock model, sample files); same as `window.__dev.enable()` |
 
 ---
@@ -255,7 +265,9 @@ __dev.samples()  // writes one example file per viewer type to uploads/samples (
 __dev.disable()
 ```
 
-`DEV_MODE=1` does the same from `.env`. The mock also runs standalone: `node dev/mock-llm.mjs 3099` and `LLM_BASE_URL=http://127.0.0.1:3099/v1`. It streams deliberately irregular chunks to exercise the renderer. Unit tests: `node --experimental-strip-types dev/tests/edit.test.ts`.
+`DEV_MODE=1` does the same from `.env`. The mock also runs standalone: `node dev/mock-llm.mjs 3099` and `LLM_BASE_URL=http://127.0.0.1:3099/v1`. It streams deliberately irregular chunks to exercise the renderer. Unit tests: `npm run test:unit` (or a single suite, `npm run test:unit -- edit`). In the desktop
+bundle the two developer-mode files (`dev/mock-llm.mjs`, `dev/samples.py`) are shipped alongside the
+server and resolved through `src/lib/devtools.ts`.
 
 ---
 
@@ -272,56 +284,71 @@ __dev.disable()
 - **`web_extract`** remains available for structured Firecrawl extraction when the operator enables Firecrawl and supplies a cloud key.
 - Local Firecrawl/Chromium is never contacted for routine searches or pages. Enable it only for JavaScript-heavy, anti-bot, or otherwise unsupported pages.
 
-### 3. Background Service & Desktop App
-- `~/.config/systemd/user/minimalist-chat.service`: runs `npm start` persistently; auto-starts Postgres on boot
-- `~/.local/share/applications/minimalist-chat.desktop`: shows in app launcher as "Minimalist AI Workspace"; opens in Zen Browser
-- `~/.local/bin/minimalist-chat`: CLI control script (`start|stop|restart|status|logs|open`)
+### 3. Desktop Application (Tauri)
+- The shell owns the window, the ports and the process tree; the Next.js app runs as a child process
+  on a free loopback port and its UI is loaded into a native window. Closing the window keeps the
+  app in the tray; `Quit` (tray) shuts both services down in order.
+- **Bundled SearXNG**, no Docker: a pinned SearXNG checkout plus its own python environment are
+  shipped in the app and started on another free port, with its settings generated into the data
+  directory. If it ever fails to start, the app still runs and search falls back to the keyless
+  adapters (`src/lib/web.ts`).
+- `~/.local/share/dev.bhavyam.minimalist-ai/` holds everything the app writes: `workspace/`,
+  `data/pglite/`, `logs/desktop.log`, `searxng/`, `venv/`, `config.env`, `runtime.json`.
+- `minimalist-ai-ctl` (installed by `scripts/install-desktop.sh`) gives the terminal controls a GUI
+  does not: `status`, `logs`, `restart`, `stop`, `data`.
 
 ---
 
-## Quick Start (Fresh Machine)
+## Quick Start
+
+### Desktop app (the supported way)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhavyam2468/final-chat/main/setup.sh | bash
-# or, in a checkout:  ./setup.sh [--local|--online] [--yes] [--update] [--no-service] [--with-firecrawl] [--port N]
-```
-
-`setup.sh`:
-- detects a desktop vs. a server and the OS package manager;
-- checks Node (offers nvm), Python (creates `.venv`), Docker, Chrome, bubblewrap, uv, LibreOffice and a `gh` login;
-- probes an existing FreeLLMAPI (:3001), Ollama (:11434), SearXNG (:8080), Firecrawl (:3002) and Postgres, and adds only missing `.env` keys (it asks for credentials when run interactively); if Docker is missing it offers to install Docker + Compose;
-- starts the lightweight Postgres/SearXNG stack by default; Firecrawl is not part of the ordinary path and only starts with `--with-firecrawl`;
-- installs, builds, and on a desktop installs the systemd user service / launchd agent, a `minimalist-chat` launcher and an app-menu entry;
-- binds to 127.0.0.1 locally, because the host terminal must not be reachable from the network. On a server it binds to 0.0.0.0 with `HOST_ACCESS=off`.
-
-`--with-firecrawl` clones and starts self-hosted Firecrawl in Docker. It also enables the explicit fallback in `.env`; ordinary research still uses SearXNG/HTTP first. Re-running is safe. After installation, `minimalist-chat update` (or `./setup.sh --update`) refuses a dirty source checkout, fast-forwards, rebuilds, and refreshes the service.
-
-Manual install:
-
-```bash
-# 1. Clone
 git clone https://github.com/bhavyam2468/final-chat.git && cd final-chat
-
-# 2. Copy and fill in your env
-cp .env.example .env
-# Edit .env with your FreeLLMAPI key, Firecrawl keys, etc.
-
-# 3. Start local Postgres + SearXNG (optional; PGlite and keyless search remain available)
-docker compose up -d
-
-# 4. Install (without DATABASE_URL the embedded PGlite DB is used)
 npm install
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python tools + office previews
-# optional: bubblewrap (sandbox isolation), libreoffice (page-accurate .doc/.ppt previews)
 
-# 5. Build and run
-npm run build
-npm start
+# Build the app server, the Node runtime and SearXNG into src-tauri/resources, then build the shell
+npm run desktop:prepare
+cd src-tauri && cargo build --release      # needs Rust (rustup) and webkit2gtk-4.1 + gtk3
+cd ..
 
-# App is at http://localhost:3000
+# Or let the installer do all of it and set up the launcher + menu entry:
+scripts/install-desktop.sh
 ```
 
-> `setup.sh` installs the service and launcher; `SETUP.md` has the owner's machine notes.
+Run it from your application launcher, or `minimalist-ai-ctl open`. A ready-made AppImage, `.deb`
+and `.rpm` can be produced with `npm run desktop:build` (they end up in
+`src-tauri/target/release/bundle/`).
+
+On Arch, the packages the shell needs are `webkit2gtk-4.1 gtk3 libayatana-appindicator` (the last
+one only for the tray icon), plus `rustup` to build it. Nothing else is required: the app server,
+Node and SearXNG all come from the bundle.
+
+### Running from source (development)
+
+```bash
+npm install
+npm run dev -- -p 3100       # the app server Next.js serves at :3100
+npm run desktop:dev          # the shell waits for :3100 and opens a window on it
+```
+
+`npm run dev` builds every route on demand and the shell reloads like a browser. `DESKTOP_MODE=desktop`
+points a debug shell at the assembled bundle instead, and `DESKTOP_MODE=dev` points a release build
+at a dev server.
+
+### Checks
+
+```bash
+npm run test:unit      # 9 suites: harness, memory, canvas, PDF, Blocks and the desktop contract
+npm run typecheck
+npm run lint
+npm run build
+npm run desktop:smoke  # starts the assembled bundle the way the shell does (29 checks)
+npm run desktop:check  # all of the above, in order
+```
+
+The two browser-driven benches need Chromium and a running server: `npm run test:e2e` (Blocks
+rendering) and `node dev/chat-e2e.mjs http://127.0.0.1:3100` (chat shell).
 
 ---
 

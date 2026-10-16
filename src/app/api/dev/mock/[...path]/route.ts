@@ -1,15 +1,19 @@
 import { NextRequest } from "next/server";
-import path from "path";
-import { pathToFileURL } from "url";
 import { getSettings } from "@/lib/settings";
+import { devFileUrl } from "@/lib/devtools";
 
 export const dynamic = "force-dynamic";
 
 type Mock = { search: (j: unknown) => unknown; complete: (j: unknown) => unknown; stream: (j: unknown) => AsyncGenerator<string>; models: () => unknown };
-/** The mock lives in dev/ (not bundled); loaded from disk only when developer mode is on. */
+/**
+ * The mock lives in dev/ and is loaded from disk only while developer mode is on. In the desktop
+ * bundle dev/mock-llm.mjs is shipped next to the server (prepare.mjs copies it) so offline
+ * development and this app's own smoke test keep working outside a checkout.
+ */
 async function mock(): Promise<Mock | null> {
   if (!(await getSettings()).dev) return null;
-  const f = pathToFileURL(path.join(process.cwd(), "dev/mock-llm.mjs")).href;
+  const f = devFileUrl("mock-llm.mjs");
+  if (!f) return null;
   return import(/* webpackIgnore: true */ /* turbopackIgnore: true */ f).catch(() => null);
 }
 

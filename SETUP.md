@@ -1,6 +1,8 @@
 # Setup & Developer Context
 
-This document explains exactly how this app was set up on the owner's machine and gives critical context for any AI coding assistant (Antigravity, Cursor, Claude, etc.) making future changes.
+This document explains how the app is set up on the owner's machine and gives critical context for
+any AI coding assistant making future changes. The app is a **desktop application** (Tauri shell +
+bundled app server + bundled SearXNG); the architecture is in [`docs/DESKTOP.md`](docs/DESKTOP.md).
 
 ---
 
@@ -13,117 +15,76 @@ This document explains exactly how this app was set up on the owner's machine an
 | **Browser** | Zen Browser (`~/Downloads/zen.linux-x86_64/zen/zen`) |
 | **Node** | `/usr/bin/node` (v26+) |
 | **npm** | `/usr/bin/npm` |
-| **Docker** | `/usr/bin/docker` (running rootful, accessible without sudo) |
-| **Python** | `python3` on PATH |
+| **Rust** | `rustup` toolchain (builds the desktop shell) |
+| **Python** | `python3` on PATH (used for the bundled SearXNG environment) |
 
 ---
 
-## Running Services
+## What Runs, and Where
 
-All services below are running locally via Docker containers. The app talks to them over `localhost`.
+The app is one program. Launching it starts everything it needs, on loopback ports chosen at launch:
 
-| Service | Container Name | Port | Description |
-|---|---|---|---|
-| **FreeLLMAPI** | `freellmapi-freellmapi-1` | `3001` | Local AI model proxy (200+ models). Network: `freellmapi_default` |
-| **SearXNG** | `searxng` | `8080` | Local JSON metasearch discovery for ordinary web research |
-| **SearXNG cache** | `searxng-cache` | — | Valkey cache used by the local SearXNG service |
-| **Firecrawl API** | `firecrawl-api-1` | `3002` | Optional self-hosted escalation for difficult pages; not used by ordinary searches |
-| **Firecrawl Redis** | `firecrawl-redis-1` | — | Internal Redis for Firecrawl job queue |
-| **Firecrawl RabbitMQ** | `firecrawl-rabbitmq-1` | — | Internal job broker |
-| **Firecrawl Playwright** | `firecrawl-playwright-service-1` | — | Headless browser for Firecrawl |
-| **Firecrawl Postgres (NUQ)** | `firecrawl-nuq-postgres-1` | — | Internal DB for Firecrawl |
-| **App Postgres** | `minimalist-ai-chat-workspace-db-1` | `5432` | The chat app's own Postgres DB |
+| Piece | How it runs | Notes |
+|---|---|---|
+| **Shell** | `minimalist-ai` (the Tauri app) | Owns the window, the tray, the ports and the process tree; logs to `~/.local/share/dev.bhavyam.minimalist-ai/logs/desktop.log` |
+| **App server** | `resources/runtime/bin/node resources/appserver/server.js` | The Next.js application, started by the shell on a free port and supervised (restarted if it dies) |
+| **Database** | PGlite inside the data directory | `DATABASE_URL` in `config.env` switches to a real Postgres |
+| **SearXNG** | `resources/searxng/venv/bin/python -m granian … searx.webapp:app` | Bundled, started on its own free port; `SEARXNG_URL` overrides it. No Docker anywhere |
+| **FreeLLMAPI / Ollama / other model endpoints** | outside the app | Any OpenAI-compatible endpoint, configured in Settings → Model or `config.env` |
+| **Firecrawl** | outside the app, opt-in | `FIRECRAWL_ENABLED=0` by default; nothing routine depends on it |
 
-> **Search note**: the app's compose file now runs a small SearXNG + Valkey pair on `:8080`. The app tries SearXNG first, then keyless adapters. Firecrawl is intentionally a separate, opt-in escalation because its browser workers are too heavy for routine local/mobile use.
+There is no systemd unit, no `docker compose`, no service to restart and no fixed port. The terminal
+equivalents a GUI does not cover are in `scripts/minimalist-ai-ctl`:
 
----
-
-## How the App Runs
-
-The app runs **natively on the host** (not inside Docker) so the AI agent can access the real terminal and real filesystem. This is intentional by design.
-
-### systemd User Service
-
-The app is managed as a systemd user service that starts on boot:
-
-```
-~/.config/systemd/user/minimalist-chat.service
-```
-
-**Service definition:**
-```ini
-[Unit]
-Description=Minimalist AI Chat Workspace Service
-After=network.target docker.service
-
-[Service]
-Type=simple
-WorkingDirectory=/home/thatguy/Projects/the chat application/minimalist-ai-chat-workspace
-EnvironmentFile=-/home/thatguy/Projects/the chat application/minimalist-ai-chat-workspace/.env
-Environment=NODE_ENV=production
-Environment=PORT=3000
-Environment=PATH=/home/thatguy/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStartPre=/usr/bin/docker compose -f "...docker-compose.yml" up -d db searxng-cache searxng
-ExecStart=/usr/bin/npm start
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-**Control commands:**
 ```bash
-systemctl --user start minimalist-chat
-systemctl --user stop minimalist-chat
-systemctl --user restart minimalist-chat
-systemctl --user status minimalist-chat
-journalctl --user -u minimalist-chat -f   # live logs
+minimalist-ai-ctl status      # running? on which port?
+minimalist-ai-ctl logs        # follow the shell log
+minimalist-ai-ctl restart     # replace the app server in place (the window reloads)
+minimalist-ai-ctl stop
+minimalist-ai-ctl data
 ```
-
-Or use the helper CLI:
-```bash
-minimalist-chat open      # ensures running, opens in Zen
-minimalist-chat start
-minimalist-chat stop
-minimalist-chat restart
-minimalist-chat status
-minimalist-chat logs
-```
-
-### Desktop Launcher
-
-A `.desktop` file is installed at:
-```
-~/.local/share/applications/minimalist-chat.desktop
-```
-
-- Appears in the Niri/app launcher as **"Minimalist AI Workspace"**
-- Opens `http://localhost:3000` in a **new Zen Browser window**
-- Right-click actions: Open, Start Service, Stop Service, Restart Service
-- Icon: `~/.local/share/icons/minimalist-chat.svg`
 
 ---
 
-## `.env` File
+## Configuration
 
-Located at the project root (not committed to git). Must be recreated manually when cloning.
+Two files, one shape:
+
+- **A checkout / dev server**: `.env` at the project root (not committed), read by `npm run dev`.
+- **The desktop app**: `<data>/config.env` — seeded once with a commented template, read by the shell
+  at every start, never overwritten. `minimalist-ai-ctl data` prints the directory.
+
+Real environment variables win over both, and the shell always sets the paths and ports it owns
+(`APP_MODE=desktop`, `APP_ROOT`, `APP_DATA_DIR`, `WORKSPACE_DIR`, `PGLITE_DIR`, `VENV_DIR`,
+`ENV_FILE`, `SEARXNG_URL`, `PORT`), so a stale file cannot point the app at the wrong database.
 
 ```env
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db
-
-LLM_BASE_URL=http://localhost:3001/v1
+# Model — any OpenAI-compatible endpoint (Settings → Model writes these too)
+LLM_PROVIDER=freellmapi
+LLM_BASE_URL=http://127.0.0.1:3001/v1
 LLM_API_KEY=freellmapi-<key>
 LLM_MODEL=gemini-2.5-flash
 
-SEARXNG_URL=http://localhost:8080
+# Search: leave SEARXNG_URL unset to use the bundled SearXNG
+# SEARXNG_URL=http://127.0.0.1:8080
+
+# Firecrawl stays off unless you explicitly want the escalation
 FIRECRAWL_ENABLED=0
-FIRECRAWL_URL=http://localhost:3002
+FIRECRAWL_URL=http://127.0.0.1:3002
 FIRECRAWL_API_KEY=fc-<cloud-key>
 FIRECRAWL_CLOUD_URL=https://api.firecrawl.dev
 
-WORKSPACE_DIR=./workspace
+# Where the agent works, and how much access it has
+WORKSPACE_DIR=<data>/workspace
 ACCESS_MODE=sandbox
+TERMINAL_MODE=sandbox
+ALLOW_SUDO=0
+
+# A real Postgres instead of the embedded database (advanced)
+# DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db
+
+# Developer mode: offline mock model, sample files, __dev in the console
+# DEV_MODE=1
 ```
 
 ---
@@ -176,10 +137,11 @@ Endpoint: `GET /api/models?baseUrl=<url>` or `POST /api/models` with `{ baseUrl,
 ### ⚠️ Critical: Do NOT Change
 
 1. **Firecrawl is opt-in** — `FIRECRAWL_ENABLED=0` is the safe default. Ordinary search/fetch must use SearXNG + HTTP/Readability and must not start a local browser stack.
-2. **The app runs on the host, not in Docker** — do not suggest moving the Next.js app into Docker. Inside the app, `shell` is the agent's sandbox and `host_shell` (only when Settings → Access → Host terminal is on) is the real host terminal.
+2. **The app runs as a native desktop application, not in Docker** — the shell starts the app server and SearXNG itself. Do not reintroduce Docker, a systemd unit or a fixed-port localhost workflow: the desktop app is the only supported path. Inside the app, `shell` is the agent's sandbox and `host_shell` (only when Settings → Access → Host terminal is on) is the real host terminal.
 3. **General mode is not Search mode** — it has a separate history, no automatic web preflight, and visible tool calls; promotion to normal chat is explicit.
 4. **`workspace/` is gitignored** — it is the agent's live working directory with conversations, uploads, notes, etc. Never commit it.
-5. **`.env` is not committed** — credentials are only in the local `.env` file.
+5. **`.env` / `config.env` are not committed** — credentials live only in the local files (`config.env` in the desktop app's data directory).
+6. **The Node/desktop contract is tested** — `dev/tests/desktop.test.ts` fails if the shell stops setting a variable `src/lib/paths.ts` reads, if the bundle layout and `tauri.conf.json` disagree, or if an icon/module disappears. Keep it green when touching either side.
 
 ### Architecture Patterns
 
@@ -194,7 +156,7 @@ Endpoint: `GET /api/models?baseUrl=<url>` or `POST /api/models` with `{ baseUrl,
 1. Add a `T(...)` entry to `toolDefs()` in `src/lib/tools/index.ts` (the `core` list, or `dev` for tools only needed while building/debugging)
 2. Add a `case "tool_name":` handler in `execTool()` in the same file
 3. Add a live/done verb for the chat UI in `TOOL_META` (`src/components/Message.tsx`)
-4. Rebuild: `npm run build` and `systemctl --user restart minimalist-chat`
+4. Rebuild: `npm run build` (and `npm run desktop:prepare` for the desktop bundle)
 
 ### Adding a New API Route
 
@@ -211,9 +173,18 @@ Create `workspace/system/skills/<skill-name>/SKILL.md` with YAML frontmatter `na
 ### After Any Source Code Change
 
 ```bash
-npm run typecheck    # quick TS check without build
-npm run build        # full production build
-systemctl --user restart minimalist-chat
+npm run typecheck        # quick TS check without build
+npm run test:unit        # the suites in dev/tests (includes the desktop contract)
+npm run build            # full production build
+npm run desktop:prepare  # re-assemble the bundle the app actually runs
+npm run desktop:smoke    # start that bundle the way the shell does and check it end to end
+```
+
+For the Rust shell (`src-tauri/`), rebuild it and restart the app:
+
+```bash
+cd src-tauri && cargo build --release
+minimalist-ai-ctl restart   # or just quit and relaunch the app
 ```
 
 ### Database Schema
@@ -230,38 +201,20 @@ Tables:
 
 ---
 
-## Rebuilding the `.env` From Scratch
+## Rebuilding the Configuration From Scratch
 
-When cloning on a new machine:
-
-```env
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db
-
-# FreeLLMAPI — get key from https://freellmapi.com or your local instance
-LLM_BASE_URL=http://localhost:3001/v1
-LLM_API_KEY=freellmapi-<your-key>
-LLM_MODEL=gemini-2.5-flash
-
-# Local-first web research
-SEARXNG_URL=http://localhost:8080
-# Firecrawl is an explicit fallback only
-FIRECRAWL_ENABLED=0
-FIRECRAWL_URL=http://localhost:3002
-# Cloud key for difficult pages / structured extraction
-FIRECRAWL_API_KEY=fc-<your-cloud-key>
-FIRECRAWL_CLOUD_URL=https://api.firecrawl.dev
-
-WORKSPACE_DIR=./workspace
-ACCESS_MODE=sandbox
-```
+The desktop app seeds `config.env` by itself on first run; delete it and restart the app to get a
+fresh template, or copy `config.env.example`-style keys from the block above.
 
 ---
 
-## Re-installing the Desktop App & systemd Service
+## Installing / Re-installing the App
 
 ```bash
-./setup.sh --local        # re-detects services, keeps existing .env keys, rebuilds, (re)installs service + launcher + desktop entry
-minimalist-chat update    # later: git pull + setup
+scripts/install-desktop.sh          # build the bundle + shell, install launcher and menu entry
+scripts/install-desktop.sh --no-build   # reuse what is already built
+npm run desktop:build               # or produce an AppImage / .deb / .rpm instead
 ```
 
-The files in `scripts/` are templates (`@APP@`, `@PORT@`…) that `setup.sh` fills in. The service now binds to `127.0.0.1` because the agent can have host-terminal access; the old unit bound to all interfaces. Your Zen browser is kept via `CHAT_BROWSER` in `.env`.
+Data survives all of it: it lives in `~/.local/share/dev.bhavyam.minimalist-ai`, not in the app, and
+`config.env` there is never overwritten.

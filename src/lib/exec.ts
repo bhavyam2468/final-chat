@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { WS, HOME, PY, VENV } from "./workspace";
+import { VENV_DIR } from "./paths";
 export { PY, VENV };
 import type { Settings } from "./settings";
 
@@ -158,7 +159,7 @@ export function ensurePy(): Promise<string> {
   const have = VENV();
   if (have) return Promise.resolve([have, "bin", "python"].join("/"));
   if (!venvReady) venvReady = new Promise<string>((resolve, reject) => {
-    const dir = [process.cwd(), process.env.VENV_DIR || ".venv"].join("/");
+    const dir = VENV_DIR;
     const py = [dir, "bin", "python"].join("/");
     const p = spawn("python3", ["-m", "venv", dir], { stdio: "ignore" });
     p.on("error", reject);

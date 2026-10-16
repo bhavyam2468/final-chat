@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Minimalist AI Workspace — control script for the desktop app.
+#
+# The app is a desktop application: launch it from your launcher, or use this script for the things
+# a GUI does not expose (the port, the log, restarting the app server without touching the window).
+#
+#   minimalist-ai-ctl status     is it running, and on which port?
+#   minimalist-ai-ctl logs       follow the shell log
+#   minimalist-ai-ctl restart    restart the app server in place (the window reloads)
+#   minimalist-ai-ctl stop       quit the running app
+#   minimalist-ai-ctl open       launch it, or print the URL of the running instance
+#   minimalist-ai-ctl data       print (and create) the data directory
+#
+# Installed by scripts/install-desktop.sh into ~/.local/bin. The only external tool it needs is curl.
+
+set -euo pipefail
+
+IDENTIFIER="dev.bhavyam.minimalist-ai"
+DATA_DIR="${APP_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/$IDENTIFIER}"
+RUNTIME="$DATA_DIR/runtime.json"
+LOG="$DATA_DIR/logs/desktop.log"
+
+port() {
+  [ -f "$RUNTIME" ] && sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' "$RUNTIME" | head -n1
+}
+
+# The URL of the live instance, when there is one.
+url() {
+  local p
+  p="$(port || true)"
+  if [ -n "${p:-}" ] && curl -fsS -m 2 "http://127.0.0.1:$p/api/health" >/dev/null 2>&1; then
+    echo "http://127.0.0.1:$p"
+    return 0
+  fi
+  return 1
+}
+
+# Where the app binary is: $MINIMALIST_AI_BIN, then a system install (deb/rpm), then a source
+# checkout built with `npm run desktop:build`.
+app_binary() {
+  local self
+  self="$(readlink -f "${BASH_SOURCE[0]}")"
+  local candidates=(
+    "${MINIMALIST_AI_BIN:-}"
+    "/usr/bin/minimalist-ai"
+    "/usr/local/bin/minimalist-ai"
+    "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../src-tauri/target/release/minimalist-ai"
+    "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../src-tauri/target/debug/minimalist-ai"
+  )
+  for candidate in "${candidates[@]}"; do
+    [ -n "$candidate" ] || continue
+    [ -x "$candidate" ] || continue
+    [ "$(readlink -f "$candidate")" = "$self" ] && continue   # never exec ourselves
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+case "${1:-status}" in
+  open|launch|"")
+    if live="$(url)"; then echo "already running: $live"; else
+      if app="$(app_binary)"; then
+        setsid "$app" >/dev/null 2>&1 </dev/null &
+        echo "launched: $app"
+      else
+        echo "could not find the app binary." >&2
+        echo "Install a package from the releases page, or build it with: npm run desktop:build" >&2
+        exit 1
+      fi
+    fi
+    ;;
+
+  status)
+    if live="$(url)"; then
+      echo "running: $live"
+      curl -fsS "$live/api/health" || true
+      echo
+    else
+      echo "not running"
+      exit 1
+    fi
+    ;;
+
+  restart)
+    live="$(url)" || { echo "not running" >&2; exit 1; }
+    curl -fsS -X POST -H 'content-type: application/json' -d '{"action":"restart"}' "$live/api/desktop" >/dev/null
+    echo "restarting; the app server is back on the same port within a few seconds"
+    ;;
+
+  stop)
+    if live="$(url)"; then
+      curl -fsS -X POST -H 'content-type: application/json' -d '{"action":"stop"}' "$live/api/desktop" >/dev/null
+      echo "stopped"
+    else
+      echo "not running"
+    fi
+    ;;
+
+  logs)
+    [ -f "$LOG" ] || { echo "no log yet at $LOG" >&2; exit 1; }
+    tail -n 200 -f "$LOG"
+    ;;
+
+  data)
+    mkdir -p "$DATA_DIR"
+    echo "$DATA_DIR"
+    ;;
+
+  version)
+    if app="$(app_binary)"; then "$app" --version; else echo "unknown (app binary not found)"; fi
+    ;;
+
+  *)
+    sed -n '3,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

@@ -3,26 +3,28 @@
 ## 1. ARCHITECTURE OVERVIEW
 
 ### 1.1 Stack & Invariants
-- Host OS: Linux.
-- Service Manager: systemd (`minimalist-chat.service`).
-- Execution Environment: Node.js (v20+), npm.
+- Host OS: Linux (Arch). Windows and macOS are future targets; the design does not preclude them.
+- Application Model: **desktop application**. A Tauri 2 shell (`src-tauri/`) owns the window, the ports and the process tree; the Next.js app runs as a bundled child process on a free loopback port. There is no systemd unit, no Docker and no fixed port. Architecture: `docs/DESKTOP.md`.
+- Service Manager: the Rust shell itself — startup, health-checked window creation, watchdog restarts, tray, autostart, single instance.
+- Execution Environment: bundled Node.js runtime (`src-tauri/resources/runtime/bin/node`), npm for development.
 - Application Framework: Next.js 16.2.6 (App Router), React 19, TypeScript 5.
-- Persistence Layer: PostgreSQL 16 (port 5432, container `minimalist-ai-chat-workspace-db-1`) via Drizzle ORM. Fallback persistence: `@electric-sql/pglite` (directory: `.pglite/`).
+- Persistence Layer: PostgreSQL via Drizzle ORM when `DATABASE_URL` is set; otherwise the embedded `@electric-sql/pglite` in `<data>/data/pglite` (in a checkout: `./data/pglite`).
 - Styling: Tailwind CSS v4, CSS Custom Properties (`--bg`, `--fg`, `--muted`, `--surface`, `--line`, `--accent`, `--float`, `--r`).
-- Client Target: Zen Browser (`http://localhost:3000`).
+- Client Target: the native window (webkit2gtk webview) pointed at `http://127.0.0.1:<port>`; the desktop entry script and data directory are under `~/.local/share/dev.bhavyam.minimalist-ai`.
 - Model Provider: OpenAI protocol (`http://localhost:3001/v1/chat/completions`). Model: `gemini-2.5-flash`.
 - Ingestion Engine: Firecrawl service (`http://localhost:3002/v1/scrape`), fallback: Cloud Firecrawl API (`https://api.firecrawl.dev`).
-- Search Engine: SearXNG / DuckDuckGo endpoint, fallback: Cloud Firecrawl Search API.
+- Search Engine: **bundled SearXNG** (pinned commit, own python environment, started by the shell on a loopback port; `SEARXNG_URL` overrides it), fallback: keyless adapters.
 - Process Boundary: `workspace/` directory. Boundary overrides: `~`, `/`, `host_shell`, `sudo`. Linux namespace isolation: `bwrap` (Bubblewrap).
 
 ```
    ┌─────────────────────────────────────────────────────────────┐
-   │                    Client: Zen Browser                      │
+   │   Tauri shell (Rust): window · tray · ports · supervision   │
    │      ChatView  │  Panels (Tree, Convs)  │      Canvas       │
+   │   (webkit2gtk webview → 127.0.0.1:<free port>)              │
    └──────────────────────────────▲──────────────────────────────┘
-                                  │ SSE Stream / JSON APIs
+                                  │ SSE Stream / JSON APIs (loopback)
    ┌──────────────────────────────▼──────────────────────────────┐
-   │                  Next.js App Server (:3000)                 │
+   │      Next.js App Server (bundled node, free port)          │
    │  /api/chat  │  /api/conversations  │  /api/preview  │ etc.  │
    └───────────────▲──────────────────────────────▲──────────────┘
                    │                              │
@@ -34,10 +36,11 @@
      └─────────────▲──────────────┘  └───────────────────────────┘
                    │
     ┌──────────────┴───────────────────────────┐
-    │ Services & Host OS                       │
-    │  ├─ FreeLLMAPI (:3001)                   │
-    │  ├─ PostgreSQL (:5432)                   │
-    │  ├─ Firecrawl (:3002) / Cloud            │
+    │ Started by the shell / on the host       │
+    │  ├─ Bundled SearXNG (granian, free port) │
+    │  ├─ PGlite in <data>/data/pglite         │
+    │  ├─ Model endpoint (FreeLLMAPI/Ollama/…) │
+    │  ├─ optional Firecrawl / cloud           │
     │  └─ Host OS (Bash, Python3, bwrap sandbox│
     └──────────────────────────────────────────┘
 ```
@@ -571,41 +574,31 @@
 
 ---
 
-### 3.6 Automation Scripts & System Services (`scripts/`, `setup.sh`)
+### 3.6 Desktop Build & Scripts (`scripts/`, `src-tauri/`)
 
-#### `scripts/minimalist-chat`
-- Type: Bash Shell Script.
-- Location: Installed to `~/.local/bin/minimalist-chat`.
-- Responsibility: CLI control script.
-- Implementation: Implements subcommands:
-  - `open`: Checks service health at `http://localhost:3000/api/health`, waits for HTTP 200, launches Zen Browser pointing to URL.
-  - `start`: Runs `systemctl --user start minimalist-chat`.
-  - `stop`: Runs `systemctl --user stop minimalist-chat`.
-  - `restart`: Runs `systemctl --user restart minimalist-chat`.
-  - `status`: Runs `systemctl --user status minimalist-chat`.
-  - `logs`: Runs `journalctl --user -u minimalist-chat -f`.
+#### `src-tauri/src/*.rs`
+- Type: Rust sources of the desktop shell.
+- Responsibility: Own the process: window (`window.rs`, `shell.rs`), bundled services (`server.rs`, `search.rs`, `child.rs`), single instance (`instance.rs`), tray (`tray.rs`), autostart (`autostart.rs`), CLI (`cli.rs`), paths (`layout.rs`), log (`logging.rs`), loopback helpers (`net.rs`).
+- Implementation: Plugin-free Tauri 2 — no IPC surface; the window loads the app's HTTP URL.
 
-#### `scripts/minimalist-chat.service`
-- Type: Systemd User Unit File.
-- Location: Installed to `~/.config/systemd/user/minimalist-chat.service`.
-- Responsibility: Service supervision.
-- Implementation: Configures `ExecStartPre` running Docker Compose to bring PostgreSQL container online. Configures `ExecStart` running `npm start` with `PORT=3000` and `NODE_ENV=production`. Configures `Restart=always`.
+#### `src-tauri/tauri.conf.json`
+- Type: Bundle configuration.
+- Responsibility: Identity (`dev.bhavyam.minimalist-ai`), icons, Linux targets (AppImage/deb/rpm) and the `resources` map that places the assembled payload next to the binary.
 
-#### `scripts/minimalist-chat.desktop`
-- Type: FreeDesktop Desktop Entry File.
-- Location: Installed to `~/.local/share/applications/minimalist-chat.desktop`.
-- Responsibility: Desktop environment application integration.
-- Implementation: Registers application in desktop application launcher. Associates icon `scripts/minimalist-chat.svg`. Configures desktop actions for Open, Start, Stop, and Restart.
+#### `scripts/desktop/prepare.mjs`
+- Type: Node.js build script (`npm run desktop:prepare`).
+- Responsibility: Assemble `src-tauri/resources/`: the standalone app server, the Node runtime, SearXNG, the workspace template, `python-requirements.txt` and `BUILD-INFO.json`.
+- Implementation: `next build` → copy `.next/standalone` (dropping traced extras), stage/prune the runtime and SearXNG, prune `@img`/`sharp`/`__pycache__`, write build metadata, assert no project source shipped.
 
-#### `scripts/minimalist-chat.svg`
-- Type: SVG Vector Graphic.
-- Responsibility: Application icon.
-- Implementation: Vector path drawing icon for desktop launcher and window manager docks.
+#### `scripts/desktop/fetch-runtime.mjs`, `provision-searxng.mjs`, `icons.mjs`, `smoke.mjs`, `versions.json`
+- Responsibility: Staged Node runtime; pinned SearXNG + its python env; generated app icons; the 29-check end-to-end test of the assembled bundle; the pins those scripts obey.
 
-#### `setup.sh`
-- Type: Bash Shell Script.
-- Responsibility: Installation and provisioning automation.
-- Implementation: Verifies presence of Node.js, npm, Docker, Python 3, and Zen Browser. Configures Python venv. Copies `.env.example` to `.env` if missing. Runs `docker compose up -d db`. Runs `npx drizzle-kit push`. Builds Next.js application bundle. Symlinks CLI script and installs systemd user service.
+#### `scripts/install-desktop.sh`, `scripts/minimalist-ai-ctl`
+- Responsibility: Build + install (launcher, desktop entry, icon); terminal controls (`status`, `logs`, `restart`, `stop`, `open`, `data`).
+
+#### `scripts/chatsync.mjs`
+- Type: Interactive terminal UI.
+- Responsibility: Update/merge/rollback the working tree from git, rebuild, and restart the running app through `POST /api/desktop {action:"restart"}` (the shell replaces the app server on the same port).
 
 ---
 
@@ -614,7 +607,7 @@
 #### `package.json`
 - Type: Node.js Package Manifest.
 - Responsibility: Dependency declarations and project scripts.
-- Implementation: Declares dependencies: Next.js 16, React 19, Tailwind CSS v4, Drizzle ORM, `pg`, `@electric-sql/pglite`, `lucide-react`, `katex`, `leaflet`, `3dmol`, `mammoth`, `unpdf`, `puppeteer`. Defines npm scripts: `dev`, `build`, `start`, `typecheck`.
+- Implementation: Name `minimalist-ai-workspace`, version `0.1.0` (mirrored by `tauri.conf.json` and reported by `/api/health`). Declares dependencies: Next.js 16, React 19, Tailwind CSS v4, Drizzle ORM, `pg`, `@electric-sql/pglite`, `lucide-react`, `katex`, `leaflet`, `3dmol`, `mammoth`, `unpdf`, `puppeteer`. Defines npm scripts: `dev`, `build`, `start`, `lint`, `typecheck`, `test:unit`, `test:e2e`, `desktop:prepare`, `desktop:smoke`, `desktop:icons`, `desktop:searxng`, `desktop:dev`, `desktop:build`, `desktop:appimage`, `desktop:check`.
 
 #### `next.config.ts`
 - Type: Next.js Configuration.
@@ -631,15 +624,15 @@
 - Responsibility: Database migration options.
 - Implementation: Points `schema` to `src/db/schema.ts`, sets `dialect: "postgresql"`, and reads `DATABASE_URL`.
 
-#### `docker-compose.yml`
-- Type: Docker Compose Specification.
-- Responsibility: Database container definition.
-- Implementation: Configures service `db` using image `postgres:16-alpine`. Maps container port 5432 to host port 5432. Binds volume `pgdata` to `/var/lib/postgresql/data`.
+#### `eslint.config.mjs`
+- Type: ESLint flat config.
+- Responsibility: Lint rules and ignores.
+- Implementation: Next.js core-web-vitals rules; ignores build output and generated trees (`.next/`, `vendor/`, `src-tauri/resources/`, `data/`, `workspace/`).
 
 #### `.env.example`
 - Type: Environment Template.
 - Responsibility: Configuration parameter documentation.
-- Implementation: Lists environment variables: `DATABASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL`, `FIRECRAWL_URL`, `FIRECRAWL_KEY`, `PORT`.
+- Implementation: Lists the configuration keys the app understands (model endpoint, search, access modes, workspace, Firecrawl). The desktop app reads the same keys from `<data>/config.env`, seeded on first run. Full table in `README.md`.
 
 #### `DESIGN.md`
 - Type: Design Documentation.
@@ -705,8 +698,11 @@
 
 ### Verification Commands
 ```bash
-npm run typecheck                        # Validate TypeScript types
-npm run build                            # Compile Next.js production build
-systemctl --user restart minimalist-chat # Restart background daemon
-curl -s http://localhost:3000/api/health # Verify service status
+npm run test:unit          # The suites in dev/tests (harness, memory, canvas, PDF, Blocks, desktop)
+npm run typecheck          # Validate TypeScript types
+npm run lint               # ESLint
+npm run build              # Compile the Next.js production build
+npm run desktop:prepare    # Re-assemble src-tauri/resources the way the app runs it
+npm run desktop:smoke      # Start that bundle as the shell does and verify it end to end
+npm run desktop:check      # All of the above, in order
 ```

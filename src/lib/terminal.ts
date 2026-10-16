@@ -41,7 +41,12 @@ function ptyLib(): typeof import("node-pty") | null {
   if (g.__ptyLib) return g.__ptyLib;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const lib = require("node-pty") as typeof import("node-pty");
+    // Specifier built at run time on purpose. node-pty is optional, and a literal require()
+    // makes Next's file tracer try to walk a package that may not exist — which it answers by
+    // tracing the entire project. The desktop build copies the compiled module in explicitly
+    // (scripts/desktop/prepare.mjs) when it built successfully; everywhere else `script` is the
+    // fallback, exactly as before.
+    const lib = require(["node", "pty"].join("-")) as typeof import("node-pty");
     g.__ptyLib = lib;
     return lib;
   } catch {
@@ -124,7 +129,7 @@ export function termCreate(st: Settings, o: { host?: boolean; cols?: number; row
     p.pty = { write: (d) => session.write(d), resize: (c, r) => session.resize(c, r), kill: () => session.kill(), pid: session.pid };
     p.cols = session.cols ?? cols; p.rows = session.rows ?? rows;
     session.onData((d) => feed(p, Buffer.from(d)));
-    session.onExit(({ exitCode }) => { p.exit = exitCode; emit(p, { t: "exit", code: p.exit }); terms.delete(p.id); });
+    session.onExit(({ exitCode }) => { p.exit = exitCode; emit(p, { t: "exit", code: p.exit ?? undefined }); terms.delete(p.id); });
   } else {
     const prelude = `stty rows ${rows} cols ${cols} 2>/dev/null; `;
     let inner: string;
@@ -189,6 +194,13 @@ export const termGet = (id: string) => terms.get(id);
 export const termList = () => [...terms.values()].map((p) => ({ id: p.id, host: p.host, title: p.title, running: p.exit === null, started: p.started, cols: p.cols, rows: p.rows }));
 export const termEngine = () => (ptyLib() ? "node-pty" : "script");
 
-for (const sig of ["exit", "SIGINT", "SIGTERM"] as const) {
-  process.once(sig, () => { for (const p of terms.values()) if (p.exit === null) { if (p.pty) { try { killTree(p.pty.pid); } catch {} } else if (p.child?.pid) { try { killTree(p.child.pid); } catch {} } } if (sig !== "exit") process.exit(0); });
+/** Close every open session. Called by the app-wide shutdown hook (`src/instrumentation.ts`). */
+export function termShutdown() {
+  for (const p of terms.values()) if (p.exit === null) {
+    if (p.pty) { try { killTree(p.pty.pid); } catch {} }
+    else if (p.child?.pid) { try { killTree(p.child.pid); } catch {} }
+  }
 }
+
+// Last resort if the process is torn down without the shutdown hook running.
+process.once("exit", termShutdown);
