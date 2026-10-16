@@ -332,9 +332,12 @@ npm run dev -- -p 3100       # the app server Next.js serves at :3100
 npm run desktop:dev          # the shell waits for :3100 and opens a window on it
 ```
 
-`npm run dev` builds every route on demand and the shell reloads like a browser. `DESKTOP_MODE=desktop`
+`npm run dev` builds every route on demand and the shell reloads like a browser. There is no
+`devUrl`: the shell finds the dev server itself, showing progress on its splash while it waits (up
+to three minutes), and `DESKTOP_DEV_PORT` changes the port it waits on. `DESKTOP_MODE=desktop`
 points a debug shell at the assembled bundle instead, and `DESKTOP_MODE=dev` points a release build
-at a dev server.
+at a dev server. Development has no bundled SearXNG either — the search tool uses its keyless
+adapters, or whatever `SEARXNG_URL` you point at.
 
 ### Checks
 

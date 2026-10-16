@@ -146,6 +146,27 @@ await t("every flag the shell accepts is actually consumed", () => {
   assert.ok(read("src-tauri", "src", "tray.rs").includes("autostart::is_supported()"));
 });
 
+await t("development mode finds its own server instead of starting services", () => {
+  const shell = read("src-tauri", "src", "shell.rs");
+  // `tauri.conf.json` has no devUrl, so the shell itself has to know where the dev server is —
+  // without this the window never opens and the user is left on the splash.
+  const serverUrl = shell.slice(shell.indexOf("pub fn server_url"), shell.indexOf("pub fn server_port"));
+  assert.match(serverUrl, /layout::is_dev\(\)/, "server_url has no dev fallback");
+  assert.match(serverUrl, /layout::dev_port\(\)/);
+  const services = shell.slice(shell.indexOf("fn start_services"), shell.indexOf("pub fn open_main_window"));
+  // Dev returns before the bundled server, SearXNG and the python provisioning are touched…
+  const devBranch = services.slice(services.indexOf("is_dev()"), services.indexOf("return Ok(())"));
+  assert.match(devBranch, /wait_for_dev_server/);
+  assert.ok(!devBranch.includes("search::start"), "dev must not start a bundled search engine");
+  assert.ok(!devBranch.includes("server::start"), "dev must not start a bundled app server");
+  // …but it does record its port, so the scripts that read runtime.json point at the right process.
+  assert.match(devBranch, /write_runtime\(port, std::process::id\(\)\)/, "the dev port is not recorded");
+  assert.match(shell, /if !layout::is_dev\(\) \{\s*server::provision_python/, "dev must not provision python in the background");
+  // A restart request in dev is refused with an explanation instead of failing obscurely.
+  const restart = shell.slice(shell.indexOf("pub fn restart_server"));
+  assert.match(restart, /is_dev\(\)[\s\S]{0,300}return Err\("the dev server is not owned by the shell/);
+});
+
 // ── the restart protocol: one file, written by the app server and read by the shell ────────
 // `POST /api/desktop {action:"restart"}` cannot restart anything itself — a Node process cannot
 // replace itself. What it actually does is write `restart: true` into runtime.json and exit; the

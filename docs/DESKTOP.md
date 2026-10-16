@@ -131,6 +131,11 @@ npm run desktop:build            # AppImage + .deb + .rpm into src-tauri/target/
 npm run desktop:appimage         # just the AppImage
 ```
 
+For day-to-day work on the app itself, `cargo` is not needed at all: run the dev server
+(`npm run dev -- -p 3100`) and let the shell find it — `npm run desktop:dev` builds a debug shell
+that waits for it and then opens the window on it. Only the dev server runs in that mode: no
+bundled SearXNG, no python provisioning, no bundle.
+
 Packages declare their Linux dependencies (webkit2gtk-4.1, gtk3, libayatana-appindicator for the
 tray). The AppImage is self-contained; on Arch the `libayatana-appindicator` package is optional and
 only removes the tray icon.
@@ -178,7 +183,13 @@ you prefer your own SearXNG, set `SEARXNG_URL` in `config.env`.
 closing the window quits instead of hiding — never an invisible process.
 
 **The port changes between launches.** That is by design: ports are chosen at launch to avoid
-conflicts. Scripts should read `runtime.json`, as `minimalist-ai-ctl` and `chatsync.mjs` do.
+conflicts. Scripts should read `runtime.json`, as `minimalist-ai-ctl` and `chatsync.mjs` do. To pin
+it, pass `--port 3312` on the command line (or set `DESKTOP_APP_PORT`); if the port is taken the
+app logs that it moved rather than refusing to start.
+
+**Development: "no dev server answered on port 3100".** `npm run desktop:dev` does not start the
+app server — it waits for the one you run yourself. Start `npm run dev -- -p 3100` and the splash
+clears as soon as it answers; `DESKTOP_DEV_PORT` changes the port on both sides.
 
 **python tools are unavailable.** Look for "python environment" lines in the log. `python3-venv` may
 be missing, or the download failed on a machine without network access to PyPI. Set `PYTHON_BIN` in

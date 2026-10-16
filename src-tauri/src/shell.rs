@@ -59,8 +59,17 @@ impl Shell {
         self.searxng.lock().ok().and_then(|g| g.as_ref().map(|s| s.url.clone()))
     }
 
+    /// Where the main window should point. In development that is the server the developer runs
+    /// (`npm run desktop:dev` waits for it instead of starting one); otherwise it is the bundled
+    /// app server this shell started.
     pub fn server_url(&self) -> Option<String> {
-        self.server.lock().ok().and_then(|g| g.as_ref().map(|s| s.url.clone()))
+        if let Some(url) = self.server.lock().ok().and_then(|g| g.as_ref().map(|s| s.url.clone())) {
+            return Some(url);
+        }
+        if layout::is_dev() {
+            return Some(format!("http://127.0.0.1:{}", layout::dev_port()));
+        }
+        None
     }
 
     pub fn server_port(&self) -> Option<u16> {
@@ -127,6 +136,10 @@ impl Shell {
                     "no dev server answered on port {port}.\nStart one with:  npm run dev -- -p {port}\nthen relaunch the shell.",
                 ));
             }
+            // Record the port the window is on, so the tools that read `runtime.json` (the ctl
+            // script, chatsync, the single-instance handover) point at the dev server rather than
+            // at whatever a packaged run left behind.
+            layout.write_runtime(port, std::process::id());
             return Ok(());
         }
 
@@ -217,6 +230,11 @@ impl Shell {
 
     /// Bring the app server back after it died, ideally on the same port so the window URL stands.
     pub fn restart_server(self: &Arc<Self>, app: &AppHandle) -> Result<u16, String> {
+        if layout::is_dev() {
+            // The dev server is the developer's own process in another terminal: replacing it here
+            // would fight the watcher that is already rebuilding it.
+            return Err("the dev server is not owned by the shell; restart it in your terminal".into());
+        }
         let old_port = self.server_port();
         if let Ok(mut guard) = self.server.lock() {
             if let Some(server) = guard.take() {
